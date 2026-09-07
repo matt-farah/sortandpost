@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local env / secrets
+.env
+
+# Local app-data (native dev). The real app-data lives outside the repo; this is
+# only the default location used by `uv run python -m sortandpost` without APP_DATA set.
+/appdata/
+
+# CLIP weights downloaded during native dev
+/models/
+
+# OS
+.DS_Store

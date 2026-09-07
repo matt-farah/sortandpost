@@ -1,0 +1,44 @@
+# Written to APP_DATA/sync/config.yaml on first boot if it does not exist.
+# This file syncs across machines. Edit it there, not here.
+
+library_roots:
+  - /library                 # container paths of the mounted photo libraries
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+sync:
+  publish_interval_sec: 60        # publish the working DB to sync/ when dirty and idle
+  lock_heartbeat_sec: 20
+  lock_stale_after_sec: 300       # a lock older than this may be taken over
+  snapshot_every_publishes: 20
+  snapshot_keep: 10
+  sync_thumbnails: true           # thumbnails can be large; false keeps them in local/ only
+
+clip:
+  model: ViT-B-32
+  pretrained: laion2b_s34b_b79k
+  device: cpu
+  batch_size: 16
+
+tagging:
+  vocab_file: tags.yaml
+  score_threshold: 0.22
+  top_k: 8
+  prompt_templates:
+    - "a photo of {}"
+    - "{}"
+
+thumbnails:
+  sizes: [320, 1280]
+  format: webp
+  quality: 80
+
+indexer:
+  full_scan_interval_min: 15
+  workers: auto                   # "auto" -> cpu_count - 1
+  clip_deferred: true             # make photos browsable first, run CLIP after
+
+rating:
+  write_windows_compat_tags: true
