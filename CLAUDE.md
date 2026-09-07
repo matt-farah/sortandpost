@@ -92,7 +92,7 @@ docker compose run --rm app alembic revision --autogenerate -m "message"
 
 # Tests
 docker compose run --rm app pytest
-docker compose run --rm app pytest tests/indexer/test_hashing.py::test_pixel_hash_stable_across_exif_write -q
+docker compose run --rm app pytest tests/test_hashing.py::test_pixel_hash_stable_across_exif_write -q
 
 # Quality
 docker compose run --rm app ruff check .
