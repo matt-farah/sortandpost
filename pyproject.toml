@@ -1,0 +1,68 @@
+[project]
+name = "sortandpost"
+version = "0.0.1"
+description = "Locally-run photo organization app: star ratings, CLIP auto-tagging, semantic search."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { file = "LICENSE" }
+dependencies = [
+    "nicegui>=2.0",
+    "sqlmodel>=0.0.22",
+    "SQLAlchemy>=2.0",
+    "alembic>=1.13",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "Pillow>=10.3",
+    "pillow-heif>=0.16",
+    "rawpy>=0.21",
+    "numpy>=1.26",
+    "open-clip-torch>=2.24",
+    "torch>=2.2",
+    "watchdog>=4.0",
+    "zstandard>=0.22",
+]
+
+[project.scripts]
+sortandpost = "sortandpost.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sortandpost"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["sortandpost"]
+mypy_path = "src"
+strict = true
+plugins = []
+# SQLModel/NiceGUI ship partial stubs; don't fail the build on their internals.
+[[tool.mypy.overrides]]
+module = ["rawpy.*", "open_clip.*", "pillow_heif.*", "nicegui.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"

@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    image: sortandpost:local
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      APP_DATA: /data
+      PORT: 8080
+      CLIP_MODEL: ${CLIP_MODEL:-}
+    volumes:
+      # Photo library: read-write so the metadata engine can write EXIF/XMP.
+      # Nothing else in the app writes under this path.
+      - "${PHOTO_LIBRARY:?set PHOTO_LIBRARY in .env}:/library:rw"
+      # App-data: local/ (machine-only) + sync/ (user points their sync tool here).
+      - "${APP_DATA:?set APP_DATA in .env}:/data:rw"
+    restart: unless-stopped
+
+  # One-shot indexer pass. Runs the same image with a different entrypoint.
+  #   docker compose run --rm indexer --once
+  indexer:
+    build: .
+    image: sortandpost:local
+    profiles: ["tools"]
+    environment:
+      APP_DATA: /data
+    volumes:
+      - "${PHOTO_LIBRARY:?set PHOTO_LIBRARY in .env}:/library:rw"
+      - "${APP_DATA:?set APP_DATA in .env}:/data:rw"
+    entrypoint: ["python", "-m", "sortandpost.indexer"]

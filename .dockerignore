@@ -1,0 +1,13 @@
+.git/
+.github/
+.venv/
+venv/
+appdata/
+models/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+*.md
+!README.md

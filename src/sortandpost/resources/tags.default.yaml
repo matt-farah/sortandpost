@@ -1,0 +1,69 @@
+# Zero-shot tagging vocabulary. Written to APP_DATA/sync/tags.yaml on first boot.
+# Grouped by facet. Edit freely there; changing it re-derives the cached text
+# embeddings on the next indexer pass.
+
+scene:
+  - landscape
+  - cityscape
+  - forest
+  - mountains
+  - beach
+  - desert
+  - lake
+  - river
+  - waterfall
+  - field
+  - garden
+  - indoors
+  - street
+
+subject:
+  - portrait
+  - group of people
+  - child
+  - dog
+  - cat
+  - bird
+  - wildlife
+  - flower
+  - tree
+  - car
+  - boat
+  - building
+  - architecture
+  - food
+  - drink
+
+lighting:
+  - golden hour
+  - blue hour
+  - sunrise
+  - sunset
+  - overcast
+  - harsh sunlight
+  - night
+  - backlit
+  - silhouette
+
+season:
+  - spring
+  - summer
+  - autumn foliage
+  - winter snow
+
+setting:
+  - wedding
+  - birthday party
+  - concert
+  - sporting event
+  - hiking
+  - road trip
+  - camping
+  - holiday celebration
+
+count:
+  - one person
+  - two people
+  - small group
+  - large crowd
+  - no people
