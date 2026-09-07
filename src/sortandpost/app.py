@@ -11,6 +11,7 @@ CLIP stay in the indexer process (hard constraint #7).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -23,6 +24,9 @@ from sortandpost.config import Settings
 from sortandpost.db import init_db, make_engine
 from sortandpost.db.browse import get_paths, get_photo, get_rating, list_photos, photo_count
 from sortandpost.db.models import Photo
+from sortandpost.sync import SyncManager, WriteMode
+
+log = logging.getLogger(__name__)
 
 _PAGES = [
     ("/", "Library"),
@@ -35,9 +39,15 @@ _THUMB_URL = "/thumbs"
 
 
 class State:
-    """Placeholder for app-wide reactive state until the sync layer sets it."""
+    """App-wide state the sync layer keeps current."""
 
-    write_mode = "read-only"
+    write_mode: str = WriteMode.read_only
+    lock_holder: str = "nobody"
+
+    @classmethod
+    def apply(cls, manager: SyncManager) -> None:
+        cls.write_mode = manager.mode
+        cls.lock_holder = manager._holder_name()
 
 
 def _header(active: str) -> None:
@@ -46,7 +56,10 @@ def _header(active: str) -> None:
         with ui.row():
             for path, name in _PAGES:
                 ui.link(name, path).classes("text-white" + (" underline" if path == active else ""))
-        ui.label(f"[{State.write_mode}]").classes("text-amber-300")
+        if State.write_mode == WriteMode.writable:
+            ui.label("[writable]").classes("text-emerald-300")
+        else:
+            ui.label(f"[read-only · {State.lock_holder} is writing]").classes("text-amber-300")
 
 
 def _thumb_src(pixel_hash: str, size: int) -> str:
@@ -56,6 +69,14 @@ def _thumb_src(pixel_hash: str, size: int) -> str:
 def build_ui(settings: Settings) -> None:
     engine = make_engine(settings.paths.working_db)
     init_db(engine)  # ensure an empty DB still renders an empty grid
+
+    manager = SyncManager(settings, engine=engine)
+    try:
+        manager.start()
+    except Exception:  # browsing must work even if the sync layer is unhappy
+        log.exception("sync layer failed to start; continuing read-only")
+    State.apply(manager)
+    nicegui_app.on_shutdown(manager.stop)
 
     settings.paths.thumbnails_dir.mkdir(parents=True, exist_ok=True)
     nicegui_app.add_static_files(_THUMB_URL, str(settings.paths.thumbnails_dir))
