@@ -18,7 +18,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m sortandpost.indexer")
     parser.add_argument("--once", action="store_true", help="run one full scan pass, then exit")
     parser.add_argument(
-        "--reembed", action="store_true", help="recompute all CLIP embeddings (after a model change)"
+        "--reembed",
+        action="store_true",
+        help="recompute all CLIP embeddings (after a model change)",
     )
     args = parser.parse_args(argv)
 

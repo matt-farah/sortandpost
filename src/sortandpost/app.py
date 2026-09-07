@@ -31,9 +31,7 @@ def _header(active: str) -> None:
         ui.label(f"sortandpost {__version__}").classes("text-lg font-bold")
         with ui.row():
             for path, name in _PAGES:
-                ui.link(name, path).classes(
-                    "text-white" + (" underline" if path == active else "")
-                )
+                ui.link(name, path).classes("text-white" + (" underline" if path == active else ""))
         ui.label(f"[{State.write_mode}]").classes("text-amber-300")
 
 
@@ -61,9 +59,7 @@ def build_ui(settings: Settings) -> None:
     @ui.page("/review")
     def review() -> None:
         _header("/review")
-        ui.label("CLIP prediction review queue — build-order step 5.").classes(
-            "m-4 text-gray-500"
-        )
+        ui.label("CLIP prediction review queue — build-order step 5.").classes("m-4 text-gray-500")
 
     @ui.page("/settings")
     def settings_page() -> None:

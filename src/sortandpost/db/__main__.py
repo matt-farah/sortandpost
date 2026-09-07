@@ -16,7 +16,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("snapshot", help="write a compressed DB snapshot to sync/snapshots/ now")
 
-    p_restore = sub.add_parser("restore", help="restore the working DB from a snapshot, then reconcile-scan")
+    p_restore = sub.add_parser(
+        "restore", help="restore the working DB from a snapshot, then reconcile-scan"
+    )
     p_restore.add_argument("path", help="path to a .db or .db.zst snapshot")
 
     p_merge = sub.add_parser("merge", help="fold a stray conflicted-copy DB into the current one")

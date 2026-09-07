@@ -23,12 +23,7 @@ def test_db_cli_rejects_unknown_command() -> None:
 
 def test_pipeline_stage_bitmask_composition() -> None:
     assert Stage.BROWSABLE == (
-        Stage.STAT
-        | Stage.DECODE
-        | Stage.HASH
-        | Stage.THUMBNAILS
-        | Stage.METADATA
-        | Stage.RECONCILE
+        Stage.STAT | Stage.DECODE | Stage.HASH | Stage.THUMBNAILS | Stage.METADATA | Stage.RECONCILE
     )
     assert Stage.CLIP not in Stage.BROWSABLE
     assert Stage.COMPLETE == Stage.BROWSABLE | Stage.CLIP

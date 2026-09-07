@@ -140,9 +140,7 @@ def bootstrap(paths: Paths) -> None:
 
     if not paths.device_file.exists():
         paths.device_file.write_text(
-            json.dumps(
-                {"device_id": uuid.uuid4().hex, "hostname": socket.gethostname()}, indent=2
-            ),
+            json.dumps({"device_id": uuid.uuid4().hex, "hostname": socket.gethostname()}, indent=2),
             encoding="utf-8",
         )
 

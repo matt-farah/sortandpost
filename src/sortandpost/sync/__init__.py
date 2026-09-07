@@ -15,13 +15,13 @@ Responsibilities:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from sortandpost.config import Settings
 
 
-class WriteMode(str, Enum):
+class WriteMode(StrEnum):
     writable = "writable"
     read_only = "read_only"
 

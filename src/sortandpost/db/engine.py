@@ -17,7 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 
 # Import models so SQLModel.metadata is fully populated on `import sortandpost.db`.
-from sortandpost.db import models as models  # noqa: F401
+from sortandpost.db import models as models
 
 
 def make_engine(db_path: Path, *, echo: bool = False) -> Engine:
