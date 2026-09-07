@@ -1,16 +1,28 @@
 """NiceGUI web app.
 
-Scaffold: pages are registered with placeholder bodies and a shared header that
-shows the write-lock state. Real UI lands across build-order steps 3, 5 and 7.
-See CLAUDE.md → "Frontend (NiceGUI pages)".
+Build-order step 3 delivers real thumbnail-grid browsing and a photo-detail
+page, both backed by the working DB and the generated ``sync/thumbnails/`` tree.
+Search (step 5), review (step 5) and settings (step 7) are still placeholders.
+See CLAUDE.md -> "Frontend (NiceGUI pages)".
+
+Only cheap keyed SELECTs run on the event loop here; image decode / exiftool /
+CLIP stay in the indexer process (hard constraint #7).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from nicegui import app as nicegui_app
 from nicegui import ui
+from sqlmodel import Session
 
 from sortandpost import __version__
 from sortandpost.config import Settings
+from sortandpost.db import init_db, make_engine
+from sortandpost.db.browse import get_paths, get_photo, get_rating, list_photos, photo_count
+from sortandpost.db.models import Photo
 
 _PAGES = [
     ("/", "Library"),
@@ -18,6 +30,8 @@ _PAGES = [
     ("/review", "Review"),
     ("/settings", "Settings"),
 ]
+_PAGE_SIZE = 120
+_THUMB_URL = "/thumbs"
 
 
 class State:
@@ -35,37 +49,136 @@ def _header(active: str) -> None:
         ui.label(f"[{State.write_mode}]").classes("text-amber-300")
 
 
+def _thumb_src(pixel_hash: str, size: int) -> str:
+    return f"{_THUMB_URL}/{pixel_hash[:2]}/{pixel_hash}_{size}.webp"
+
+
 def build_ui(settings: Settings) -> None:
+    engine = make_engine(settings.paths.working_db)
+    init_db(engine)  # ensure an empty DB still renders an empty grid
+
+    settings.paths.thumbnails_dir.mkdir(parents=True, exist_ok=True)
+    nicegui_app.add_static_files(_THUMB_URL, str(settings.paths.thumbnails_dir))
+
+    thumb_small, thumb_large = _thumb_sizes(settings)
+
+    @contextmanager
+    def _session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
     @ui.page("/")
-    def library() -> None:
+    def library(page: int = 0) -> None:
         _header("/")
-        ui.label("Thumbnail grid — build-order step 3.").classes("m-4 text-gray-500")
-        ui.label(f"library_roots: {', '.join(map(str, settings.config.library_roots))}").classes(
-            "m-4 text-xs text-gray-400"
-        )
+        page = max(page, 0)
+        with _session() as session:
+            total = photo_count(session)
+            photos = list_photos(session, limit=_PAGE_SIZE, offset=page * _PAGE_SIZE)
+
+        pages = max((total + _PAGE_SIZE - 1) // _PAGE_SIZE, 1)
+        with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
+            ui.label(f"{total} photos").classes("text-sm text-gray-500")
+            if pages > 1:
+                ui.label(f"page {page + 1} / {pages}").classes("text-sm text-gray-500")
+
+        if not photos:
+            ui.label("No photos indexed yet. Run  python -m sortandpost.indexer --once").classes(
+                "m-4 text-gray-500"
+            )
+            return
+
+        with (
+            ui.grid()
+            .classes("gap-1 p-2")
+            .style("grid-template-columns: repeat(auto-fill, minmax(160px, 1fr))")
+        ):
+            for photo in photos:
+                _thumb_cell(photo, thumb_small)
+
+        _pager(page, pages)
 
     @ui.page("/photo/{pixel_hash}")
-    def photo(pixel_hash: str) -> None:
+    def photo_detail(pixel_hash: str) -> None:
         _header("/")
-        ui.label(f"Photo detail for {pixel_hash} — build-order step 3.").classes(
-            "m-4 text-gray-500"
-        )
+        with _session() as session:
+            photo = get_photo(session, pixel_hash)
+            paths = get_paths(session, pixel_hash) if photo else []
+            stars = get_rating(session, pixel_hash) if photo else None
+
+        if photo is None:
+            ui.label(f"Unknown photo {pixel_hash}").classes("m-4 text-gray-500")
+            return
+
+        with ui.row().classes("w-full no-wrap gap-6 p-4"):
+            ui.image(_thumb_src(pixel_hash, thumb_large)).classes("max-w-2xl rounded shadow")
+            with ui.column().classes("gap-1 text-sm"):
+                ui.label("★ " * stars if stars else "unrated").classes("text-amber-500 text-lg")
+                _facts(photo)
+                ui.separator()
+                ui.label("Paths").classes("font-bold mt-2")
+                for pp in paths:
+                    mark = "" if pp.present else "  (missing)"
+                    ui.label(f"{pp.path}{mark}").classes(
+                        "text-xs " + ("text-gray-600" if pp.present else "text-red-500")
+                    )
+        ui.link("< back to library", "/").classes("m-4")
 
     @ui.page("/search")
     def search() -> None:
         _header("/search")
-        ui.label("Semantic search — build-order step 5.").classes("m-4 text-gray-500")
+        ui.label("Semantic search - build-order step 5.").classes("m-4 text-gray-500")
 
     @ui.page("/review")
     def review() -> None:
         _header("/review")
-        ui.label("CLIP prediction review queue — build-order step 5.").classes("m-4 text-gray-500")
+        ui.label("CLIP prediction review queue - build-order step 5.").classes("m-4 text-gray-500")
 
     @ui.page("/settings")
     def settings_page() -> None:
         _header("/settings")
-        ui.label("Settings & sync status — build-order step 7.").classes("m-4 text-gray-500")
+        ui.label("Settings & sync status - build-order step 7.").classes("m-4 text-gray-500")
         ui.label(f"device_id: {settings.device_id}").classes("m-4 text-xs text-gray-400")
+
+
+def _thumb_sizes(settings: Settings) -> tuple[int, int]:
+    sizes = sorted(settings.config.thumbnails.sizes) or [320, 1280]
+    return sizes[0], sizes[-1]
+
+
+def _thumb_cell(photo: Photo, size: int) -> None:
+    with ui.link(target=f"/photo/{photo.pixel_hash}").classes("block"):
+        ui.image(_thumb_src(photo.pixel_hash, size)).classes(
+            "w-full aspect-square object-cover bg-gray-100"
+        ).props("loading=lazy")
+
+
+def _facts(photo: Photo) -> None:
+    rows: list[tuple[str, str]] = [
+        ("Taken", photo.taken_at.isoformat(sep=" ") if photo.taken_at else "-"),
+        ("Camera", " ".join(filter(None, (photo.camera_make, photo.camera_model))) or "-"),
+        ("Size", f"{photo.width} x {photo.height}"),
+        ("Format", f"{photo.format}{'  (RAW)' if photo.is_raw else ''}"),
+        ("Orientation", str(photo.orientation) if photo.orientation else "-"),
+        (
+            "GPS",
+            f"{photo.gps_lat:.5f}, {photo.gps_lon:.5f}"
+            if photo.gps_lat is not None and photo.gps_lon is not None
+            else "-",
+        ),
+        ("File size", f"{photo.file_size:,} bytes"),
+    ]
+    with ui.grid(columns=2).classes("gap-x-4 gap-y-1"):
+        for label, value in rows:
+            ui.label(label).classes("text-gray-400")
+            ui.label(value)
+
+
+def _pager(page: int, pages: int) -> None:
+    with ui.row().classes("w-full items-center justify-center gap-4 p-4"):
+        if page > 0:
+            ui.link("< prev", f"/?page={page - 1}")
+        if page + 1 < pages:
+            ui.link("next >", f"/?page={page + 1}")
 
 
 def run(settings: Settings) -> None:

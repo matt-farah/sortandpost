@@ -172,6 +172,8 @@ class ScanState(SQLModel, table=True):
 
     path: str = Field(primary_key=True)
     pixel_hash: str | None = Field(default=None, index=True)
+    size: int | None = None  # last-seen stat, for the fast path
+    mtime_ns: int | None = None
     stages_done: int = 0  # bitmask of completed pipeline stages
     indexed_at: datetime | None = None
     error: str | None = None

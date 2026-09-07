@@ -35,5 +35,15 @@ def pixel_hash(path: Path | str) -> str:
     normalised the same way so the digest depends only on visible pixels.
     """
     with Image.open(path) as img:
-        rgb = img.convert("RGB")
-        return hashlib.sha256(rgb.tobytes()).hexdigest()
+        return pixel_hash_of_image(img)
+
+
+def pixel_hash_of_image(img: Image.Image) -> str:
+    """``pixel_hash`` for an already-decoded PIL image.
+
+    The scanner opens each file exactly once and feeds the same image object to
+    this and to thumbnail generation. The EXIF orientation flag is intentionally
+    ignored -- the digest is of the pixels as stored, not as displayed.
+    """
+    rgb = img.convert("RGB")
+    return hashlib.sha256(rgb.tobytes()).hexdigest()
