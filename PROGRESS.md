@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-08 (end of build-order step 5a)._
+_Last updated: 2026-09-08 (end of build-order step 5b — CLIP engine complete)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). `main` PR not opened yet._
 
 ---
@@ -16,31 +16,42 @@ Building from the architecture spec in `CLAUDE.md`, following the 7-step
 | 2 | Metadata engine (exiftool `-stay_open` wrapper): read + rating write + round-trip tests | `f1598f8` | ✅ done |
 | 3 | Scanner + pixel hashing + thumbnails + `photos`/`photo_paths` + fast-path cache. Grid browsing works. | `94465f9` | ✅ done |
 | 4 | Sync layer: working-copy/atomic-publish, single-writer lock + heartbeat + read-only mode, snapshots, `changes` log, conflict-copy merge. Two-machine convergence test. | `270e2b8` | ✅ done |
-| 5a | **CLIP embedding store + semantic search**: memmap matrix + rowmap, `ClipModel` wrapper (guarded import), deferred CLIP indexer pass (`scan_clip_once`) + `--reembed`, `search_by_vector`/`semantic_search`/`similar_to`, `/search` page. | — | ✅ done |
-| 5b | Zero-shot vocab (`tags.yaml` → cached text embeddings) + `predictions` + `/review` bulk approve/reject (EXIF write + `changes` rows). | — | ⏭️ **next** |
-| 6 | Watchers + periodic reconcile + EXIF reconciliation on re-index. | — | pending |
+| 5a | **CLIP embedding store + semantic search**: memmap matrix + rowmap, `ClipModel` wrapper (guarded import), deferred CLIP indexer pass (`scan_clip_once`) + `--reembed`, `search_by_vector`/`semantic_search`/`similar_to`, `/search` page. | `b9f9cfb` | ✅ done |
+| 5b | **Zero-shot vocab + predictions + `/review`**: `tags.yaml` → cached text-embedding matrix (keyed by vocab hash), per-photo scoring folded into `scan_clip_once`, `predictions` rows, `/review` bulk approve/reject (approve ⇒ `photo_tags` + EXIF keyword union + `changes`; reject sticky). | — | ✅ done |
+| 6 | Watchers + periodic reconcile + EXIF reconciliation on re-index. | — | ⏭️ **next** |
 | 7 | Polish: filters, duplicate detection (phash), settings, status bar. | — | pending |
 
 ### Current state of the codebase
 
-- **108 tests pass.** `ruff check`, `ruff format --check`, `mypy` all clean on
+- **121 tests pass.** `ruff check`, `ruff format --check`, `mypy` all clean on
   `src/sortandpost/{sync,indexer,db,hashing.py,clip,search}`.
 - `alembic upgrade head` works and `alembic revision --autogenerate` produces an
-  **empty diff** (5a used only pre-existing `embedding_rows` / `embeddings_meta`
-  / `predictions` tables — no model changes).
-- Grid browsing + `/search` (semantic text search) work end-to-end.
-  `/review`, `/settings` are still placeholders.
+  **empty diff** (step 5 used only pre-existing `embedding_rows` /
+  `embeddings_meta` / `predictions` / `tags` / `photo_tags` / `changes` tables —
+  no model changes).
+- The **CLIP engine (step 5) is complete**. Grid browsing, `/search` (semantic
+  text search) and `/review` (bulk approve/reject of pending predictions) all
+  work end-to-end. `/settings` is still a placeholder.
 - `python -m sortandpost.indexer --once` runs stages 1–6 **then** the deferred
-  CLIP pass (`scan_clip_once`, stage 7 = image embeddings). `--reembed` rebuilds
-  the matrix. Both degrade to a clean skip when `torch`/`open-clip-torch` are
-  absent (the lightweight venv) — the real model path only runs in Docker or a
-  torch-equipped venv.
-- New modules: `sortandpost.clip.{model,store}` (guarded `open_clip` wrapper +
-  append-mostly memmap matrix at `sync/embeddings/img_<model>.npy` + `rowmap.json`
-  + `embeddings_meta` compat check), `sortandpost.search.{vector,service}`
-  (`rank`, `open_matrix`, `search_by_vector`, `semantic_search`, `similar_to`).
-- Sync layer is wired into `app.py` (read-only banner) and the
-  `python -m sortandpost.db {snapshot,restore,merge}` CLI.
+  CLIP pass: image embedding + zero-shot scoring against `tags.yaml`, writing
+  `predictions(state='pending')`. `--reembed` rebuilds the matrix and re-scores,
+  keeping approved/rejected predictions. Both degrade to a clean skip when
+  `torch`/`open-clip-torch` are absent (the lightweight venv) — the real model
+  path only runs in Docker or a torch-equipped venv.
+- New modules:
+  - `sortandpost.clip.{model,store}` — guarded `open_clip` wrapper +
+    append-mostly memmap matrix at `sync/embeddings/img_<model>.npy` +
+    `rowmap.json` + `embeddings_meta` compat check.
+  - `sortandpost.clip.vocab` — `load_vocab(tags.yaml)` (ordered, de-duped,
+    content hash) + `ensure_text_matrix` (mean of prompt-template encodings,
+    L2-normalized, cached to `text_<model>_<vocabhash>.npy`).
+  - `sortandpost.clip.tagging` — `pick_terms` / `upsert_prediction` (scoring,
+    used by the indexer) and `pending_groups` / `approve` / `reject` (the
+    `/review` flow; every decision emits a `changes` row, hard constraint #4).
+  - `sortandpost.search.{vector,service}` — `rank`, `open_matrix`,
+    `search_by_vector`, `semantic_search`, `similar_to`.
+- Sync layer is wired into `app.py` (read-only banner disables `/review`
+  actions) and the `python -m sortandpost.db {snapshot,restore,merge}` CLI.
 
 ---
 
@@ -93,13 +104,45 @@ Then `git push` (updates `origin/scaffold`).
 
 ---
 
-## Step 5 plan — CLIP engine + semantic search + review UI
+## Step 5 plan — CLIP engine + semantic search + review UI — ✅ DONE (5a `b9f9cfb`, 5b this commit)
 
 Spec: `CLAUDE.md` → "CLIP tagging & search", "Indexer pipeline" stage 7,
 "Database schema" (`embedding_rows`, `embeddings_meta`, `predictions`),
 "Frontend" (`/search`, `/review`).
 
-Do it in two sub-phases so browsing/search land before the vocab work.
+### 5b. Zero-shot tagging + review — ✅ DONE
+
+Landed as planned, with these notes:
+
+- `clip/vocab.py`: `load_vocab` preserves facet-then-term order, de-dupes a term
+  that appears under two facets (first facet wins), and derives a 12-char
+  `vocab_hash` from the ordered `(facet, name)` list. `ensure_text_matrix`
+  averages the L2-normalized encodings of every `prompt_templates` entry per
+  term, re-normalizes, and caches to `text_<model>_<vocabhash>.npy` (atomic
+  write; a wrong-row-count cache is rebuilt). The `<vocabhash>` in the filename
+  means editing `tags.yaml` transparently invalidates the cache.
+- Scoring is folded into `scan_clip_once`'s existing batch loop
+  (`_score_photo` → `pick_terms` → `upsert_prediction`). `ClipStats` gained a
+  `predictions` counter. `--reembed` deletes **pending** predictions only;
+  `approved`/`rejected` survive so a rejection stays sticky across re-runs
+  (`upsert_prediction` never flips an existing row's state).
+- `/review` (`app.py`): pending predictions grouped by tag (most-suggested
+  first) with sample thumbnails; **Approve all** / **Reject all** per tag run
+  off the event loop via `run.io_bound` (approve embeds keywords via exiftool).
+  Read-only mode disables the buttons with a banner.
+- `approve()` sets `predictions.state='approved'`, get-or-creates the `Tag`
+  (`kind=clip-approved`) + `PhotoTag(source='clip')`, writes the **union** of
+  the photo's manual + approved-clip keywords into every present, embed-capable,
+  non-RAW copy (`written_to_file` reflects whether any file was touched), and
+  emits `ChangeOp.clip_approve`. `reject()` sets `state='rejected'` (creating
+  the row if the pending one was pruned) + `ChangeOp.clip_reject`. Merge replay
+  in `sync/merge.py` already consumes both — no merge changes needed.
+- Tests: `test_clip_vocab.py` (order/dedup/hash, cache build + hit + stale
+  rebuild), `test_clip_tagging.py` (`pick_terms` threshold/top_k,
+  `upsert_prediction` insert/refresh/sticky), `test_review.py` (predictions land
+  from the pass, `pending_groups` shape, approve writes tag+change+EXIF union,
+  RAW approve is DB-only, reject sticky across `--reembed`). A `FakeClipModel`
+  with aligned image/text encoders stands in for torch.
 
 ### 5a. Embedding store + semantic search — ✅ DONE
 
@@ -119,9 +162,6 @@ Landed as described below, with these notes:
   files, then re-runs.
 - Query text embedding is offloaded off the event loop via
   `nicegui.run.io_bound`; the model is cached on `State.clip_model`.
-- **5b still to do:** zero-shot vocab, `predictions`, `/review`. `scan_clip_once`
-  currently writes embeddings only — layer prediction scoring into the same
-  batch loop.
 
 ### 5a. Embedding store + semantic search (original plan)
 
@@ -162,7 +202,7 @@ Landed as described below, with these notes:
    with hand-made unit-norm vectors (no torch needed); `embeddings_meta`
    mismatch detection.
 
-### 5b. Zero-shot tagging + review
+### 5b. Zero-shot tagging + review (original plan)
 
 6. **`sync/tags.yaml`** is already seeded (`resources/tags.default.yaml`).
    Load it, facet-grouped. For each term, average the normalized text
@@ -210,9 +250,9 @@ Landed as described below, with these notes:
 ## Handy commands
 
 ```bash
-# one full scan pass (stages 1-6) + deferred CLIP embedding pass (stage 7)
+# one full scan pass (stages 1-6) + deferred CLIP pass (embed + zero-shot score)
 python -m sortandpost.indexer --once
-python -m sortandpost.indexer --reembed        # rebuild the embedding matrix
+python -m sortandpost.indexer --reembed   # rebuild the matrix + re-score (keeps approve/reject)
 
 # DB maintenance
 python -m sortandpost.db snapshot
@@ -231,7 +271,12 @@ pytest tests/test_sync_merge.py::test_two_machine_merge_converges -q
 - `scaffold` → `main` PR not opened. `gh` CLI not installed. Compare URL:
   `https://github.com/matt-farah/sortandpost/compare/main...scaffold?expand=1`
 - Docker not installed on this machine — `docker compose up --build` untested.
+  The real CLIP model path (`open_clip` load + inference) is unexercised here;
+  only the guarded-skip fallbacks and the numpy/DB layers are tested.
 - Deferred by design: continuous indexer + watchers (step 6), EXIF
   reconciliation on re-index (step 6), grid virtualization / infinite scroll
   (step 7), process-pool concurrency for decode/hash/CLIP (later optimization —
-  currently single-threaded sequential).
+  currently single-threaded sequential), per-photo (not just per-tag) review
+  controls + facet grouping in `/review` (step 7 polish), a shared/serialized
+  exiftool client for `/review` approvals (currently one `-stay_open` process
+  per bulk action).

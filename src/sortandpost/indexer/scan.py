@@ -16,13 +16,23 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 from sqlmodel import Session, col, select
 
 from sortandpost.clip.model import ClipModel, ClipModelUnavailable
 from sortandpost.clip.store import EmbeddingStore, check_compatible, ensure_meta
-from sortandpost.config import Settings
+from sortandpost.clip.tagging import pick_terms, upsert_prediction
+from sortandpost.clip.vocab import Vocab, ensure_text_matrix, load_vocab
+from sortandpost.config import Settings, TaggingConfig
 from sortandpost.db import init_db, make_engine
-from sortandpost.db.models import EmbeddingRow, EmbeddingsMeta, Photo, ScanState
+from sortandpost.db.models import (
+    EmbeddingRow,
+    EmbeddingsMeta,
+    Photo,
+    Prediction,
+    PredictionState,
+    ScanState,
+)
 from sortandpost.indexer.decode import DecodeError, load_image
 from sortandpost.indexer.pipeline import (
     IndexOutcome,
@@ -139,6 +149,7 @@ def _record_failure(session: Session, path: Path, exc: BaseException) -> None:
 @dataclass
 class ClipStats:
     embedded: int = 0
+    predictions: int = 0
     errors: int = 0
     total_rows: int = 0
     skipped_no_model: bool = False
@@ -147,8 +158,8 @@ class ClipStats:
         if self.skipped_no_model:
             return "CLIP pass skipped: open-clip-torch / torch not installed"
         return (
-            f"CLIP: {self.embedded} newly embedded, {self.errors} errors; "
-            f"{self.total_rows} rows total"
+            f"CLIP: {self.embedded} newly embedded, {self.predictions} predictions, "
+            f"{self.errors} errors; {self.total_rows} rows total"
         )
 
 
@@ -158,7 +169,8 @@ def scan_clip_once(
     reembed: bool = False,
     model: ClipModel | None = None,
 ) -> ClipStats:
-    """Embed every browsable photo that has no row in the current model's matrix.
+    """Embed every browsable photo with no row in the current model's matrix, and
+    score it against the zero-shot vocabulary.
 
     Idempotent and resumable: a photo already in the store (or, after ``reembed``,
     freshly cleared) is the unit of work, committed per batch. Raises
@@ -167,6 +179,7 @@ def scan_clip_once(
     """
     paths = settings.paths
     ccfg = settings.config.clip
+    tcfg = settings.config.tagging
 
     if model is None:
         model = ClipModel(ccfg, paths.models_dir)
@@ -182,6 +195,14 @@ def scan_clip_once(
 
     matrix_path = paths.image_embeddings_file(ccfg.model)
     rowmap_path = paths.embeddings_rowmap_file
+
+    vocab = load_vocab(paths.tags_file)
+    text_matrix = ensure_text_matrix(
+        model,
+        vocab,
+        prompt_templates=tcfg.prompt_templates,
+        cache_path=paths.text_embeddings_file(ccfg.model, vocab.vocab_hash),
+    )
 
     stats = ClipStats()
     with Session(engine) as session:
@@ -214,11 +235,15 @@ def scan_clip_once(
                     for img in images:
                         img.close()
 
-                for pixel_hash, vec in zip(hashes, vecs, strict=True):
+                now = _utcnow()
+                for row_i, (pixel_hash, vec) in enumerate(zip(hashes, vecs, strict=True)):
                     row_index = store.upsert(pixel_hash, vec)
                     _mark_embedding_row(session, pixel_hash, row_index, ccfg.model)
                     _mark_clip_done(session, pixel_hash)
                     stats.embedded += 1
+                    stats.predictions += _score_photo(
+                        session, pixel_hash, vecs[row_i], text_matrix, vocab, ccfg.model, tcfg, now
+                    )
                 store.flush()
                 ensure_meta(
                     session,
@@ -226,13 +251,42 @@ def scan_clip_once(
                     pretrained=ccfg.pretrained,
                     dim=dim,
                     count=len(store),
-                    now=_utcnow(),
+                    now=now,
                 )
                 session.commit()
             stats.total_rows = len(store)
 
     log.info("clip pass complete: %s", stats)
     return stats
+
+
+def _score_photo(
+    session: Session,
+    pixel_hash: str,
+    image_vec: np.ndarray,
+    text_matrix: np.ndarray,
+    vocab: Vocab,
+    model: str,
+    tcfg: TaggingConfig,
+    now: datetime,
+) -> int:
+    """Write pending predictions for one photo; return how many rows were new."""
+    if text_matrix.shape[0] == 0:
+        return 0
+    scores = np.asarray(text_matrix @ np.asarray(image_vec, dtype=np.float32))
+    picked = pick_terms(scores, vocab, threshold=tcfg.score_threshold, top_k=tcfg.top_k)
+    new = 0
+    for term in picked:
+        if upsert_prediction(
+            session,
+            pixel_hash=pixel_hash,
+            tag_name=term.name,
+            model=model,
+            score=term.score,
+            now=now,
+        ):
+            new += 1
+    return new
 
 
 def _chunked(items: list[tuple[str, str]], size: int) -> Iterator[list[tuple[str, str]]]:
@@ -277,10 +331,20 @@ def _mark_clip_done(session: Session, pixel_hash: str) -> None:
 
 
 def _reset_clip_state(session: Session, model: str) -> None:
+    """Clear derived CLIP state for a full re-embed. User decisions are kept:
+    ``approved`` / ``rejected`` predictions (and their ``photo_tags`` / ``changes``
+    rows) survive so a rejection stays sticky."""
     for row in session.exec(select(EmbeddingRow)).all():
         session.delete(row)
     meta = session.get(EmbeddingsMeta, model)
     if meta is not None:
         session.delete(meta)
+    stale = session.exec(
+        select(Prediction).where(
+            Prediction.model == model, Prediction.state == PredictionState.pending
+        )
+    ).all()
+    for pred in stale:
+        session.delete(pred)
     for scan in session.exec(select(ScanState)).all():
         scan.stages_done &= ~int(Stage.CLIP)

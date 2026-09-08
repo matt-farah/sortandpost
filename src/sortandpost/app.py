@@ -13,8 +13,9 @@ CLIP stay off it -- the indexer process, or ``run.io_bound`` for query embedding
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from urllib.parse import quote
 
 from nicegui import app as nicegui_app
@@ -25,12 +26,16 @@ from sqlmodel import Session, col, select
 
 from sortandpost import __version__
 from sortandpost.clip.model import ClipModel, ClipModelUnavailable, clip_available
+from sortandpost.clip.tagging import approve, pending_groups, reject
+from sortandpost.clip.vocab import load_vocab
 from sortandpost.config import Settings
 from sortandpost.db import init_db, make_engine
 from sortandpost.db.browse import get_paths, get_photo, get_rating, list_photos, photo_count
-from sortandpost.db.models import Photo
+from sortandpost.db.models import Photo, Prediction, PredictionState
+from sortandpost.metadata import ExiftoolClient
 from sortandpost.search.service import semantic_search
 from sortandpost.sync import SyncManager, WriteMode
+from sortandpost.sync.clock import utcnow
 
 log = logging.getLogger(__name__)
 
@@ -208,9 +213,62 @@ def build_ui(settings: Settings) -> None:
                 _thumb_cell(photo, thumb_small)
 
     @ui.page("/review")
-    def review() -> None:
+    async def review() -> None:
         _header("/review")
-        ui.label("CLIP prediction review queue - build-order step 5.").classes("m-4 text-gray-500")
+        model_name = settings.config.clip.model
+        vocab = load_vocab(settings.paths.tags_file)
+        with _session() as session:
+            groups = pending_groups(session, model=model_name, vocab=vocab)
+        pending_total = sum(g.count for g in groups)
+
+        ui.label(f"{pending_total} pending CLIP suggestion(s) across {len(groups)} tag(s)").classes(
+            "px-4 pt-2 text-sm text-gray-500"
+        )
+
+        if State.write_mode != WriteMode.writable:
+            ui.label(
+                f"Read-only — {State.lock_holder} holds the write lock. "
+                "Approve / reject is disabled."
+            ).classes("m-4 text-amber-600")
+            return
+        if not groups:
+            ui.label(
+                "Nothing to review. Run  python -m sortandpost.indexer --once  "
+                "to generate suggestions."
+            ).classes("m-4 text-gray-500")
+            return
+
+        async def _bulk(tag_name: str, decision: str) -> None:
+            done = await nicegui_run.io_bound(
+                _apply_review_bulk, settings, engine, tag_name, decision
+            )
+            ui.notify(f"{decision}d {done} · {tag_name}")
+            ui.navigate.reload()
+
+        for group in groups:
+            title = f"{group.tag_name}  ·  {group.count}" + (
+                f"  ({group.facet})" if group.facet else ""
+            )
+            with ui.expansion(title).classes("w-full"):
+                with ui.row().classes("gap-2 p-2"):
+                    ui.button(
+                        "Approve all",
+                        on_click=lambda g=group: _bulk(g.tag_name, "approve"),
+                    ).props("color=positive")
+                    ui.button(
+                        "Reject all",
+                        on_click=lambda g=group: _bulk(g.tag_name, "reject"),
+                    ).props("color=negative flat")
+                with (
+                    ui.grid()
+                    .classes("gap-1 p-2")
+                    .style("grid-template-columns: repeat(auto-fill, minmax(120px, 1fr))")
+                ):
+                    for pixel_hash in group.sample_hashes:
+                        with ui.link(target=f"/photo/{pixel_hash}"):
+                            ui.image(_thumb_src(pixel_hash, thumb_small)).classes(
+                                "w-full aspect-square object-cover bg-gray-100"
+                            ).props("loading=lazy")
 
     @ui.page("/settings")
     def settings_page() -> None:
@@ -230,6 +288,55 @@ def _semantic_search_photos(settings: Settings, engine: Engine, query: str) -> l
         photos = session.exec(select(Photo).where(col(Photo.pixel_hash).in_(list(order)))).all()
         session.expunge_all()
     return sorted(photos, key=lambda p: order[p.pixel_hash])
+
+
+def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decision: str) -> int:
+    """Off the event loop (``run.io_bound``): approve/reject every pending
+    prediction for *tag_name*. Approve embeds keywords via exiftool, so it must
+    not touch the loop (hard constraint #7)."""
+    model_name = settings.config.clip.model
+    facet = load_vocab(settings.paths.tags_file).facet_of(tag_name)
+    approving = decision == "approve"
+    want_exif = approving and shutil.which("exiftool") is not None
+    exif_ctx = (
+        ExiftoolClient(write_windows_compat_tags=settings.config.rating.write_windows_compat_tags)
+        if want_exif
+        else nullcontext(None)
+    )
+
+    done = 0
+    with Session(engine) as session, exif_ctx as exiftool:
+        preds = session.exec(
+            select(Prediction).where(
+                Prediction.model == model_name,
+                Prediction.tag_name == tag_name,
+                Prediction.state == PredictionState.pending,
+            )
+        ).all()
+        for pred in preds:
+            if approving:
+                approve(
+                    session,
+                    device_id=settings.device_id,
+                    model=model_name,
+                    pixel_hash=pred.pixel_hash,
+                    tag_name=tag_name,
+                    facet=facet,
+                    now=utcnow(),
+                    exiftool=exiftool,
+                )
+            else:
+                reject(
+                    session,
+                    device_id=settings.device_id,
+                    model=model_name,
+                    pixel_hash=pred.pixel_hash,
+                    tag_name=tag_name,
+                    now=utcnow(),
+                )
+            done += 1
+        session.commit()
+    return done
 
 
 def _thumb_sizes(settings: Settings) -> tuple[int, int]:
