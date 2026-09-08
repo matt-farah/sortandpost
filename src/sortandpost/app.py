@@ -1,12 +1,13 @@
 """NiceGUI web app.
 
-Build-order step 3 delivers real thumbnail-grid browsing and a photo-detail
-page, both backed by the working DB and the generated ``sync/thumbnails/`` tree.
-Search (step 5), review (step 5) and settings (step 7) are still placeholders.
+Step 3 delivers thumbnail-grid browsing + a photo-detail page; step 5a adds
+``/search`` (semantic text search over the CLIP matrix). ``/review`` (step 5b)
+and ``/settings`` (step 7) are still placeholders.
 See CLAUDE.md -> "Frontend (NiceGUI pages)".
 
 Only cheap keyed SELECTs run on the event loop here; image decode / exiftool /
-CLIP stay in the indexer process (hard constraint #7).
+CLIP stay off it -- the indexer process, or ``run.io_bound`` for query embedding
+(hard constraint #7).
 """
 
 from __future__ import annotations
@@ -14,16 +15,21 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from urllib.parse import quote
 
 from nicegui import app as nicegui_app
+from nicegui import run as nicegui_run
 from nicegui import ui
-from sqlmodel import Session
+from sqlalchemy.engine import Engine
+from sqlmodel import Session, col, select
 
 from sortandpost import __version__
+from sortandpost.clip.model import ClipModel, ClipModelUnavailable, clip_available
 from sortandpost.config import Settings
 from sortandpost.db import init_db, make_engine
 from sortandpost.db.browse import get_paths, get_photo, get_rating, list_photos, photo_count
 from sortandpost.db.models import Photo
+from sortandpost.search.service import semantic_search
 from sortandpost.sync import SyncManager, WriteMode
 
 log = logging.getLogger(__name__)
@@ -43,11 +49,18 @@ class State:
 
     write_mode: str = WriteMode.read_only
     lock_holder: str = "nobody"
+    clip_model: ClipModel | None = None
 
     @classmethod
     def apply(cls, manager: SyncManager) -> None:
         cls.write_mode = manager.mode
         cls.lock_holder = manager._holder_name()
+
+    @classmethod
+    def get_clip_model(cls, settings: Settings) -> ClipModel:
+        if cls.clip_model is None:
+            cls.clip_model = ClipModel(settings.config.clip, settings.paths.models_dir)
+        return cls.clip_model
 
 
 def _header(active: str) -> None:
@@ -145,9 +158,54 @@ def build_ui(settings: Settings) -> None:
         ui.link("< back to library", "/").classes("m-4")
 
     @ui.page("/search")
-    def search() -> None:
+    async def search(q: str = "") -> None:
         _header("/search")
-        ui.label("Semantic search - build-order step 5.").classes("m-4 text-gray-500")
+        query = q.strip()
+
+        def _go(text: str) -> None:
+            ui.navigate.to(f"/search?q={quote(text.strip())}" if text.strip() else "/search")
+
+        with ui.row().classes("w-full items-center gap-2 p-4"):
+            box = ui.input(placeholder="Describe a photo...", value=query).classes("flex-1")
+            box.props("clearable")
+            box.on("keydown.enter", lambda: _go(box.value or ""))
+            ui.button("Search", on_click=lambda: _go(box.value or ""))
+
+        if not query:
+            ui.label("Type a query to search your library semantically.").classes(
+                "m-4 text-gray-500"
+            )
+            return
+        if not clip_available():
+            ui.label(
+                "Semantic search needs CLIP (torch + open-clip-torch), which isn't "
+                "installed in this environment. Run the app in Docker to enable it."
+            ).classes("m-4 text-amber-600")
+            return
+
+        try:
+            photos = await nicegui_run.io_bound(_semantic_search_photos, settings, engine, query)
+        except ClipModelUnavailable:
+            ui.label("CLIP model could not be loaded.").classes("m-4 text-amber-600")
+            return
+        except Exception:
+            log.exception("semantic search failed")
+            ui.label("Search failed - see logs.").classes("m-4 text-red-500")
+            return
+
+        ui.label(f'{len(photos)} result(s) for "{query}"').classes("px-4 text-sm text-gray-500")
+        if not photos:
+            ui.label(
+                "No matches yet. Has the CLIP pass run? (python -m sortandpost.indexer --once)"
+            ).classes("m-4 text-gray-500")
+            return
+        with (
+            ui.grid()
+            .classes("gap-1 p-2")
+            .style("grid-template-columns: repeat(auto-fill, minmax(160px, 1fr))")
+        ):
+            for photo in photos:
+                _thumb_cell(photo, thumb_small)
 
     @ui.page("/review")
     def review() -> None:
@@ -159,6 +217,19 @@ def build_ui(settings: Settings) -> None:
         _header("/settings")
         ui.label("Settings & sync status - build-order step 7.").classes("m-4 text-gray-500")
         ui.label(f"device_id: {settings.device_id}").classes("m-4 text-xs text-gray-400")
+
+
+def _semantic_search_photos(settings: Settings, engine: Engine, query: str) -> list[Photo]:
+    """Runs off the event loop (``run.io_bound``): CLIP text-embed + ranked lookup."""
+    model = State.get_clip_model(settings)
+    with Session(engine) as session:
+        hits = semantic_search(session, settings, model, query, limit=_PAGE_SIZE)
+        order = {hit.pixel_hash: i for i, hit in enumerate(hits)}
+        if not order:
+            return []
+        photos = session.exec(select(Photo).where(col(Photo.pixel_hash).in_(list(order)))).all()
+        session.expunge_all()
+    return sorted(photos, key=lambda p: order[p.pixel_hash])
 
 
 def _thumb_sizes(settings: Settings) -> tuple[int, int]:

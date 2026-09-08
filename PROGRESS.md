@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-06 (end of build-order step 4)._
+_Last updated: 2026-09-08 (end of build-order step 5a)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). `main` PR not opened yet._
 
 ---
@@ -16,20 +16,29 @@ Building from the architecture spec in `CLAUDE.md`, following the 7-step
 | 2 | Metadata engine (exiftool `-stay_open` wrapper): read + rating write + round-trip tests | `f1598f8` | ✅ done |
 | 3 | Scanner + pixel hashing + thumbnails + `photos`/`photo_paths` + fast-path cache. Grid browsing works. | `94465f9` | ✅ done |
 | 4 | Sync layer: working-copy/atomic-publish, single-writer lock + heartbeat + read-only mode, snapshots, `changes` log, conflict-copy merge. Two-machine convergence test. | `270e2b8` | ✅ done |
-| 5 | **CLIP engine**: embedding memmap store + semantic search; then zero-shot vocab + `predictions` + `/review` UI. | — | ⏭️ **next** |
+| 5a | **CLIP embedding store + semantic search**: memmap matrix + rowmap, `ClipModel` wrapper (guarded import), deferred CLIP indexer pass (`scan_clip_once`) + `--reembed`, `search_by_vector`/`semantic_search`/`similar_to`, `/search` page. | — | ✅ done |
+| 5b | Zero-shot vocab (`tags.yaml` → cached text embeddings) + `predictions` + `/review` bulk approve/reject (EXIF write + `changes` rows). | — | ⏭️ **next** |
 | 6 | Watchers + periodic reconcile + EXIF reconciliation on re-index. | — | pending |
 | 7 | Polish: filters, duplicate detection (phash), settings, status bar. | — | pending |
 
 ### Current state of the codebase
 
-- **90 tests pass.** `ruff check`, `ruff format --check`, `mypy` all clean on
-  `src/sortandpost/{sync,indexer,db,hashing.py}`.
+- **108 tests pass.** `ruff check`, `ruff format --check`, `mypy` all clean on
+  `src/sortandpost/{sync,indexer,db,hashing.py,clip,search}`.
 - `alembic upgrade head` works and `alembic revision --autogenerate` produces an
-  **empty diff** (proves the create_all baseline matches the models).
-- Grid browsing works end-to-end (`/` thumbnail grid, `/photo/{pixel_hash}`
-  detail). `/search`, `/review`, `/settings` are still placeholders.
-- The indexer runs stages 1–6 via `python -m sortandpost.indexer --once`.
-  Stage 7 (CLIP) is a no-op until step 5.
+  **empty diff** (5a used only pre-existing `embedding_rows` / `embeddings_meta`
+  / `predictions` tables — no model changes).
+- Grid browsing + `/search` (semantic text search) work end-to-end.
+  `/review`, `/settings` are still placeholders.
+- `python -m sortandpost.indexer --once` runs stages 1–6 **then** the deferred
+  CLIP pass (`scan_clip_once`, stage 7 = image embeddings). `--reembed` rebuilds
+  the matrix. Both degrade to a clean skip when `torch`/`open-clip-torch` are
+  absent (the lightweight venv) — the real model path only runs in Docker or a
+  torch-equipped venv.
+- New modules: `sortandpost.clip.{model,store}` (guarded `open_clip` wrapper +
+  append-mostly memmap matrix at `sync/embeddings/img_<model>.npy` + `rowmap.json`
+  + `embeddings_meta` compat check), `sortandpost.search.{vector,service}`
+  (`rank`, `open_matrix`, `search_by_vector`, `semantic_search`, `similar_to`).
 - Sync layer is wired into `app.py` (read-only banner) and the
   `python -m sortandpost.db {snapshot,restore,merge}` CLI.
 
@@ -60,9 +69,8 @@ source .venv/bin/activate
 
 ruff check .
 ruff format --check .
-mypy src/sortandpost/sync src/sortandpost/indexer src/sortandpost/db src/sortandpost/hashing.py
-# add the step-5 packages once they exist:
-#   mypy ... src/sortandpost/clip src/sortandpost/search
+mypy src/sortandpost/sync src/sortandpost/indexer src/sortandpost/db src/sortandpost/hashing.py \
+     src/sortandpost/clip src/sortandpost/search
 pytest
 
 # alembic must stay clean (use a throwaway DB URL, then delete the generated file):
@@ -91,9 +99,31 @@ Spec: `CLAUDE.md` → "CLIP tagging & search", "Indexer pipeline" stage 7,
 "Database schema" (`embedding_rows`, `embeddings_meta`, `predictions`),
 "Frontend" (`/search`, `/review`).
 
-Do it in two sub-phases so browsing/search land before the vocab work:
+Do it in two sub-phases so browsing/search land before the vocab work.
 
-### 5a. Embedding store + semantic search
+### 5a. Embedding store + semantic search — ✅ DONE
+
+Landed as described below, with these notes:
+
+- `torch` + `open-clip-torch` are **not** in the venv. `clip/model.py` guards the
+  import (`clip_available()` / `ClipModelUnavailable`); `scan_clip_once` returns
+  `ClipStats(skipped_no_model=True)` when it's missing, and `/search` shows a
+  banner. The memmap store + ranking are tested directly with hand-made
+  `float32` vectors (`tests/test_clip_store.py`, `tests/test_search.py`); the
+  indexer pass is tested with a `FakeClipModel` (`tests/test_clip_scan.py`).
+- The `.npy` matrix is allocated with spare capacity (`_GROWTH_ROWS`, geometric
+  grow via tmp-file + `os.replace`); `len(store)` / `rowmap.json` are the
+  authoritative row count, `matrix()` slices to it.
+- `--once` now runs `scan_once` then `scan_clip_once`. `--reembed` clears
+  `embedding_rows` + `embeddings_meta` + the `Stage.CLIP` bits + the matrix
+  files, then re-runs.
+- Query text embedding is offloaded off the event loop via
+  `nicegui.run.io_bound`; the model is cached on `State.clip_model`.
+- **5b still to do:** zero-shot vocab, `predictions`, `/review`. `scan_clip_once`
+  currently writes embeddings only — layer prediction scoring into the same
+  batch loop.
+
+### 5a. Embedding store + semantic search (original plan)
 
 1. **`src/sortandpost/clip/` module** (currently just `__init__.py` stub):
    - `model.py` — thin wrapper around `open_clip` (`ViT-B-32` /
@@ -180,8 +210,9 @@ Do it in two sub-phases so browsing/search land before the vocab work:
 ## Handy commands
 
 ```bash
-# one full browsable scan pass (stages 1-6)
+# one full scan pass (stages 1-6) + deferred CLIP embedding pass (stage 7)
 python -m sortandpost.indexer --once
+python -m sortandpost.indexer --reembed        # rebuild the embedding matrix
 
 # DB maintenance
 python -m sortandpost.db snapshot

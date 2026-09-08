@@ -6,6 +6,14 @@ holds the write lock.
 """
 
 from sortandpost.indexer.pipeline import IndexOutcome, Stage, index_file
-from sortandpost.indexer.scan import ScanStats, scan_once
+from sortandpost.indexer.scan import ClipStats, ScanStats, scan_clip_once, scan_once
 
-__all__ = ["IndexOutcome", "ScanStats", "Stage", "index_file", "scan_once"]
+__all__ = [
+    "ClipStats",
+    "IndexOutcome",
+    "ScanStats",
+    "Stage",
+    "index_file",
+    "scan_clip_once",
+    "scan_once",
+]

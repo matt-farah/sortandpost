@@ -1,42 +1,38 @@
-"""CLIP engine: image embeddings + zero-shot tagging against the vocabulary.
+"""CLIP engine: image embeddings + (step 5b) zero-shot tagging.
 
-Embeddings are L2-normalized and stored as rows in a memory-mapped float32 matrix
-under ``sync/embeddings/``. See CLAUDE.md → "CLIP tagging & search".
-Implemented in build-order step 5.
+Embeddings are L2-normalized and stored as rows in a memory-mapped ``float32``
+matrix under ``sync/embeddings/``. See CLAUDE.md -> "CLIP tagging & search".
+
+* :mod:`sortandpost.clip.model` -- guarded ``open_clip`` wrapper (CPU).
+* :mod:`sortandpost.clip.store` -- the append-mostly embedding matrix + rowmap.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+from sortandpost.clip.model import (
+    ClipModel,
+    ClipModelUnavailable,
+    clip_available,
+    known_dim,
+)
+from sortandpost.clip.store import (
+    EmbeddingDimMismatch,
+    EmbeddingStore,
+    ModelMismatch,
+    check_compatible,
+    ensure_meta,
+    load_meta,
+)
 
-import numpy as np
-
-from sortandpost.config import ClipConfig, TaggingConfig
-
-
-@dataclass
-class Prediction:
-    tag: str
-    facet: str | None
-    score: float
-
-
-class ClipEngine:
-    def __init__(self, config: ClipConfig, cache_dir: Path) -> None:
-        self.config = config
-        self.cache_dir = cache_dir
-
-    def load(self) -> None:
-        raise NotImplementedError("build-order step 5: CLIP engine")
-
-    def embed_images(self, images: list[Path]) -> np.ndarray:
-        raise NotImplementedError("build-order step 5: CLIP engine")
-
-    def embed_text(self, prompts: list[str]) -> np.ndarray:
-        raise NotImplementedError("build-order step 5: CLIP engine")
-
-    def zero_shot(
-        self, image_embedding: np.ndarray, vocab: dict[str, list[str]], tagging: TaggingConfig
-    ) -> list[Prediction]:
-        raise NotImplementedError("build-order step 5: CLIP engine")
+__all__ = [
+    "ClipModel",
+    "ClipModelUnavailable",
+    "EmbeddingDimMismatch",
+    "EmbeddingStore",
+    "ModelMismatch",
+    "check_compatible",
+    "clip_available",
+    "ensure_meta",
+    "known_dim",
+    "load_meta",
+]

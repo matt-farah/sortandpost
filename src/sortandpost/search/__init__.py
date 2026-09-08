@@ -3,33 +3,29 @@
 Brute-force cosine (dot product on normalized rows) via NumPy, memory-mapped.
 Target <= ~25k photos. If the library outgrows that, add an on-disk ANN index
 behind this same interface without changing it. See CLAUDE.md.
-Implemented in build-order step 5.
+
+* :mod:`sortandpost.search.vector` -- matrix open + ``rank`` primitive.
+* :mod:`sortandpost.search.service` -- ``semantic_search`` / ``similar_to``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+from sortandpost.search.service import (
+    SearchHit,
+    TextEncoder,
+    search_by_vector,
+    semantic_search,
+    similar_to,
+)
+from sortandpost.search.vector import load_rowmap, open_matrix, rank
 
-import numpy as np
-
-
-@dataclass
-class SearchHit:
-    pixel_hash: str
-    score: float
-
-
-class VectorIndex:
-    def __init__(self, matrix_path: Path, rowmap_path: Path) -> None:
-        self.matrix_path = matrix_path
-        self.rowmap_path = rowmap_path
-
-    def open(self) -> None:
-        raise NotImplementedError("build-order step 5: vector search")
-
-    def append(self, pixel_hash: str, embedding: np.ndarray) -> int:
-        raise NotImplementedError("build-order step 5: vector search")
-
-    def query(self, embedding: np.ndarray, *, limit: int = 200) -> list[SearchHit]:
-        raise NotImplementedError("build-order step 5: vector search")
+__all__ = [
+    "SearchHit",
+    "TextEncoder",
+    "load_rowmap",
+    "open_matrix",
+    "rank",
+    "search_by_vector",
+    "semantic_search",
+    "similar_to",
+]
