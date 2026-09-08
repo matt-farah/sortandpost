@@ -23,6 +23,7 @@ from pathlib import Path
 from sqlmodel import Session, col, select
 
 from sortandpost.db.models import Photo, PhotoPath, ScanState
+from sortandpost.dedup import dhash
 from sortandpost.hashing import pixel_hash_of_image
 from sortandpost.indexer.decode import DecodeError, load_image
 from sortandpost.indexer.reconcile import ReconcileOutcome, reconcile_metadata
@@ -116,6 +117,12 @@ def index_file(
         new_photo = _upsert_photo(session, pixel_hash, path, st, width, height, fmt, now)
         _upsert_path(session, pixel_hash, path, st)
         scan.pixel_hash = pixel_hash
+
+        # perceptual hash for near-duplicate detection (step 7); deterministic,
+        # so compute once and backfill on any later re-decode.
+        photo_row = session.get(Photo, pixel_hash)
+        if photo_row is not None and photo_row.phash is None:
+            photo_row.phash = dhash(img)
 
         # -- stage 4: thumbnails ----------------------------------------- #
         try:

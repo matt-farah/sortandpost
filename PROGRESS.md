@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-08 (end of build-order step 6 — continuous indexer + EXIF reconciliation)._
+_Last updated: 2026-09-08 (end of build-order step 7 — **all 7 steps complete**)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). `main` PR not opened yet._
 
 ---
@@ -8,7 +8,9 @@ _Working branch: `scaffold` (pushed to `origin/scaffold`). `main` PR not opened 
 ## Where we are
 
 Building from the architecture spec in `CLAUDE.md`, following the 7-step
-**Suggested build order**. Steps 1–4 are complete, committed, and pushed.
+**Suggested build order**. **All 7 steps are complete, committed, and pushed**
+to `origin/scaffold`. Remaining work is a `scaffold → main` PR and testing the
+real (torch / Docker) paths — see "Open threads".
 
 | Step | What | Commit | Status |
 |------|------|--------|--------|
@@ -18,19 +20,20 @@ Building from the architecture spec in `CLAUDE.md`, following the 7-step
 | 4 | Sync layer: working-copy/atomic-publish, single-writer lock + heartbeat + read-only mode, snapshots, `changes` log, conflict-copy merge. Two-machine convergence test. | `270e2b8` | ✅ done |
 | 5a | **CLIP embedding store + semantic search**: memmap matrix + rowmap, `ClipModel` wrapper (guarded import), deferred CLIP indexer pass (`scan_clip_once`) + `--reembed`, `search_by_vector`/`semantic_search`/`similar_to`, `/search` page. | `b9f9cfb` | ✅ done |
 | 5b | **Zero-shot vocab + predictions + `/review`**: `tags.yaml` → cached text-embedding matrix (keyed by vocab hash), per-photo scoring folded into `scan_clip_once`, `predictions` rows, `/review` bulk approve/reject (approve ⇒ `photo_tags` + EXIF keyword union + `changes`; reject sticky). | `95abfd9` | ✅ done |
-| 6 | **Continuous indexer + EXIF reconciliation**: pipeline stage 6 real (rating file↔DB with mtime tie-break + `rate` change rows; additive keyword import), `run_indexer` loop (timer + debounced `watchdog` FS events, gated on the write lock), standalone `python -m sortandpost.indexer` (no flag) + in-app thread. | — | ✅ done |
-| 7 | Polish: filters, duplicate detection (phash), settings, status bar. | — | ⏭️ **next** |
+| 6 | **Continuous indexer + EXIF reconciliation**: pipeline stage 6 real (rating file↔DB with mtime tie-break + `rate` change rows; additive keyword import), `run_indexer` loop (timer + debounced `watchdog` FS events, gated on the write lock), standalone `python -m sortandpost.indexer` (no flag) + in-app thread. | `405efbc` | ✅ done |
+| 7 | **Polish**: dHash near-duplicate detection (`sortandpost.dedup`), structured `PhotoFilter` (stars / GPS / camera / date / tags / duplicates) wired into `/search` + query-less filtered browse, real `/settings` page (sync + CLIP status, "run pass now"), persistent status-bar footer. | — | ✅ done |
 
 ### Current state of the codebase
 
-- **135 tests pass.** `ruff check`, `ruff format --check`, `mypy` all clean on
-  `src/sortandpost/{sync,indexer,db,hashing.py,clip,search}`.
+- **151 tests pass.** `ruff check`, `ruff format --check`, `mypy` all clean on
+  `src/sortandpost/{sync,indexer,db,hashing.py,clip,search,dedup.py}`.
 - `alembic upgrade head` works and `alembic revision --autogenerate` produces an
-  **empty diff** (steps 5–6 used only pre-existing tables — no model changes;
-  step 6 added *config* fields only).
-- The **CLIP engine (step 5) is complete** and the **indexer is continuous
-  (step 6)**. Grid browsing, `/search`, `/review` all work end-to-end.
-  `/settings` is still a placeholder.
+  **empty diff** (steps 5–7 used only pre-existing tables — no model changes;
+  `photos.phash` was already in the baseline, step 7 just populates it).
+- **All pages are real**: `/` grid, `/photo/{hash}`, `/search` (semantic +
+  structured filters + query-less filtered browse), `/review` (bulk
+  approve/reject), `/settings` (sync + CLIP status, "run indexer pass now"),
+  plus a persistent status-bar footer on every page.
 - **Indexer entrypoints** (`python -m sortandpost.indexer`):
   - no flag → **continuous**: `init_db`, then `SyncManager.start()` (acquire the
     write lock + start publish/heartbeat), then `run_indexer` — a full reconcile
@@ -47,10 +50,22 @@ Building from the architecture spec in `CLAUDE.md`, following the 7-step
   is written out. `XMP:Subject` keywords not yet on the photo are imported as
   `manual` tags (+ `tag_add` change rows); import is additive, never deletes.
   RAW files are never read back or written (hard constraint #2).
-- New / changed modules this step: `sortandpost.indexer.{reconcile,service}`;
-  `index_file` gained a `device_id` arg and an `IndexOutcome.reconcile` field;
-  `make_engine` now sets `PRAGMA busy_timeout=5000` (app + indexer + publisher
-  share the file); `IndexerConfig` gained `run_in_app` / `watch` / `debounce_sec`.
+- Step-6 modules: `sortandpost.indexer.{reconcile,service}`; `index_file` gained
+  a `device_id` arg + an `IndexOutcome.reconcile` field; `make_engine` sets
+  `PRAGMA busy_timeout=5000`; `IndexerConfig` gained `run_in_app` / `watch` /
+  `debounce_sec`.
+- **Step 7 modules**:
+  - `sortandpost.dedup` — `dhash(image)` (64-bit row difference hash, hex),
+    `hamming`, `find_duplicate_groups(session, max_distance=8)` (vectorised SWAR
+    popcount + union-find). The indexer computes `photos.phash` from the decoded
+    image (idempotent; backfilled on any later re-decode).
+  - `sortandpost.search.filters` — `PhotoFilter` (min_stars, has_gps, camera
+    substring, date range, tags_all / tags_any, only_duplicates, include_missing)
+    → `allowed_hashes()` (a `pixel_hash` set, or `None` = "no constraint");
+    `browse_photos()` for the query-less `/search` path. `search_by_vector` /
+    `semantic_search` / `similar_to` all take `flt=`.
+  - `app.py` — `/search` filter row (+ URL params), real `/settings`,
+    `_status_bar()` footer polled every 5s, `State.engine` / `State.settings`.
 - Sync layer is wired into `app.py` (read-only banner disables `/review`
   actions; in-app indexer thread) and the
   `python -m sortandpost.db {snapshot,restore,merge}` CLI.
@@ -66,17 +81,6 @@ Building from the architecture spec in `CLAUDE.md`, following the 7-step
   `indexer.service`). `exiftool` is on PATH via Homebrew. `numpy` + `zstandard`
   are in the venv. The continuous indexer runs timer-only without `watchdog`;
   FS-event debouncing is unit-tested with an injected clock.
-- **Step 5 will need `numpy` (already installed) and `open-clip-torch` + `torch`.**
-  Torch is large (~200 MB+). Decide at the start of step 5 whether to:
-  - install `torch` + `open-clip-torch` into `.venv` so the CLIP engine can be
-    unit-tested for real, **or**
-  - keep them out and guard the import like `rawpy`/`pillow-heif`
-    (`try: import ... except ModuleNotFoundError`), unit-testing only the
-    memmap store / search math with hand-made `float32` arrays and running the
-    real model path in Docker. **Recommended: guard the import + test the
-    numpy/memmap layer directly** (matches the pattern already used for
-    `rawpy`, `pillow_heif`).
-
 ### Quality gate (run before every commit)
 
 ```bash
@@ -85,7 +89,7 @@ source .venv/bin/activate
 ruff check .
 ruff format --check .
 mypy src/sortandpost/sync src/sortandpost/indexer src/sortandpost/db src/sortandpost/hashing.py \
-     src/sortandpost/clip src/sortandpost/search
+     src/sortandpost/clip src/sortandpost/search src/sortandpost/dedup.py
 pytest
 
 # alembic must stay clean (use a throwaway DB URL, then delete the generated file):
@@ -275,18 +279,28 @@ pytest tests/test_sync_merge.py::test_two_machine_merge_converges -q
 
 ## Open threads / not blocking
 
-- `scaffold` → `main` PR not opened. `gh` CLI not installed. Compare URL:
+The 7-step build order is done. What's left is verification + a PR, not features:
+
+- **`scaffold` → `main` PR not opened.** `gh` CLI not installed. Compare URL:
   `https://github.com/matt-farah/sortandpost/compare/main...scaffold?expand=1`
-- Docker not installed on this machine — `docker compose up --build` untested.
-  The real CLIP model path (`open_clip` load + inference) is unexercised here;
-  only the guarded-skip fallbacks and the numpy/DB layers are tested.
-- Deferred by design: grid virtualization / infinite scroll (step 7),
-  process-pool concurrency for decode/hash/CLIP (later optimization — currently
-  single-threaded sequential), per-photo (not just per-tag) review controls +
-  facet grouping in `/review` (step 7 polish), a shared/serialized exiftool
-  client for `/review` approvals (currently one `-stay_open` process per bulk
-  action), FS events triggering a *targeted* rescan of just the changed subtree
-  (step 6 does a debounced full `scan_once` instead — correct, just not minimal).
+- **Docker / real-model paths untested here.** Docker isn't installed on this
+  machine, and `torch` / `open-clip-torch` / `nicegui` / `rawpy` / `pillow-heif`
+  / `watchdog` aren't in the venv. Unexercised: the real CLIP load + inference,
+  the NiceGUI pages rendering, RAW decode, HEIC decode, `watchdog` FS events.
+  All are behind guarded imports with tested fallbacks; a `docker compose up`
+  pass is the acceptance test.
+- **Not built (deliberately):** grid virtualization / infinite scroll (`/` still
+  paginates), process-pool concurrency for decode/hash/CLIP (single-threaded
+  sequential), per-photo (not just per-tag) `/review` controls + facet grouping,
+  a shared/serialized exiftool client for `/review` approvals (one `-stay_open`
+  process per bulk action), FS events triggering a *targeted* subtree rescan
+  (currently a debounced full `scan_once` — correct, just not minimal),
+  `PhotoFilter` date-range + tag AND/OR widgets in the `/search` UI (the model
+  and `allowed_hashes` support them; only stars/camera/GPS/dupes/missing are
+  wired to inputs).
 - The in-app indexer thread reads `manager.mode` without re-checking the lock
   (the app never calls `manager.refresh()`); a session that starts read-only
   stays non-indexing until restarted. The standalone entrypoint does re-check.
+- dHash is weak on near-flat images (a solid-colour frame hashes to all-zero, so
+  solid frames cluster together). Real photos have gradients; unit tests use
+  them. Not worth a fix.

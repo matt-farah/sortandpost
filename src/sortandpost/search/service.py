@@ -1,9 +1,9 @@
-"""Semantic search over the CLIP image-embedding matrix (build-order step 5a).
+"""Semantic search over the CLIP image-embedding matrix.
 
 ``semantic_search`` : query text -> CLIP text embedding -> dot product vs. the
-memmap matrix -> ranked ``pixel_hash`` list. ``similar_to`` does the same from a
-stored image row ("more like this"). Filters are minimal here (missing photos are
-dropped by default); the full filter set is build-order step 7.
+memmap matrix -> ranked ``pixel_hash`` list, intersected with a
+:class:`~sortandpost.search.filters.PhotoFilter`. ``similar_to`` does the same
+from a stored image row ("more like this").
 
 The text-embed step is CLIP inference and must not run on the web event loop --
 callers on the UI side offload it (``nicegui.run.io_bound``). This module itself
@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
-from sqlmodel import Session, col, select
+from sqlmodel import Session
 
 from sortandpost.config import Settings
-from sortandpost.db.models import Photo
+from sortandpost.search.filters import PhotoFilter, allowed_hashes
 from sortandpost.search.vector import load_rowmap, open_matrix, rank
 
 
@@ -33,6 +33,12 @@ class TextEncoder(Protocol):
     def encode_text(self, texts: list[str]) -> np.ndarray: ...
 
 
+def _resolve_filter(flt: PhotoFilter | None, include_missing: bool) -> PhotoFilter:
+    if flt is not None:
+        return flt
+    return PhotoFilter(include_missing=include_missing)
+
+
 def search_by_vector(
     session: Session,
     settings: Settings,
@@ -40,6 +46,7 @@ def search_by_vector(
     *,
     limit: int = 200,
     include_missing: bool = False,
+    flt: PhotoFilter | None = None,
 ) -> list[SearchHit]:
     model = settings.config.clip.model
     rows = load_rowmap(settings.paths.embeddings_rowmap_file)
@@ -49,22 +56,17 @@ def search_by_vector(
     if matrix is None or matrix.size == 0:
         return []
 
-    # Over-fetch so post-filtering (missing photos) can still fill `limit`.
-    over = limit if include_missing else min(len(rows), max(limit * 4, limit + 50))
-    ranked = rank(matrix, query_vec, limit=over)
-
-    present: set[str] | None = None
-    if not include_missing:
-        present = set(
-            session.exec(select(Photo.pixel_hash).where(col(Photo.missing_since).is_(None))).all()
-        )
+    allowed = allowed_hashes(session, _resolve_filter(flt, include_missing))
+    # Over-fetch so post-filtering can still fill `limit`.
+    over = len(rows) if allowed is not None else max(limit * 2, limit + 50)
+    ranked = rank(matrix, query_vec, limit=min(len(rows), over))
 
     hits: list[SearchHit] = []
     for row_index, score in ranked:
         if row_index >= len(rows):
             continue
         pixel_hash = rows[row_index]
-        if present is not None and pixel_hash not in present:
+        if allowed is not None and pixel_hash not in allowed:
             continue
         hits.append(SearchHit(pixel_hash=pixel_hash, score=score))
         if len(hits) >= limit:
@@ -80,6 +82,7 @@ def semantic_search(
     *,
     limit: int = 200,
     include_missing: bool = False,
+    flt: PhotoFilter | None = None,
 ) -> list[SearchHit]:
     text = query.strip()
     if not text:
@@ -88,7 +91,7 @@ def semantic_search(
     if qvec.shape[0] == 0:
         return []
     return search_by_vector(
-        session, settings, qvec[0], limit=limit, include_missing=include_missing
+        session, settings, qvec[0], limit=limit, include_missing=include_missing, flt=flt
     )
 
 
@@ -99,6 +102,7 @@ def similar_to(
     *,
     limit: int = 50,
     include_missing: bool = False,
+    flt: PhotoFilter | None = None,
 ) -> list[SearchHit]:
     model = settings.config.clip.model
     rows = load_rowmap(settings.paths.embeddings_rowmap_file)
@@ -110,6 +114,11 @@ def similar_to(
     if matrix is None or idx >= matrix.shape[0]:
         return []
     hits = search_by_vector(
-        session, settings, matrix[idx], limit=limit + 1, include_missing=include_missing
+        session,
+        settings,
+        matrix[idx],
+        limit=limit + 1,
+        include_missing=include_missing,
+        flt=flt,
     )
     return [h for h in hits if h.pixel_hash != pixel_hash][:limit]
