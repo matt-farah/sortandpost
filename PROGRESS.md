@@ -5,6 +5,48 @@ _Working branch: `scaffold` (pushed to `origin/scaffold`). `main` PR not opened 
 
 ---
 
+## ▶️ NEXT SESSION — start here: integration testing
+
+The build is feature-complete (151 unit tests green). Next session is **testing
+the real deps**, not writing features. Everything below is unverified because
+`torch` / `open-clip-torch` / `nicegui` / `rawpy` / `pillow-heif` / `watchdog`
+are not in the lightweight venv and Docker is not installed on this machine.
+
+**Plan (in order):**
+
+1. **Bring up the container.** `cp .env.example .env`, set `PHOTO_LIBRARY` to a
+   small real folder (~50 mixed JP/HEIC/RAW), `APP_DATA` to a scratch dir, then
+   `docker compose up --build`. Fix whatever breaks in `Dockerfile` /
+   `docker-compose.yml` (exiftool, libraw, torch wheels, arm64).
+2. **First index.** Watch the logs: stages 1–6 then the CLIP pass. Confirm
+   `APP_DATA/sync/` fills in (`sortandpost.db`, `thumbnails/`, `embeddings/`,
+   `.sortandpost.lock`, a snapshot after N publishes).
+3. **Web UI smoke** at `http://localhost:8080`: `/` grid + `/photo/{hash}`,
+   `/search` (a real text query → results; then filters-only browse; dupes
+   toggle), `/review` (approve a tag → check the file's `XMP:Subject` with
+   `exiftool`, and a `changes` row), `/settings` (all fields populate; "run
+   indexer pass now"), the status-bar footer ticking.
+4. **Real-model checks:** `python -m sortandpost.indexer --reembed` inside the
+   container; semantic search quality is sane; RAW files decode via embedded
+   preview and are never written (grep logs / check mtimes).
+5. **Watchers:** drop a new file into the library, confirm the debounced rescan
+   picks it up within ~`debounce_sec + a cycle`.
+6. **Sync round-trip (optional):** copy `APP_DATA/sync/` to a second dir, point a
+   second container at it, confirm no rebuild + read-only banner while the first
+   holds the lock.
+7. **Then open the PR:** `scaffold → main`
+   (`https://github.com/matt-farah/sortandpost/compare/main...scaffold?expand=1`).
+   `gh` is not installed — install it or open via the web UI.
+
+**Likely first bugs to expect:** Dockerfile dependency/versions; NiceGUI page
+signature/param coercion for the new `/search` query params (`gps=true` etc.);
+`ui.timer` / `ui.footer` / `ui.select` API drift; `run.io_bound` + a shared
+SQLAlchemy engine across threads under real load (busy_timeout should cover it).
+
+Full caveat list is in **"Open threads / not blocking"** near the bottom.
+
+---
+
 ## Where we are
 
 Building from the architecture spec in `CLAUDE.md`, following the 7-step
