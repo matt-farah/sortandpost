@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-08 (end of build-order step 5b — CLIP engine complete)._
+_Last updated: 2026-09-08 (end of build-order step 6 — continuous indexer + EXIF reconciliation)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). `main` PR not opened yet._
 
 ---
@@ -17,41 +17,43 @@ Building from the architecture spec in `CLAUDE.md`, following the 7-step
 | 3 | Scanner + pixel hashing + thumbnails + `photos`/`photo_paths` + fast-path cache. Grid browsing works. | `94465f9` | ✅ done |
 | 4 | Sync layer: working-copy/atomic-publish, single-writer lock + heartbeat + read-only mode, snapshots, `changes` log, conflict-copy merge. Two-machine convergence test. | `270e2b8` | ✅ done |
 | 5a | **CLIP embedding store + semantic search**: memmap matrix + rowmap, `ClipModel` wrapper (guarded import), deferred CLIP indexer pass (`scan_clip_once`) + `--reembed`, `search_by_vector`/`semantic_search`/`similar_to`, `/search` page. | `b9f9cfb` | ✅ done |
-| 5b | **Zero-shot vocab + predictions + `/review`**: `tags.yaml` → cached text-embedding matrix (keyed by vocab hash), per-photo scoring folded into `scan_clip_once`, `predictions` rows, `/review` bulk approve/reject (approve ⇒ `photo_tags` + EXIF keyword union + `changes`; reject sticky). | — | ✅ done |
-| 6 | Watchers + periodic reconcile + EXIF reconciliation on re-index. | — | ⏭️ **next** |
-| 7 | Polish: filters, duplicate detection (phash), settings, status bar. | — | pending |
+| 5b | **Zero-shot vocab + predictions + `/review`**: `tags.yaml` → cached text-embedding matrix (keyed by vocab hash), per-photo scoring folded into `scan_clip_once`, `predictions` rows, `/review` bulk approve/reject (approve ⇒ `photo_tags` + EXIF keyword union + `changes`; reject sticky). | `95abfd9` | ✅ done |
+| 6 | **Continuous indexer + EXIF reconciliation**: pipeline stage 6 real (rating file↔DB with mtime tie-break + `rate` change rows; additive keyword import), `run_indexer` loop (timer + debounced `watchdog` FS events, gated on the write lock), standalone `python -m sortandpost.indexer` (no flag) + in-app thread. | — | ✅ done |
+| 7 | Polish: filters, duplicate detection (phash), settings, status bar. | — | ⏭️ **next** |
 
 ### Current state of the codebase
 
-- **121 tests pass.** `ruff check`, `ruff format --check`, `mypy` all clean on
+- **135 tests pass.** `ruff check`, `ruff format --check`, `mypy` all clean on
   `src/sortandpost/{sync,indexer,db,hashing.py,clip,search}`.
 - `alembic upgrade head` works and `alembic revision --autogenerate` produces an
-  **empty diff** (step 5 used only pre-existing `embedding_rows` /
-  `embeddings_meta` / `predictions` / `tags` / `photo_tags` / `changes` tables —
-  no model changes).
-- The **CLIP engine (step 5) is complete**. Grid browsing, `/search` (semantic
-  text search) and `/review` (bulk approve/reject of pending predictions) all
-  work end-to-end. `/settings` is still a placeholder.
-- `python -m sortandpost.indexer --once` runs stages 1–6 **then** the deferred
-  CLIP pass: image embedding + zero-shot scoring against `tags.yaml`, writing
-  `predictions(state='pending')`. `--reembed` rebuilds the matrix and re-scores,
-  keeping approved/rejected predictions. Both degrade to a clean skip when
-  `torch`/`open-clip-torch` are absent (the lightweight venv) — the real model
-  path only runs in Docker or a torch-equipped venv.
-- New modules:
-  - `sortandpost.clip.{model,store}` — guarded `open_clip` wrapper +
-    append-mostly memmap matrix at `sync/embeddings/img_<model>.npy` +
-    `rowmap.json` + `embeddings_meta` compat check.
-  - `sortandpost.clip.vocab` — `load_vocab(tags.yaml)` (ordered, de-duped,
-    content hash) + `ensure_text_matrix` (mean of prompt-template encodings,
-    L2-normalized, cached to `text_<model>_<vocabhash>.npy`).
-  - `sortandpost.clip.tagging` — `pick_terms` / `upsert_prediction` (scoring,
-    used by the indexer) and `pending_groups` / `approve` / `reject` (the
-    `/review` flow; every decision emits a `changes` row, hard constraint #4).
-  - `sortandpost.search.{vector,service}` — `rank`, `open_matrix`,
-    `search_by_vector`, `semantic_search`, `similar_to`.
+  **empty diff** (steps 5–6 used only pre-existing tables — no model changes;
+  step 6 added *config* fields only).
+- The **CLIP engine (step 5) is complete** and the **indexer is continuous
+  (step 6)**. Grid browsing, `/search`, `/review` all work end-to-end.
+  `/settings` is still a placeholder.
+- **Indexer entrypoints** (`python -m sortandpost.indexer`):
+  - no flag → **continuous**: `init_db`, then `SyncManager.start()` (acquire the
+    write lock + start publish/heartbeat), then `run_indexer` — a full reconcile
+    `scan_once` + CLIP pass on the `full_scan_interval_min` timer and on
+    debounced `watchdog` FS events. Skips every cycle while another machine holds
+    the lock. Ctrl-C → clean stop, lock released. `--no-watch` for timer-only.
+  - `--once` → one `scan_once` + one `scan_clip_once`, exit.
+  - `--reembed` → rebuild the CLIP matrix + re-score (keeps approve/reject).
+  - The web app runs the same loop in a daemon thread when
+    `indexer.run_in_app: true` (default) **and** it started as the writer.
+- **Pipeline stage 6 is real** (`sortandpost.indexer.reconcile`): on re-index,
+  file `XMP:Rating` vs the `ratings` row — file `mtime` newer ⇒ file wins
+  (import + `rate` change row), else DB wins (rewrite the file); a DB-only rating
+  is written out. `XMP:Subject` keywords not yet on the photo are imported as
+  `manual` tags (+ `tag_add` change rows); import is additive, never deletes.
+  RAW files are never read back or written (hard constraint #2).
+- New / changed modules this step: `sortandpost.indexer.{reconcile,service}`;
+  `index_file` gained a `device_id` arg and an `IndexOutcome.reconcile` field;
+  `make_engine` now sets `PRAGMA busy_timeout=5000` (app + indexer + publisher
+  share the file); `IndexerConfig` gained `run_in_app` / `watch` / `debounce_sec`.
 - Sync layer is wired into `app.py` (read-only banner disables `/review`
-  actions) and the `python -m sortandpost.db {snapshot,restore,merge}` CLI.
+  actions; in-app indexer thread) and the
+  `python -m sortandpost.db {snapshot,restore,merge}` CLI.
 
 ---
 
@@ -60,8 +62,10 @@ Building from the architecture spec in `CLAUDE.md`, following the 7-step
 - Python 3.12 target; local dev on **3.13** in a gitignored `.venv/`.
 - **Lightweight test venv** — only lightweight deps are installed. Heavy deps
   (`nicegui`, `rawpy`, `pillow-heif`, `torch`, `open-clip-torch`, `watchdog`)
-  are **NOT** installed. `exiftool` is on PATH via Homebrew. `zstandard` was
-  added to the venv during step 4.
+  are **NOT** installed and are guarded imports (`clip.model`, `indexer.decode`,
+  `indexer.service`). `exiftool` is on PATH via Homebrew. `numpy` + `zstandard`
+  are in the venv. The continuous indexer runs timer-only without `watchdog`;
+  FS-event debouncing is unit-tested with an injected clock.
 - **Step 5 will need `numpy` (already installed) and `open-clip-torch` + `torch`.**
   Torch is large (~200 MB+). Decide at the start of step 5 whether to:
   - install `torch` + `open-clip-torch` into `.venv` so the CLIP engine can be
@@ -250,6 +254,9 @@ Landed as described below, with these notes:
 ## Handy commands
 
 ```bash
+# continuous: acquire the write lock, then scan + CLIP on a timer and on FS events
+python -m sortandpost.indexer                   # Ctrl-C to stop; --no-watch for timer only
+
 # one full scan pass (stages 1-6) + deferred CLIP pass (embed + zero-shot score)
 python -m sortandpost.indexer --once
 python -m sortandpost.indexer --reembed   # rebuild the matrix + re-score (keeps approve/reject)
@@ -273,10 +280,13 @@ pytest tests/test_sync_merge.py::test_two_machine_merge_converges -q
 - Docker not installed on this machine — `docker compose up --build` untested.
   The real CLIP model path (`open_clip` load + inference) is unexercised here;
   only the guarded-skip fallbacks and the numpy/DB layers are tested.
-- Deferred by design: continuous indexer + watchers (step 6), EXIF
-  reconciliation on re-index (step 6), grid virtualization / infinite scroll
-  (step 7), process-pool concurrency for decode/hash/CLIP (later optimization —
-  currently single-threaded sequential), per-photo (not just per-tag) review
-  controls + facet grouping in `/review` (step 7 polish), a shared/serialized
-  exiftool client for `/review` approvals (currently one `-stay_open` process
-  per bulk action).
+- Deferred by design: grid virtualization / infinite scroll (step 7),
+  process-pool concurrency for decode/hash/CLIP (later optimization — currently
+  single-threaded sequential), per-photo (not just per-tag) review controls +
+  facet grouping in `/review` (step 7 polish), a shared/serialized exiftool
+  client for `/review` approvals (currently one `-stay_open` process per bulk
+  action), FS events triggering a *targeted* rescan of just the changed subtree
+  (step 6 does a debounced full `scan_once` instead — correct, just not minimal).
+- The in-app indexer thread reads `manager.mode` without re-checking the lock
+  (the app never calls `manager.refresh()`); a session that starts read-only
+  stays non-indexing until restarted. The standalone entrypoint does re-check.

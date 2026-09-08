@@ -57,13 +57,23 @@ class ScanStats:
     errors: int = 0
     marked_absent: int = 0
     marked_missing: int = 0
+    ratings_imported: int = 0
+    ratings_written: int = 0
+    keywords_imported: int = 0
 
     def __str__(self) -> str:
+        reconciled = ""
+        if self.ratings_imported or self.ratings_written or self.keywords_imported:
+            reconciled = (
+                f"; reconciled {self.ratings_imported} ratings in / "
+                f"{self.ratings_written} out, {self.keywords_imported} keywords in"
+            )
         return (
             f"{self.seen} files seen, {self.indexed} indexed "
             f"({self.new_photos} new, {self.thumbnails} thumbnails), "
             f"{self.skipped} unchanged, {self.errors} errors; "
             f"{self.marked_absent} paths now absent, {self.marked_missing} photos now missing"
+            f"{reconciled}"
         )
 
 
@@ -101,7 +111,14 @@ def scan_once(settings: Settings) -> ScanStats:
             seen_paths.add(str(path))
             stats.seen += 1
             try:
-                outcome = index_file(session, path, config=pcfg, exiftool=exiftool, now=_utcnow())
+                outcome = index_file(
+                    session,
+                    path,
+                    config=pcfg,
+                    exiftool=exiftool,
+                    device_id=settings.device_id,
+                    now=_utcnow(),
+                )
                 session.commit()
             except Exception as exc:  # never let one bad file kill the pass
                 session.rollback()
@@ -131,6 +148,10 @@ def _tally(stats: ScanStats, outcome: IndexOutcome) -> None:
         stats.thumbnails += len(outcome.thumbnails_written)
         if outcome.new_photo:
             stats.new_photos += 1
+    if outcome.reconcile is not None:
+        stats.ratings_imported += int(outcome.reconcile.rating_imported)
+        stats.ratings_written += int(outcome.reconcile.rating_written)
+        stats.keywords_imported += outcome.reconcile.keywords_imported
 
 
 def _record_failure(session: Session, path: Path, exc: BaseException) -> None:

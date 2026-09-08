@@ -25,6 +25,7 @@ from sqlmodel import Session, col, select
 from sortandpost.db.models import Photo, PhotoPath, ScanState
 from sortandpost.hashing import pixel_hash_of_image
 from sortandpost.indexer.decode import DecodeError, load_image
+from sortandpost.indexer.reconcile import ReconcileOutcome, reconcile_metadata
 from sortandpost.indexer.thumbnails import ThumbPathFn, write_thumbnails
 from sortandpost.metadata import EmbeddedMetadata, ExiftoolClient, MetadataError, is_raw
 
@@ -53,6 +54,7 @@ class IndexOutcome:
     skipped: bool = False
     new_photo: bool = False
     thumbnails_written: tuple[int, ...] = ()
+    reconcile: ReconcileOutcome | None = None
     error: str | None = None
 
 
@@ -73,6 +75,7 @@ def index_file(
     *,
     config: PipelineConfig,
     exiftool: ExiftoolClient | None,
+    device_id: str,
     now: datetime,
 ) -> IndexOutcome:
     """Run stages 1-6 for one file. Caller commits; caller handles the sweep."""
@@ -134,16 +137,31 @@ def index_file(
         img.close()
 
     # -- stage 5: embedded metadata (best effort) --------------------------- #
+    md: EmbeddedMetadata | None = None
     if exiftool is not None:
         try:
-            _apply_metadata(session, pixel_hash, exiftool.read(path))
+            md = exiftool.read(path)
+            _apply_metadata(session, pixel_hash, md)
         except MetadataError as exc:
             log.warning("metadata read failed for %s: %s", path, exc)
+            md = None
 
-    # -- stage 6: rating reconcile ---------------------------------------- #
-    # File-vs-DB rating reconciliation needs the `changes` log (build-order
-    # step 4) and its own tie-break rules (step 6). Nothing to do yet; the
-    # stage bit is set so the fast path treats the file as fully browsable.
+    # -- stage 6: rating / keyword reconcile (file vs DB) ------------------ #
+    reconcile: ReconcileOutcome | None = None
+    if md is not None:
+        try:
+            reconcile = reconcile_metadata(
+                session,
+                pixel_hash=pixel_hash,
+                path=path,
+                md=md,
+                exiftool=exiftool,
+                device_id=device_id,
+                file_mtime_ns=st.st_mtime_ns,
+                now=now,
+            )
+        except MetadataError as exc:
+            log.warning("metadata reconcile failed for %s: %s", path, exc)
 
     scan.stages_done = int(Stage.BROWSABLE)
     scan.indexed_at = now
@@ -153,6 +171,7 @@ def index_file(
         pixel_hash=pixel_hash,
         new_photo=new_photo,
         thumbnails_written=written,
+        reconcile=reconcile,
     )
 
 

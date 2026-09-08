@@ -39,6 +39,9 @@ indexer:
   full_scan_interval_min: 15
   workers: auto                   # "auto" -> cpu_count - 1
   clip_deferred: true             # make photos browsable first, run CLIP after
+  run_in_app: true                # run the continuous indexer inside the web app process
+  watch: true                     # react to filesystem events (needs `watchdog`), not just the timer
+  debounce_sec: 2.0               # quiet period after an FS event before a rescan
 
 rating:
   write_windows_compat_tags: true

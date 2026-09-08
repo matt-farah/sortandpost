@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from urllib.parse import quote
@@ -32,6 +33,7 @@ from sortandpost.config import Settings
 from sortandpost.db import init_db, make_engine
 from sortandpost.db.browse import get_paths, get_photo, get_rating, list_photos, photo_count
 from sortandpost.db.models import Photo, Prediction, PredictionState
+from sortandpost.indexer.service import run_indexer
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.search.service import semantic_search
 from sortandpost.sync import SyncManager, WriteMode
@@ -95,6 +97,9 @@ def build_ui(settings: Settings) -> None:
         log.exception("sync layer failed to start; continuing read-only")
     State.apply(manager)
     nicegui_app.on_shutdown(manager.stop)
+
+    if settings.config.indexer.run_in_app and State.write_mode == WriteMode.writable:
+        _start_indexer_thread(settings, manager)
 
     settings.paths.thumbnails_dir.mkdir(parents=True, exist_ok=True)
     nicegui_app.add_static_files(_THUMB_URL, str(settings.paths.thumbnails_dir))
@@ -275,6 +280,29 @@ def build_ui(settings: Settings) -> None:
         _header("/settings")
         ui.label("Settings & sync status - build-order step 7.").classes("m-4 text-gray-500")
         ui.label(f"device_id: {settings.device_id}").classes("m-4 text-xs text-gray-400")
+
+
+def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
+    """Run the continuous indexer (step 6) in-process while this machine is the
+    writer. It stops on app shutdown; it never runs in read-only mode."""
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=run_indexer,
+        kwargs={
+            "settings": settings,
+            "is_writable": lambda: manager.mode is WriteMode.writable,
+            "stop": stop,
+        },
+        name="sortandpost-indexer",
+        daemon=True,
+    )
+    thread.start()
+
+    def _shutdown() -> None:
+        stop.set()
+        thread.join(timeout=10)
+
+    nicegui_app.on_shutdown(_shutdown)
 
 
 def _semantic_search_photos(settings: Settings, engine: Engine, query: str) -> list[Photo]:
