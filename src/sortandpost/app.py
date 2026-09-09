@@ -441,6 +441,9 @@ def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
             "settings": settings,
             "is_writable": lambda: manager.mode is WriteMode.writable,
             "stop": stop,
+            # Share the one process-wide CLIP model with search so the two don't
+            # each hold ~600MB of weights, and so the loop stops re-loading it.
+            "clip_model": State.get_clip_model(settings),
         },
         name="sortandpost-indexer",
         daemon=True,
@@ -475,7 +478,7 @@ def _run_search(settings: Settings, engine: Engine, query: str, flt: PhotoFilter
 def _run_index_pass(settings: Settings, engine: Engine) -> str:
     stats = scan_once(settings)
     try:
-        clip_stats = scan_clip_once(settings)
+        clip_stats = scan_clip_once(settings, model=State.get_clip_model(settings))
     except ModelMismatch as exc:
         return f"{stats}  |  CLIP: {exc}"
     return f"{stats}  |  {clip_stats}"

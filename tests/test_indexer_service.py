@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image
 from sqlmodel import Session, select
@@ -130,3 +131,59 @@ def test_loop_promotes_when_writability_flips(settings: Settings) -> None:
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+class _CountingClipModel:
+    """Counts how many times the weights are actually (re)loaded."""
+
+    def __init__(self, dim: int = 8) -> None:
+        self._dim = dim
+        self._loaded = False
+        self.load_calls = 0
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def load(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        self.load_calls += 1
+
+    def encode_images(self, images: list[object]) -> np.ndarray:
+        return np.zeros((len(images), self._dim), dtype=np.float32)
+
+    def encode_text(self, texts: list[str]) -> np.ndarray:
+        return np.zeros((len(texts), self._dim), dtype=np.float32)
+
+
+def test_loop_loads_the_clip_model_once_across_many_cycles(settings: Settings) -> None:
+    """Regression: the loop must not re-instantiate CLIP every cycle."""
+    model = _CountingClipModel()
+    cfg = IndexerLoopConfig(
+        full_scan_interval_sec=0.05, debounce_sec=0.1, poll_sec=0.02, watch=False, run_clip=True
+    )
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=run_indexer,
+        kwargs={
+            "settings": settings,
+            "is_writable": lambda: True,
+            "stop": stop,
+            "loop_config": cfg,
+            "clip_model": model,
+        },
+        daemon=True,
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _photo_count(settings) == 0:
+            time.sleep(0.05)
+        time.sleep(0.6)  # let several more cycles turn over
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert model.load_calls == 1
