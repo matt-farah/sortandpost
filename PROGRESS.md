@@ -1,47 +1,146 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-08 (end of build-order step 7 — **all 7 steps complete**)._
+_Last updated: 2026-09-09 (Docker `compose up` integration test — image builds,
+app runs, CLIP + search + review + watchers all work; one non-blocking finding)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). `main` PR not opened yet._
 
 ---
 
-## ▶️ NEXT SESSION — start here: integration testing
+## ✅ 2026-09-09 (later) — Docker `compose up --build` integration test
 
-The build is feature-complete (151 unit tests green). Next session is **testing
-the real deps**, not writing features. Everything below is unverified because
-`torch` / `open-clip-torch` / `nicegui` / `rawpy` / `pillow-heif` / `watchdog`
-are not in the lightweight venv and Docker is not installed on this machine.
+Docker Desktop (Apple Silicon, aarch64, 8 CPU / 8 GB) got installed mid-session.
+Ran the real thing against the scratch 6-file JPEG library + a fresh
+`APP_DATA`.
 
-**Plan (in order):**
+**Dockerfile fixes made this session** (both now committed as part of testing):
+1. **Wheel-build ordering** — `RUN uv pip install .` ran before `COPY src/`, so
+   hatchling had no package to build. Now `src/`, `migrations/`, `alembic.ini`
+   are copied before a single combined install step. Also added
+   `--torch-backend=cpu` (keeps the image off the ~2 GB CUDA wheel).
+2. **`LICENSE` not copied** — `pyproject.toml` has `license = { file = "LICENSE" }`
+   and hatchling reads it at wheel-build time → `OSError: License file does not
+   exist: LICENSE`. Added `LICENSE` to the `COPY` line.
 
-1. **Bring up the container.** `cp .env.example .env`, set `PHOTO_LIBRARY` to a
-   small real folder (~50 mixed JP/HEIC/RAW), `APP_DATA` to a scratch dir, then
-   `docker compose up --build`. Fix whatever breaks in `Dockerfile` /
-   `docker-compose.yml` (exiftool, libraw, torch wheels, arm64).
-2. **First index.** Watch the logs: stages 1–6 then the CLIP pass. Confirm
-   `APP_DATA/sync/` fills in (`sortandpost.db`, `thumbnails/`, `embeddings/`,
-   `.sortandpost.lock`, a snapshot after N publishes).
-3. **Web UI smoke** at `http://localhost:8080`: `/` grid + `/photo/{hash}`,
-   `/search` (a real text query → results; then filters-only browse; dupes
-   toggle), `/review` (approve a tag → check the file's `XMP:Subject` with
-   `exiftool`, and a `changes` row), `/settings` (all fields populate; "run
-   indexer pass now"), the status-bar footer ticking.
-4. **Real-model checks:** `python -m sortandpost.indexer --reembed` inside the
-   container; semantic search quality is sane; RAW files decode via embedded
-   preview and are never written (grep logs / check mtimes).
-5. **Watchers:** drop a new file into the library, confirm the debounced rescan
-   picks it up within ~`debounce_sec + a cycle`.
-6. **Sync round-trip (optional):** copy `APP_DATA/sync/` to a second dir, point a
-   second container at it, confirm no rebuild + read-only banner while the first
-   holds the lock.
-7. **Then open the PR:** `scaffold → main`
+After those two, everything passed:
+
+- **Image builds clean** — 1.61 GB, all 79 deps incl. `torch==2.14.0+cpu`,
+  `nicegui==3.16.0`, `open-clip-torch==3.3.0`, `rawpy`, `pillow-heif`, `watchdog`.
+  (Versions drifted well past the `pyproject` floors; the NiceGUI 3.x drift that
+  was flagged as a risk did **not** bite — 0 errors anywhere.)
+- **App boots**: bootstrap → `init_db` → `SyncManager` acquires the write lock
+  (writable mode, lock file with live heartbeat, `pid 1`, container hostname) →
+  `NiceGUI ready on :8080` → in-app indexer thread runs.
+- **All 5 pages return HTTP 200** with valid NiceGUI SSR HTML: `/`, `/search`,
+  `/review`, `/settings`, `/photo/{hash}` (5 photo links on `/`).
+- **Index**: 6 JPEGs → 5 photos (byte-dup deduped), 10 thumbnails, `phash`.
+- **EXIF reconcile** in-container imported `b.jpg`'s rating + keywords (written
+  by the earlier native test) with `rate` / `tag_add` change rows.
+- **CLIP**: downloaded `ViT-B-32 / laion2b_s34b_b79k` to the mounted cache
+  (`/data/local/models`, via `OPEN_CLIP_CACHE_DIR` / `HF_HOME`), embedded all
+  photos, wrote 40 zero-shot predictions (8/photo), 0 errors.
+- **`sync/` published**: `sortandpost.db` (gen 2), `embeddings/img_*.npy` +
+  `text_*_<vocabhash>.npy` + `rowmap.json`, `thumbnails/`, `.sortandpost.lock`;
+  `local/publish_state.json` written; 60 s publish interval honored.
+- **Semantic search** (real model, in-container): text→image cosine ranking with
+  sane scores (~0.34 for on-topic, ~0.16 for absent concepts); `similar_to`
+  ranks the other photos and excludes the query itself.
+- **`/review` approve** (`app.approve`): `photo_tags(source='clip')` +
+  **union** of manual + approved keywords embedded into the file (verified with
+  host `exiftool`: `Subject: beach, landscape, sunset`) + `clip_approve` change
+  row + `prediction.state → approved`.
+- **`watchdog`**: dropping `/library/watch_test.jpg` triggered a debounced
+  rescan within ~seconds → indexed + embedded (7 seen, 1 new).
+- **`docker compose run --rm indexer --reembed`**: rebuilt 6 embeddings + 47
+  predictions, 0 errors, kept the earlier approval (deletes pending only).
+
+**Finding (non-blocking) — CLIP model reloaded every indexer cycle.**
+`indexer/service.py::_run_cycle` calls `scan_clip_once(settings)` with no cached
+`model=`, so `scan_clip_once` builds a fresh `ClipModel` and calls `.load()`
+**every cycle** (~1 s weights-from-disk + an HTTP `HEAD` to huggingface.co), even
+on idle cycles with nothing to embed — observed 7 loads / 7 HF requests in
+~3.5 min. The `model=` param on `scan_clip_once` exists for exactly this. Impact:
+needless CPU/network churn, and the indexer effectively **requires network to HF
+every cycle** even with weights cached locally (works against the "locally-run,
+no cloud service" goal; would fail air-gapped). Fix: build the `ClipModel` once
+in `run_indexer`, thread it through `_run_cycle` → `scan_clip_once(..., model=…)`;
+optionally set `HF_HUB_OFFLINE=1` once weights are present. The web-app path
+already caches on `State.clip_model` and is fine.
+
+**Not exercised this pass** (no assets / needs a second machine / needs a real
+browser): RAW read-only + HEIC decode (library was JPEG-only), two-machine sync
++ read-only banner, real browser interaction (button clicks, keyboard nav,
+infinite scroll), snapshot/restore recovery in-container.
+
+The app is currently **running** (`docker compose up -d app`, port 8080).
+`docker compose down` to stop it. `.env` points at the scratch library.
+
+---
+
+## ✅ 2026-09-09 — native (no-Docker) integration test
+
+Ran the non-heavy-dep paths end to end against a real ~6-file JPEG library and a
+scratch `APP_DATA`, using the real `exiftool` 13.55 on PATH. Quality gate still
+clean: **151 tests pass**, `ruff check`, `ruff format --check`, `mypy` all green,
+`alembic upgrade head` + `--autogenerate` diff still empty.
+
+Verified live (not just unit tests):
+
+- **Step 1** — `Settings.resolve()` bootstraps `local/` + `sync/`
+  (`device.json`, `config.yaml`, `tags.yaml`); `AppConfig` round-trips.
+- **Step 2** — metadata engine: `write_rating(4)` → `XMP:Rating` + `IFD0:Rating`
+  + `IFD0:RatingPercent 75` + `XMP-microsoft:RatingPercent 75`;
+  `write_keywords` → `XMP:Subject` + `IPTC:Keywords`. **`pixel_hash` stable
+  across the EXIF write** (hard constraint #3); mtime bumps as intended.
+- **Step 3** — `indexer --once`: 6 files → 5 `photos` / 6 `photo_paths` (a
+  byte-identical copy at a second path deduped to one `pixel_hash`, both
+  `present`), 10 thumbnails written content-addressed under
+  `sync/thumbnails/<hh>/`, `phash` populated, `scan_state.stages_done = 63`
+  (BROWSABLE complete, CLIP bit clear). Second run: 5 unchanged via fast-path.
+- **Step 4** — `SyncManager.start()` → writable + `.sortandpost.lock` (device,
+  heartbeat, pid, `db_generation`); `publish()` → atomic `sync/sortandpost.db`,
+  `db_generation` bumped in the `meta` row **and** the lock; `stop()` releases
+  the lock. `python -m sortandpost.db snapshot` → `sync/snapshots/*.db.zst`.
+- **Step 6** — re-index after the exiftool write imported `b.jpg`'s rating as a
+  `ratings` row (`source='file'`) + a `rate` change row, and the two keywords as
+  `manual` tags + `tag_add` change rows (file mtime newer ⇒ file wins, additive).
+
+Still **unverified** (need Docker or the heavy deps): CLIP embed / semantic
+search / zero-shot tagging (`torch`, `open-clip-torch`), all NiceGUI pages,
+RAW decode (`rawpy`), HEIC decode (`pillow-heif`), `watchdog` FS events, and the
+image build itself.
+
+**Dockerfile bug spotted by inspection (fix before `docker compose up --build`):**
+the first `RUN uv pip install --system --no-cache .` runs *before* `COPY src/`,
+so hatchling has no `src/sortandpost` to build the wheel from and the layer
+fails. Install deps only first (e.g. `uv pip install --system --no-deps`-style
+or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
+`uv pip install --system --no-cache -e . --no-deps`.
+
+---
+
+## ▶️ NEXT SESSION — start here
+
+The build is feature-complete (151 unit tests green), steps 1–4 + 6 are verified
+natively, and a full `docker compose up --build` pass works (see the two
+2026-09-09 sections above). Remaining work:
+
+1. **Fix the CLIP per-cycle reload** (finding above): cache one `ClipModel` in
+   `run_indexer` and pass it to `scan_clip_once(..., model=…)`; consider
+   `HF_HUB_OFFLINE=1` once weights are cached. Small, self-contained.
+2. **Browser smoke** at `http://localhost:8080` (only HTTP-GET + in-container
+   Python calls were exercised so far — not a real browser): keyboard nav +
+   `1`–`5` rating on `/`, the `/search` box + filter row + dupes toggle,
+   `/review` bulk approve/reject buttons, `/settings` "run indexer pass now",
+   the status-bar footer ticking, read-only banner behaviour.
+3. **RAW + HEIC**: point `PHOTO_LIBRARY` at a folder with a few real `.CR2`/`.NEF`
+   + `.HEIC` files; confirm RAW decodes via embedded preview and is **never**
+   written (check mtimes / logs), HEIC decodes + thumbnails.
+4. **Two-machine sync** (optional): copy `APP_DATA/sync/` to a second dir, point a
+   second container at it, confirm no rebuild + the read-only banner while the
+   first holds the lock; then a conflict-copy merge.
+5. **Open the PR:** `scaffold → main`
    (`https://github.com/matt-farah/sortandpost/compare/main...scaffold?expand=1`).
    `gh` is not installed — install it or open via the web UI.
-
-**Likely first bugs to expect:** Dockerfile dependency/versions; NiceGUI page
-signature/param coercion for the new `/search` query params (`gps=true` etc.);
-`ui.timer` / `ui.footer` / `ui.select` API drift; `run.io_bound` + a shared
-SQLAlchemy engine across threads under real load (busy_timeout should cover it).
 
 Full caveat list is in **"Open threads / not blocking"** near the bottom.
 
