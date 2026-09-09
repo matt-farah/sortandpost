@@ -233,6 +233,7 @@ class SyncManager:
         base = max(candidates, key=lambda p: (gens[p], p == wdb))
         if base != wdb:
             atomic_replace(base, wdb, tag=self.device_id)
+            self._reset_working_engine()
             gens[wdb] = gens[base]
 
         merge_sources = [p for p in candidates if p != wdb and p != base]
@@ -268,6 +269,7 @@ class SyncManager:
         local = read_generation(self.paths.working_db)
         if remote > local:
             pull_published(self.paths.published_db, self.paths.working_db, device_id=self.device_id)
+            self._reset_working_engine()
             self._last_publish_hash = sha256_file(self.paths.working_db)
             self._last_publish_at = self._clock()
         else:
@@ -282,12 +284,14 @@ class SyncManager:
             raise RuntimeError("working DB failed quick_check and no snapshot exists to restore")
         log.error("working DB failed quick_check; restoring %s", snap.name)
         restore_snapshot(snap, self.paths.working_db)
+        self._reset_working_engine()
         self.restored_from_snapshot = snap
         self._last_publish_hash = None  # force a re-publish of the restored state
 
     def _pull_if_newer(self) -> None:
         if read_generation(self.paths.published_db) > read_generation(self.paths.working_db):
             pull_published(self.paths.published_db, self.paths.working_db, device_id=self.device_id)
+            self._reset_working_engine()
 
     # ------------------------------------------------------------------ #
     # background thread
@@ -315,6 +319,20 @@ class SyncManager:
         if self._engine is None:
             self._engine = make_engine(self.paths.working_db)
         return self._engine
+
+    def _reset_working_engine(self) -> None:
+        """Drop pooled connections left pointing at the pre-replacement inode.
+
+        ``os.replace`` of ``local/sortandpost.db`` (a pull, a conflict-copy base
+        swap, or a snapshot restore) unlinks the file the engine's open SQLite
+        connections still hold -- and SQLite then refuses writes to it with
+        "attempt to write a readonly database". ``dispose()`` recycles the pool
+        without invalidating the engine object (which the web app shares); the
+        next connection opens the current file. In-flight transactions on a
+        checked-out connection are left to finish and close normally.
+        """
+        if self._engine is not None:
+            self._engine.dispose()
 
     def _archive_conflict_copies(self, copies: list[Path]) -> None:
         dest_dir = self.paths.merged_snapshots_dir

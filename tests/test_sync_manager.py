@@ -68,6 +68,47 @@ def test_single_writer_then_read_only_second_machine(
     mgr_b.stop()
 
 
+def test_pull_disposes_stale_engine_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    """A read-only machine that pulls a newer published DB on start must not keep
+    serving the pre-pull file: ``os.replace`` unlinks the inode the engine's
+    pooled SQLite connections still hold, and SQLite then refuses writes to it
+    ("attempt to write a readonly database"). Regression for the crash when such
+    an instance later promotes to writable and publishes.
+    """
+    settings_a = _settings(monkeypatch, tmp_path / "a")  # working DB has photos a, b
+
+    b_data = tmp_path / "b"
+    b_data.mkdir()
+    (b_data / "sync").symlink_to(settings_a.paths.sync, target_is_directory=True)
+    monkeypatch.setenv("APP_DATA", str(b_data))
+    settings_b = Settings.resolve()
+    make_db(settings_b.paths.working_db, photos=[], generation=1)  # emptier + older
+
+    mgr_a = SyncManager(settings_a, clock=clock)
+    assert mgr_a.start(background=False) is WriteMode.writable  # publishes gen >= 2
+
+    # Pin a pooled connection to machine B's pre-pull (empty) working DB.
+    b_engine = make_engine(settings_b.paths.working_db)
+    with Session(b_engine) as s:
+        assert s.exec(select(Photo)).all() == []
+
+    mgr_b = SyncManager(settings_b, engine=b_engine, clock=clock)
+    assert mgr_b.start(background=False) is WriteMode.read_only
+
+    # The shared engine must now see A's rows, not the stale empty inode.
+    with Session(b_engine) as s:
+        assert {p.pixel_hash for p in s.exec(select(Photo)).all()} == {hash_for("a"), hash_for("b")}
+
+    # Promotion + publish must not raise OperationalError(readonly database).
+    mgr_a.stop()  # releases the lock
+    assert mgr_b.refresh() is WriteMode.writable
+    assert mgr_b.publish(force=True) is True
+
+    mgr_b.stop()
+
+
 def test_read_only_machine_takes_over_a_stale_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
 ) -> None:
