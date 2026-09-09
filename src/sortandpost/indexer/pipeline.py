@@ -14,7 +14,6 @@ distinction falls out of how many rows are ``present`` after a scan.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntFlag
@@ -23,11 +22,9 @@ from pathlib import Path
 from sqlmodel import Session, col, select
 
 from sortandpost.db.models import Photo, PhotoPath, ScanState
-from sortandpost.dedup import dhash
-from sortandpost.hashing import pixel_hash_of_image
-from sortandpost.indexer.decode import DecodeError, load_image
 from sortandpost.indexer.reconcile import ReconcileOutcome, reconcile_metadata
-from sortandpost.indexer.thumbnails import ThumbPathFn, write_thumbnails
+from sortandpost.indexer.thumbnails import ThumbPathFn
+from sortandpost.indexer.workers import DecodedFile, decode_local
 from sortandpost.metadata import EmbeddedMetadata, ExiftoolClient, MetadataError, is_raw
 
 log = logging.getLogger(__name__)
@@ -68,7 +65,7 @@ class PipelineConfig:
 
 
 # --------------------------------------------------------------------------- #
-# Entry point
+# Entry points
 # --------------------------------------------------------------------------- #
 def index_file(
     session: Session,
@@ -79,7 +76,12 @@ def index_file(
     device_id: str,
     now: datetime,
 ) -> IndexOutcome:
-    """Run stages 1-6 for one file. Caller commits; caller handles the sweep."""
+    """Run stages 1-6 for one file, serially. Caller commits; caller sweeps.
+
+    The parallel scan splits this: workers run stages 2-4
+    (:func:`sortandpost.indexer.workers.decode_local`) and the main process runs
+    :func:`persist_decoded` (stages 1, 3-identity, 5-6).
+    """
     key = str(path)
     try:
         st = path.stat()
@@ -87,63 +89,77 @@ def index_file(
         return IndexOutcome(path=path, error=f"stat: {exc}")
 
     scan = session.get(ScanState, key)
-    if not _needs_index(scan, st.st_size, st.st_mtime_ns):
+    if not needs_reindex(scan, st.st_size, st.st_mtime_ns):
         assert scan is not None
         return IndexOutcome(path=path, pixel_hash=scan.pixel_hash, skipped=True)
 
+    decoded = decode_local(
+        path,
+        thumb_path_fn=config.thumbnail_path,
+        sizes=config.thumbnail_sizes,
+        fmt=config.thumbnail_format,
+        quality=config.thumbnail_quality,
+    )
+    return persist_decoded(session, decoded, exiftool=exiftool, device_id=device_id, now=now)
+
+
+def persist_decoded(
+    session: Session,
+    decoded: DecodedFile,
+    *,
+    exiftool: ExiftoolClient | None,
+    device_id: str,
+    now: datetime,
+) -> IndexOutcome:
+    """Apply one worker's :class:`DecodedFile` to the DB: stage 3 identity
+    (``photos`` / ``photo_paths``), stage 5 metadata read, stage 6 reconcile,
+    and the ``scan_state`` bookkeeping. Runs on the main process only (holds the
+    ``Session`` and the persistent ``exiftool``). Caller commits."""
+    key = decoded.path
+    path = Path(key)
+
+    scan = session.get(ScanState, key)
     if scan is None:
         scan = ScanState(path=key)
         session.add(scan)
-    scan.size = st.st_size
-    scan.mtime_ns = st.st_mtime_ns
+    scan.size = decoded.size
+    scan.mtime_ns = decoded.mtime_ns
     scan.error = None
 
-    # -- stage 2: decode ------------------------------------------------------ #
-    try:
-        img = load_image(path)
-    except DecodeError as exc:
-        scan.error = f"decode: {exc}"
+    if decoded.error is not None:
+        scan.error = f"{decoded.failed_stage}: {decoded.error}"[:500]
         scan.attempts += 1
-        scan.stages_done = int(Stage.STAT)
-        log.warning("decode failed for %s: %s", path, exc)
-        return IndexOutcome(path=path, error=scan.error)
-
-    try:
-        width, height = img.size
-        fmt = (img.format or path.suffix.lstrip(".").upper() or "UNKNOWN").upper()
-
-        # -- stage 3: pixel hash + identity -------------------------------- #
-        pixel_hash = pixel_hash_of_image(img)
-        new_photo = _upsert_photo(session, pixel_hash, path, st, width, height, fmt, now)
-        _upsert_path(session, pixel_hash, path, st)
-        scan.pixel_hash = pixel_hash
-
-        # perceptual hash for near-duplicate detection (step 7); deterministic,
-        # so compute once and backfill on any later re-decode.
-        photo_row = session.get(Photo, pixel_hash)
-        if photo_row is not None and photo_row.phash is None:
-            photo_row.phash = dhash(img)
-
-        # -- stage 4: thumbnails ----------------------------------------- #
-        try:
-            written = write_thumbnails(
-                img,
-                pixel_hash,
-                sizes=config.thumbnail_sizes,
-                thumb_path=config.thumbnail_path,
-                fmt=config.thumbnail_format,
-                quality=config.thumbnail_quality,
-            )
-        except OSError as exc:
-            scan.error = f"thumbnail: {exc}"
-            scan.attempts += 1
+        if decoded.failed_stage == "thumbnail":
+            scan.pixel_hash = decoded.pixel_hash
             scan.stages_done = int(Stage.STAT | Stage.DECODE | Stage.HASH)
-            log.warning("thumbnail failed for %s: %s", path, exc)
-            return IndexOutcome(path=path, pixel_hash=pixel_hash, error=scan.error)
-    finally:
-        img.close()
+        else:
+            scan.stages_done = int(Stage.STAT)
+        log.warning("%s failed for %s: %s", decoded.failed_stage, key, decoded.error)
+        return IndexOutcome(path=path, pixel_hash=decoded.pixel_hash, error=scan.error)
 
-    # -- stage 5: embedded metadata (best effort) --------------------------- #
+    assert decoded.pixel_hash is not None
+    pixel_hash = decoded.pixel_hash
+
+    # -- stage 3: identity -------------------------------------------------- #
+    new_photo = _upsert_photo(
+        session,
+        pixel_hash,
+        path,
+        decoded.size,
+        decoded.mtime_ns,
+        decoded.width,
+        decoded.height,
+        decoded.fmt,
+        now,
+    )
+    _upsert_path(session, pixel_hash, path, decoded.size, decoded.mtime_ns)
+    scan.pixel_hash = pixel_hash
+
+    photo_row = session.get(Photo, pixel_hash)
+    if photo_row is not None and photo_row.phash is None and decoded.phash is not None:
+        photo_row.phash = decoded.phash
+
+    # -- stage 5: embedded metadata (best effort) ------------------------- #
     md: EmbeddedMetadata | None = None
     if exiftool is not None:
         try:
@@ -153,7 +169,7 @@ def index_file(
             log.warning("metadata read failed for %s: %s", path, exc)
             md = None
 
-    # -- stage 6: rating / keyword reconcile (file vs DB) ------------------ #
+    # -- stage 6: rating / keyword reconcile (file vs DB) --------------- #
     reconcile: ReconcileOutcome | None = None
     if md is not None:
         try:
@@ -164,7 +180,7 @@ def index_file(
                 md=md,
                 exiftool=exiftool,
                 device_id=device_id,
-                file_mtime_ns=st.st_mtime_ns,
+                file_mtime_ns=decoded.mtime_ns,
                 now=now,
             )
         except MetadataError as exc:
@@ -177,7 +193,7 @@ def index_file(
         path=path,
         pixel_hash=pixel_hash,
         new_photo=new_photo,
-        thumbnails_written=written,
+        thumbnails_written=decoded.thumbnails_written,
         reconcile=reconcile,
     )
 
@@ -185,7 +201,7 @@ def index_file(
 # --------------------------------------------------------------------------- #
 # Stage helpers
 # --------------------------------------------------------------------------- #
-def _needs_index(scan: ScanState | None, size: int, mtime_ns: int) -> bool:
+def needs_reindex(scan: ScanState | None, size: int, mtime_ns: int) -> bool:
     if scan is None:
         return True
     if scan.error is not None:
@@ -199,7 +215,8 @@ def _upsert_photo(
     session: Session,
     pixel_hash: str,
     path: Path,
-    st: os.stat_result,
+    size: int,
+    mtime_ns: int,
     width: int,
     height: int,
     fmt: str,
@@ -215,8 +232,8 @@ def _upsert_photo(
                 height=height,
                 format=fmt,
                 is_raw=is_raw(path),
-                file_size=st.st_size,
-                file_mtime_ns=st.st_mtime_ns,
+                file_size=size,
+                file_mtime_ns=mtime_ns,
                 first_indexed_at=now,
                 last_indexed_at=now,
             )
@@ -225,12 +242,12 @@ def _upsert_photo(
     photo.last_indexed_at = now
     photo.missing_since = None
     if photo.primary_path == str(path):
-        photo.file_size = st.st_size
-        photo.file_mtime_ns = st.st_mtime_ns
+        photo.file_size = size
+        photo.file_mtime_ns = mtime_ns
     return False
 
 
-def _upsert_path(session: Session, pixel_hash: str, path: Path, st: os.stat_result) -> None:
+def _upsert_path(session: Session, pixel_hash: str, path: Path, size: int, mtime_ns: int) -> None:
     key = str(path)
     row = session.exec(select(PhotoPath).where(PhotoPath.path == key)).first()
     if row is None:
@@ -238,8 +255,8 @@ def _upsert_path(session: Session, pixel_hash: str, path: Path, st: os.stat_resu
             PhotoPath(
                 pixel_hash=pixel_hash,
                 path=key,
-                size=st.st_size,
-                mtime_ns=st.st_mtime_ns,
+                size=size,
+                mtime_ns=mtime_ns,
                 present=True,
             )
         )
@@ -247,8 +264,8 @@ def _upsert_path(session: Session, pixel_hash: str, path: Path, st: os.stat_resu
     # Content at a known path changed identity: repoint it. The now-possibly
     # orphaned old Photo is picked up by the end-of-scan presence sweep.
     row.pixel_hash = pixel_hash
-    row.size = st.st_size
-    row.mtime_ns = st.st_mtime_ns
+    row.size = size
+    row.mtime_ns = mtime_ns
     row.present = True
 
 

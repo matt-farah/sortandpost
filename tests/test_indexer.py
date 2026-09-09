@@ -145,6 +145,92 @@ def test_corrupt_file_records_error_and_no_photo(settings: Settings) -> None:
         assert bad.pixel_hash is None
 
 
+def test_parallel_scan_matches_serial(settings: Settings, caplog: pytest.LogCaptureFixture) -> None:
+    """The process-pool path (workers>=2, >= _MIN_FILES_FOR_POOL files) must
+    produce exactly what the inline path does: same photos, same hashes, same
+    thumbnails, and a clean fast-path skip on re-run."""
+    lib = _lib(settings)
+    for i in range(12):
+        _jpeg(lib / f"img_{i:02d}.jpg", (i * 15 % 256, (i * 7 + 30) % 256, (i * 3 + 90) % 256))
+
+    with caplog.at_level("INFO", logger="sortandpost.indexer.scan"):
+        stats = scan_once(settings, workers=4)
+    assert "worker processes" in caplog.text  # the pool path really ran
+    assert stats.seen == 12
+    assert stats.indexed == 12
+    assert stats.new_photos == 12
+    assert stats.errors == 0
+
+    with _session(settings) as s:
+        photos = s.exec(select(Photo)).all()
+        assert len(photos) == 12
+        for photo in photos:
+            state = s.get(ScanState, photo.primary_path)
+            assert state is not None
+            assert (state.stages_done & Stage.BROWSABLE) == Stage.BROWSABLE
+            assert photo.phash is not None
+            for size in settings.config.thumbnails.sizes:
+                assert settings.paths.thumbnail_file(photo.pixel_hash, size).is_file()
+
+    again = scan_once(settings, workers=4)
+    assert again.indexed == 0
+    assert again.skipped == 12
+
+
+def test_parallel_scan_isolates_a_corrupt_file(settings: Settings) -> None:
+    lib = _lib(settings)
+    for i in range(9):
+        _jpeg(lib / f"ok_{i}.jpg", (i * 20 % 256, 40, 90))
+    (lib / "bad.jpg").write_bytes(b"\xff\xd8\xff\xe0 not a real jpeg")
+
+    stats = scan_once(settings, workers=4)
+    assert stats.seen == 10
+    assert stats.indexed == 9
+    assert stats.errors == 1
+
+    with _session(settings) as s:
+        assert len(s.exec(select(Photo)).all()) == 9
+        bad = s.get(ScanState, str(lib / "bad.jpg"))
+        assert bad is not None and bad.error is not None and bad.pixel_hash is None
+
+
+def test_parallel_scan_falls_back_to_inline_when_pool_breaks(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A process pool that cannot start (spawn can't re-import __main__, sandbox
+    limits, ...) must not fail the scan -- it finishes inline."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    import sortandpost.indexer.scan as scanmod
+
+    lib = _lib(settings)
+    for i in range(10):
+        _jpeg(lib / f"f{i}.jpg", (i * 20 % 256, 30, 60))
+
+    class _BustedPool:
+        def __init__(self, *a: object, **k: object) -> None:
+            pass
+
+        def __enter__(self) -> _BustedPool:
+            return self
+
+        def __exit__(self, *a: object) -> bool:
+            return False
+
+        def submit(self, *a: object, **k: object) -> object:
+            raise BrokenProcessPool("simulated: workers cannot spawn")
+
+    monkeypatch.setattr(scanmod, "ProcessPoolExecutor", _BustedPool)
+
+    with caplog.at_level("WARNING", logger="sortandpost.indexer.scan"):
+        stats = scan_once(settings, workers=4)
+    assert "inline" in caplog.text
+    assert stats.indexed == 10
+    assert stats.errors == 0
+    with _session(settings) as s:
+        assert len(s.exec(select(Photo)).all()) == 10
+
+
 @pytest.mark.skipif(not _HAS_EXIFTOOL, reason="exiftool not on PATH")
 def test_embedded_metadata_lands_on_photo_row(settings: Settings) -> None:
     lib = _lib(settings)

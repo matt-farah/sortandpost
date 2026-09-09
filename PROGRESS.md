@@ -1,8 +1,60 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (Docker `compose up` integration test — image builds,
-app runs, CLIP + search + review + watchers all work; one non-blocking finding)._
-_Working branch: `scaffold` (pushed to `origin/scaffold`). `main` PR not opened yet._
+_Last updated: 2026-09-09 (process-pool indexer — spec gap #1 closed; PR #2 open)._
+_Working branch: `scaffold` (pushed to `origin/scaffold`). PR: `scaffold → main` = #2._
+
+---
+
+## ✅ 2026-09-09 (later still) — process-pool indexer (spec gap #1)
+
+CLAUDE.md hard constraint #7 / the "Indexer pipeline" section want a
+`ProcessPoolExecutor` for decode/hash/CLIP; the scan was single-threaded. Done
+for the `scan_once` path (the genuine bottleneck — decode + `pixel_hash` +
+`dhash` + thumbnail-encode of full-res JPEGs):
+
+- **New `sortandpost.indexer.workers`** — `decode_local()` / `decode_file()`
+  (worker entry) run stages 2-4 and return a picklable `DecodedFile` (hash,
+  dims, phash, thumbnails written). No DB, no exiftool handle. `DecodeJob`
+  carries only primitives so a `spawn` worker has zero shared state.
+- **`pipeline.persist_decoded()`** — the DB half (stage-3 identity, stage-5
+  metadata read, stage-6 reconcile, `scan_state` bookkeeping). Runs on the main
+  process only (owns the `Session` + the `-stay_open` exiftool). `index_file()`
+  is now `fast-path check → decode_local → persist_decoded` for the serial path.
+- **`scan_once(settings, *, workers=None)`** — main thread does the fast-path
+  filter (one `scan_state` query) then feeds a bounded pool
+  (`_decode_stream`, ≤ `2·workers` in flight so peak memory is flat); results
+  are persisted + committed serially as they land. `workers=1` (or `< 8` files
+  needing work) → inline, no pool. `workers` overrides `config.indexer.workers`
+  (`auto` = `cpu-1`).
+- **Resilience**: a `BrokenProcessPool` (spawn can't re-import `__main__`,
+  sandbox limits, …) is caught — the scan finishes the remaining files inline
+  instead of dying. Single-worker crashes on one file are recorded as that
+  file's `scan_state.error` and retried next pass (≤ 3 attempts), pool intact.
+- Idempotency/resumability preserved: fast-path cache unchanged; thumbnails are
+  still content-addressed + write-once (safe from N workers); a worker-written
+  thumbnail with no committed DB row is just re-confirmed next pass.
+- **Tests**: +3 in `test_indexer.py` (parity vs inline, corrupt-file isolation
+  under the pool, `BrokenProcessPool` → inline fallback). 154 pass; ruff +
+  mypy + `alembic --autogenerate`-empty all still clean.
+
+**Measured** (Docker Desktop, 8-core VM, 286 × ~17 MB / ~40 MP JPEGs, fresh
+index, CLIP deferred so not counted):
+
+| workers | `scan_once` wall time |
+|---------|-----------------------|
+| 1 (serial) | 146 s |
+| auto (7) | 102 s — 1.44×, 0 errors, identical output (286 photos / 572 thumbs) |
+
+Modest in Docker because (a) 7 workers contend on the library read over
+virtiofs, and (b) the now-serial tail — 286 × (`exiftool` round-trip + rating
+reconcile + `synchronous=FULL` commit) — dominates. Native (no virtiofs) should
+widen the gap. **Next optimisation** (separate change): batch stage-5 into one
+`exiftool.read_batch` per wave, and commit every N files instead of per-file
+(still resumable — re-scan redoes ≤ N idempotent files).
+
+Still open from the earlier findings: CLIP model reloaded every indexer cycle
+(`scan_clip_once` not handed a cached model); parallelising the CLIP-pass decode
+(torch already multithreads inference, so lower ROI — left for later).
 
 ---
 
@@ -120,9 +172,9 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-The build is feature-complete (151 unit tests green), steps 1–4 + 6 are verified
-natively, and a full `docker compose up --build` pass works (see the two
-2026-09-09 sections above). Remaining work:
+The build is feature-complete, a full `docker compose up --build` pass works,
+and spec gap #1 (process pool) is closed. PR #2 (`scaffold → main`) is open.
+Remaining work:
 
 1. **Fix the CLIP per-cycle reload** (finding above): cache one `ClipModel` in
    `run_indexer` and pass it to `scan_clip_once(..., model=…)`; consider
@@ -138,9 +190,10 @@ natively, and a full `docker compose up --build` pass works (see the two
 4. **Two-machine sync** (optional): copy `APP_DATA/sync/` to a second dir, point a
    second container at it, confirm no rebuild + the read-only banner while the
    first holds the lock; then a conflict-copy merge.
-5. **Open the PR:** `scaffold → main`
-   (`https://github.com/matt-farah/sortandpost/compare/main...scaffold?expand=1`).
-   `gh` is not installed — install it or open via the web UI.
+5. **Dockerfile caching** (optional): the single combined install layer
+   re-downloads `torch` on any source edit. A deps-only pre-layer
+   (`uv pip compile pyproject.toml` → install, then `COPY src/` → install
+   `--no-deps`) would cache the ~150 MB torch wheel across code changes.
 
 Full caveat list is in **"Open threads / not blocking"** near the bottom.
 
