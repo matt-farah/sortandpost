@@ -1,7 +1,48 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (process-pool indexer — spec gap #1 closed; PR #2 open)._
+_Last updated: 2026-09-09 (286-photo Docker index test + reconcile Rating=0 fix)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). PR: `scaffold → main` = #2._
+
+---
+
+## ✅ 2026-09-09 — 286-photo Docker index (timing) + `/settings`/pages check
+
+Ran the real app (`docker run`, source overlaid, `HF_HUB_OFFLINE=1`, CLIP
+weights pre-seeded) against `~/Downloads/sampleImages` (286 × 26 MP Fujifilm
+X-S10 JPEGs), **fresh DB**.
+
+**First-index timing** (8-core Docker Desktop VM, warm library cache):
+
+| phase | wall time | outcome |
+|-------|-----------|---------|
+| scan (decode/hash/thumbnail/EXIF, 7 workers) | **63 s** | 286 photos, 572 thumbnails, 0 errors — browsable |
+| CLIP pass (embed + zero-shot score) | **97 s** | 286 embeddings, 739 predictions, 0 errors |
+| **total first index** | **~160 s** | |
+
+Next indexer cycle: 286 unchanged via fast path in ~1 s; CLIP 0 new. Steady.
+
+**App surface** (HTTP + in-container calls — no browser, extension declined):
+
+- `/` 200 (120 tiles + pager: 120/120/46 = 286), `/photo/{hash}` 200 with EXIF
+  panel (camera `X-S10`, `6240×4160`), `/search` 200, `/review` 200 (108 KB,
+  sample thumbs for 19 pending-tag groups), `/settings` 200.
+- Semantic search (real ViT-B-32): ranked distinct results per query, scores
+  ~0.1–0.24 (real photos, flatter than the synthetic set).
+- Zero-shot: 739 pending predictions, 19 tags (portrait ×208, night ×99,
+  one person ×81, …) — plausible for a portrait-heavy Fuji set.
+- `HF_HUB_OFFLINE=1` → CLIP loads from the local cache with **no** HF network
+  call (mitigates the offline half of the per-cycle-reload finding; the reload
+  itself still happens — ~1 s from disk now).
+
+**Bug found + fixed — `Rating=0` mass-import.** Every Fuji JPEG embeds a literal
+`Rating: 0`. Old `_reconcile_rating` treated `0` as "a rating" and, with no DB
+row, imported it → **286 spurious `ratings` rows + 286 `rate` `changes` rows** on
+a clean index of unrated files (bloats the merge-driving `changes` log and the
+`/settings` audit count). Fix (`indexer/reconcile.py`): `not file_stars` (None
+*or* 0) means "unrated" — no import / no change row when there's no DB rating.
+An explicit `0` from a file *newer* than an existing DB rating still imports (=
+user cleared the star in Lightroom); an older `0` still pushes the DB rating
+back out. +3 reconcile tests. 157 pass; ruff + mypy clean.
 
 ---
 
