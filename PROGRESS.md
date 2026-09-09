@@ -1,7 +1,38 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (286-photo Docker index test + reconcile Rating=0 fix)._
+_Last updated: 2026-09-09 (CLIP model reuse in the indexer loop + two-machine sync integration test)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). PR: `scaffold → main` = #2._
+
+---
+
+## ✅ 2026-09-09 — CLIP model reuse + two-machine sync test
+
+**CLIP per-cycle reload — fixed (`e204775`).** `run_indexer` rebuilt the CLIP
+architecture and re-read the safetensors weights on *every* loop cycle,
+including no-op cycles (the loop wakes every few seconds behind a Docker bind
+mount from phantom `watchdog` events) — ~2–4 s of wasted CPU per idle wake.
+`run_indexer` now builds one `ClipModel` and threads it through
+`scan_clip_once(..., model=…)` (`ClipModel.load()` was already a no-op after the
+first call). The app passes its **process-wide** `State.get_clip_model(settings)`
+so search + the indexer share a single ~600 MB copy instead of two; the
+standalone `python -m sortandpost.indexer` builds its own. The `/settings`
+"Run indexer pass now" button reuses the shared model too. +1 regression test
+(`test_loop_loads_the_clip_model_once_across_many_cycles`).
+
+**Two-machine sync — end-to-end integration test (`bdcd38b`).** `test_sync_merge`
+already covered `merge_all` at the function level; the new
+`test_two_machines_with_separate_sync_dirs_converge` drives the full
+`SyncManager` startup path: two independent `APP_DATA` trees, each with its own
+`local/` + `sync/`, a fake sync tool that cross-delivers each side's DB into the
+other's `sync/` as a conflicted copy, then a restart on each side. Asserts both
+machines converge to identical ratings (LWW picks the newer device's edits +
+imports the rating that existed on only one side), an identical unioned
+`changes` log (3 rows), an equal `db_generation`, and that the conflict copies
+are consumed + archived (not re-merged). A second sync round asserts
+`change_key` de-dup holds across rounds — no double-applied mutations.
+
+159 tests pass; ruff + format clean. (Pre-existing: 5 mypy `untyped-decorator`
+warnings on the NiceGUI `@ui.page` handlers in `app.py` — unchanged by this work.)
 
 ---
 
@@ -214,23 +245,25 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 ## ▶️ NEXT SESSION — start here
 
 The build is feature-complete, a full `docker compose up --build` pass works,
-and spec gap #1 (process pool) is closed. PR #2 (`scaffold → main`) is open.
-Remaining work:
+spec gap #1 (process pool) is closed, the CLIP per-cycle reload is fixed, and
+two-machine convergence has an end-to-end `SyncManager` test. PR #2
+(`scaffold → main`) is open. Remaining work:
 
-1. **Fix the CLIP per-cycle reload** (finding above): cache one `ClipModel` in
-   `run_indexer` and pass it to `scan_clip_once(..., model=…)`; consider
-   `HF_HUB_OFFLINE=1` once weights are cached. Small, self-contained.
-2. **Browser smoke** at `http://localhost:8080` (only HTTP-GET + in-container
+1. **Browser smoke** at `http://localhost:8080` (only HTTP-GET + in-container
    Python calls were exercised so far — not a real browser): keyboard nav +
    `1`–`5` rating on `/`, the `/search` box + filter row + dupes toggle,
    `/review` bulk approve/reject buttons, `/settings` "run indexer pass now",
    the status-bar footer ticking, read-only banner behaviour.
-3. **RAW + HEIC**: point `PHOTO_LIBRARY` at a folder with a few real `.CR2`/`.NEF`
+2. **RAW + HEIC**: point `PHOTO_LIBRARY` at a folder with a few real `.CR2`/`.NEF`
    + `.HEIC` files; confirm RAW decodes via embedded preview and is **never**
    written (check mtimes / logs), HEIC decodes + thumbnails.
-4. **Two-machine sync** (optional): copy `APP_DATA/sync/` to a second dir, point a
-   second container at it, confirm no rebuild + the read-only banner while the
-   first holds the lock; then a conflict-copy merge.
+3. **In-app read-only → writable promotion**: the in-app indexer thread reads
+   `manager.mode` but the app never calls `manager.refresh()`, so a session that
+   starts read-only never starts indexing until restart. The standalone
+   entrypoint already re-checks. Wire a periodic `refresh()` into the app.
+4. **Two-machine sync — real containers** (optional, the logic is now unit +
+   integration tested): copy `APP_DATA/sync/` to a second dir, point a second
+   container at it, eyeball the read-only banner while the first holds the lock.
 5. **Dockerfile caching** (optional): the single combined install layer
    re-downloads `torch` on any source edit. A deps-only pre-layer
    (`uv pip compile pyproject.toml` → install, then `COPY src/` → install
