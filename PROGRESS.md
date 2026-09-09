@@ -1,7 +1,44 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (CLIP model reuse in the indexer loop + two-machine sync integration test)._
+_Last updated: 2026-09-09 (cross-machine Docker test → read-only auto-promotion + a stale-engine bug fix)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). PR: `scaffold → main` = #2._
+
+---
+
+## ✅ 2026-09-09 — cross-machine Docker test: read-only promotion + stale-engine fix
+
+Ran the real thing across containers: **machine 1** fresh-indexed 286 photos
+(scan 46 s + CLIP 89 s), published to `sync/` at `db_generation 5`, clean stop.
+A `cp -Rp m1/sync → m2/sync` stood in for the third-party sync tool. **Machine 2**
+(own fresh `local/`, weights pre-seeded like a new install) came up **operational
+in ~2 s, zero rebuild**: `0 indexed / 286 unchanged`, `0 newly embedded`, working
+DB `gen 5` identical to m1, thumbnails + semantic search served straight off the
+synced `sync/`. Single-writer lock verified: a 2nd instance on the same `sync/`
+boots read-only and does not steal a live lock.
+
+**Bug found + fixed — stale DB engine after a file swap (`27841a3`).**
+`pull_published` / conflict-base swap / snapshot restore all `os.replace()` the
+working DB. The long-lived SQLAlchemy engine (shared with the web app) kept
+`QueuePool` connections bound to the old, now-unlinked inode — so a read-only
+instance that pulled a newer DB on start **browsed stale/empty data**, and
+**crashed with `attempt to write a readonly database`** the instant it promoted
+to writable and published. `SyncManager._reset_working_engine()` now
+`engine.dispose()`s after each of those four replacements (pool recycles, engine
+object stays valid, next connection opens the current file). +1 regression test
+driving read-only → pull → promote → publish through a shared engine.
+
+**Read-only → writable auto-promotion (`3fc13f1`).** The web app captured
+`manager.mode` once at boot and never called `manager.refresh()`, so an instance
+that started read-only stayed read-only (and never indexed) until restart, even
+after the lock freed. New `_start_lock_watch()` daemon thread calls
+`manager.refresh()` every `lock_heartbeat_sec`, re-applies the mode to `State`,
+and starts the in-process indexer on promotion (`_start_indexer_thread` is now
+idempotent). Verified live: on machine 2's clean shutdown, machine 3 logs
+`write-lock state changed: read-only -> writable` within the heartbeat interval,
+starts indexing, and writes ratings — no restart.
+
+161 tests pass; ruff + format clean. (Pre-existing: 5 mypy `untyped-decorator`
+warnings on the NiceGUI `@ui.page` handlers.)
 
 ---
 
@@ -245,26 +282,22 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 ## ▶️ NEXT SESSION — start here
 
 The build is feature-complete, a full `docker compose up --build` pass works,
-spec gap #1 (process pool) is closed, the CLIP per-cycle reload is fixed, and
-two-machine convergence has an end-to-end `SyncManager` test. PR #2
-(`scaffold → main`) is open. Remaining work:
+spec gap #1 (process pool) is closed, the CLIP per-cycle reload is fixed,
+two-machine convergence has an end-to-end `SyncManager` test **and a live
+cross-container run**, and a read-only instance now auto-promotes to writable
+without a restart. PR #2 (`scaffold → main`) is open. Remaining work:
 
 1. **Browser smoke** at `http://localhost:8080` (only HTTP-GET + in-container
    Python calls were exercised so far — not a real browser): keyboard nav +
    `1`–`5` rating on `/`, the `/search` box + filter row + dupes toggle,
    `/review` bulk approve/reject buttons, `/settings` "run indexer pass now",
-   the status-bar footer ticking, read-only banner behaviour.
+   the status-bar footer ticking, read-only banner behaviour. Also confirm the
+   `_header` banner (not just the footer) reflects a live read-only→writable
+   promotion — it currently only re-renders on page load.
 2. **RAW + HEIC**: point `PHOTO_LIBRARY` at a folder with a few real `.CR2`/`.NEF`
    + `.HEIC` files; confirm RAW decodes via embedded preview and is **never**
    written (check mtimes / logs), HEIC decodes + thumbnails.
-3. **In-app read-only → writable promotion**: the in-app indexer thread reads
-   `manager.mode` but the app never calls `manager.refresh()`, so a session that
-   starts read-only never starts indexing until restart. The standalone
-   entrypoint already re-checks. Wire a periodic `refresh()` into the app.
-4. **Two-machine sync — real containers** (optional, the logic is now unit +
-   integration tested): copy `APP_DATA/sync/` to a second dir, point a second
-   container at it, eyeball the read-only banner while the first holds the lock.
-5. **Dockerfile caching** (optional): the single combined install layer
+3. **Dockerfile caching** (optional): the single combined install layer
    re-downloads `torch` on any source edit. A deps-only pre-layer
    (`uv pip compile pyproject.toml` → install, then `COPY src/` → install
    `--no-deps`) would cache the ~150 MB torch wheel across code changes.
