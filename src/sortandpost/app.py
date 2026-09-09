@@ -62,6 +62,7 @@ class State:
     clip_model: ClipModel | None = None
     engine: Engine | None = None
     settings: Settings | None = None
+    indexer_started: bool = False
 
     @classmethod
     def apply(cls, manager: SyncManager) -> None:
@@ -146,6 +147,7 @@ def build_ui(settings: Settings) -> None:
 
     if settings.config.indexer.run_in_app and State.write_mode == WriteMode.writable:
         _start_indexer_thread(settings, manager)
+    _start_lock_watch(settings, manager)
 
     settings.paths.thumbnails_dir.mkdir(parents=True, exist_ok=True)
     nicegui_app.add_static_files(_THUMB_URL, str(settings.paths.thumbnails_dir))
@@ -433,7 +435,11 @@ def build_ui(settings: Settings) -> None:
 
 def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
     """Run the continuous indexer (step 6) in-process while this machine is the
-    writer. It stops on app shutdown; it never runs in read-only mode."""
+    writer. It stops on app shutdown; it never runs in read-only mode. Idempotent
+    -- a later call (e.g. from ``_start_lock_watch`` on promotion) is a no-op."""
+    if State.indexer_started:
+        return
+    State.indexer_started = True
     stop = threading.Event()
     thread = threading.Thread(
         target=run_indexer,
@@ -455,6 +461,34 @@ def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
         thread.join(timeout=10)
 
     nicegui_app.on_shutdown(_shutdown)
+
+
+def _start_lock_watch(settings: Settings, manager: SyncManager) -> None:
+    """Re-check the write lock on a timer so an instance that started **read-only**
+    promotes itself once the lock holder releases (or its lock goes stale),
+    without a restart. Mirrors the standalone indexer's
+    ``is_writable=lambda: manager.refresh()``. ``manager.refresh()`` is a cheap
+    no-op once we already hold the lock, so this keeps running harmlessly after
+    promotion (and reflects a future takeover in ``State`` for the status bar)."""
+    stop = threading.Event()
+    interval = max(5, settings.config.sync.lock_heartbeat_sec)
+
+    def _watch() -> None:
+        while not stop.wait(interval):
+            try:
+                before = manager.mode
+                mode = manager.refresh()
+                State.apply(manager)
+                if mode is not before:
+                    log.info("write-lock state changed: %s -> %s", before, mode)
+                if mode is WriteMode.writable and settings.config.indexer.run_in_app:
+                    _start_indexer_thread(settings, manager)  # no-op if already running
+            except Exception:  # a bad tick must not kill the watch
+                log.exception("lock-watch tick failed")
+
+    thread = threading.Thread(target=_watch, name="sortandpost-lockwatch", daemon=True)
+    thread.start()
+    nicegui_app.on_shutdown(stop.set)
 
 
 def _run_search(settings: Settings, engine: Engine, query: str, flt: PhotoFilter) -> list[Photo]:
