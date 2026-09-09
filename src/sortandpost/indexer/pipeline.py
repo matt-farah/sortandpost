@@ -1,27 +1,321 @@
-"""Per-file indexing pipeline stages.
+"""Per-file indexing pipeline (build-order step 3: stages 1-6).
 
-``stages_done`` on :class:`sortandpost.db.models.ScanState` is a bitmask of the
-:class:`Stage` values below, so a file killed mid-pipeline resumes where it left
-off. Implemented in build-order step 3 (stages 1-6) and step 5 (CLIP).
+``ScanState.stages_done`` is a bitmask of :class:`Stage`, so a file killed
+mid-pipeline resumes where it left off. Every stage is idempotent: re-running a
+fully indexed file is a cheap stat check, and re-running a partially indexed one
+repeats only the unfinished stages.
+
+Identity is always ``pixel_hash``. "Same hash at a new path" and "same hash at
+several present paths" are both just multiple :class:`~sortandpost.db.models.PhotoPath`
+rows for one :class:`~sortandpost.db.models.Photo`; the move-vs-duplicate
+distinction falls out of how many rows are ``present`` after a scan.
 """
 
 from __future__ import annotations
 
+import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import IntFlag
+from pathlib import Path
+
+from sqlmodel import Session, col, select
+
+from sortandpost.db.models import Photo, PhotoPath, ScanState
+from sortandpost.dedup import dhash
+from sortandpost.hashing import pixel_hash_of_image
+from sortandpost.indexer.decode import DecodeError, load_image
+from sortandpost.indexer.reconcile import ReconcileOutcome, reconcile_metadata
+from sortandpost.indexer.thumbnails import ThumbPathFn, write_thumbnails
+from sortandpost.metadata import EmbeddedMetadata, ExiftoolClient, MetadataError, is_raw
+
+log = logging.getLogger(__name__)
+
+_MAX_ATTEMPTS = 3
 
 
 class Stage(IntFlag):
-    STAT = 1 << 0        # stat + fast-path (size, mtime_ns) check
-    DECODE = 1 << 1      # decode to RGB (Pillow / pillow-heif / rawpy preview)
-    HASH = 1 << 2        # pixel_hash = sha256(rgb_bytes); upsert Photo/PhotoPath
+    STAT = 1 << 0  # stat + fast-path (size, mtime_ns) check
+    DECODE = 1 << 1  # decode to RGB (Pillow / pillow-heif / rawpy preview)
+    HASH = 1 << 2  # pixel_hash = sha256(rgb_bytes); upsert Photo/PhotoPath
     THUMBNAILS = 1 << 3  # write configured WebP sizes, keyed by hash
-    METADATA = 1 << 4    # exiftool batch read into Photo columns
-    RECONCILE = 1 << 5   # rating: file vs DB (mtime wins tie-break)
-    CLIP = 1 << 6        # image embedding + zero-shot predictions
+    METADATA = 1 << 4  # exiftool batch read into Photo columns
+    RECONCILE = 1 << 5  # rating: file vs DB (mtime wins tie-break)
+    CLIP = 1 << 6  # image embedding + zero-shot predictions
 
     BROWSABLE = STAT | DECODE | HASH | THUMBNAILS | METADATA | RECONCILE
     COMPLETE = BROWSABLE | CLIP
 
 
-def run_file(path: str) -> None:
-    raise NotImplementedError("build-order step 3: indexer pipeline")
+@dataclass
+class IndexOutcome:
+    path: Path
+    pixel_hash: str | None = None
+    skipped: bool = False
+    new_photo: bool = False
+    thumbnails_written: tuple[int, ...] = ()
+    reconcile: ReconcileOutcome | None = None
+    error: str | None = None
+
+
+@dataclass
+class PipelineConfig:
+    thumbnail_sizes: tuple[int, ...]
+    thumbnail_format: str
+    thumbnail_quality: int
+    thumbnail_path: ThumbPathFn
+
+
+# --------------------------------------------------------------------------- #
+# Entry point
+# --------------------------------------------------------------------------- #
+def index_file(
+    session: Session,
+    path: Path,
+    *,
+    config: PipelineConfig,
+    exiftool: ExiftoolClient | None,
+    device_id: str,
+    now: datetime,
+) -> IndexOutcome:
+    """Run stages 1-6 for one file. Caller commits; caller handles the sweep."""
+    key = str(path)
+    try:
+        st = path.stat()
+    except OSError as exc:
+        return IndexOutcome(path=path, error=f"stat: {exc}")
+
+    scan = session.get(ScanState, key)
+    if not _needs_index(scan, st.st_size, st.st_mtime_ns):
+        assert scan is not None
+        return IndexOutcome(path=path, pixel_hash=scan.pixel_hash, skipped=True)
+
+    if scan is None:
+        scan = ScanState(path=key)
+        session.add(scan)
+    scan.size = st.st_size
+    scan.mtime_ns = st.st_mtime_ns
+    scan.error = None
+
+    # -- stage 2: decode ------------------------------------------------------ #
+    try:
+        img = load_image(path)
+    except DecodeError as exc:
+        scan.error = f"decode: {exc}"
+        scan.attempts += 1
+        scan.stages_done = int(Stage.STAT)
+        log.warning("decode failed for %s: %s", path, exc)
+        return IndexOutcome(path=path, error=scan.error)
+
+    try:
+        width, height = img.size
+        fmt = (img.format or path.suffix.lstrip(".").upper() or "UNKNOWN").upper()
+
+        # -- stage 3: pixel hash + identity -------------------------------- #
+        pixel_hash = pixel_hash_of_image(img)
+        new_photo = _upsert_photo(session, pixel_hash, path, st, width, height, fmt, now)
+        _upsert_path(session, pixel_hash, path, st)
+        scan.pixel_hash = pixel_hash
+
+        # perceptual hash for near-duplicate detection (step 7); deterministic,
+        # so compute once and backfill on any later re-decode.
+        photo_row = session.get(Photo, pixel_hash)
+        if photo_row is not None and photo_row.phash is None:
+            photo_row.phash = dhash(img)
+
+        # -- stage 4: thumbnails ----------------------------------------- #
+        try:
+            written = write_thumbnails(
+                img,
+                pixel_hash,
+                sizes=config.thumbnail_sizes,
+                thumb_path=config.thumbnail_path,
+                fmt=config.thumbnail_format,
+                quality=config.thumbnail_quality,
+            )
+        except OSError as exc:
+            scan.error = f"thumbnail: {exc}"
+            scan.attempts += 1
+            scan.stages_done = int(Stage.STAT | Stage.DECODE | Stage.HASH)
+            log.warning("thumbnail failed for %s: %s", path, exc)
+            return IndexOutcome(path=path, pixel_hash=pixel_hash, error=scan.error)
+    finally:
+        img.close()
+
+    # -- stage 5: embedded metadata (best effort) --------------------------- #
+    md: EmbeddedMetadata | None = None
+    if exiftool is not None:
+        try:
+            md = exiftool.read(path)
+            _apply_metadata(session, pixel_hash, md)
+        except MetadataError as exc:
+            log.warning("metadata read failed for %s: %s", path, exc)
+            md = None
+
+    # -- stage 6: rating / keyword reconcile (file vs DB) ------------------ #
+    reconcile: ReconcileOutcome | None = None
+    if md is not None:
+        try:
+            reconcile = reconcile_metadata(
+                session,
+                pixel_hash=pixel_hash,
+                path=path,
+                md=md,
+                exiftool=exiftool,
+                device_id=device_id,
+                file_mtime_ns=st.st_mtime_ns,
+                now=now,
+            )
+        except MetadataError as exc:
+            log.warning("metadata reconcile failed for %s: %s", path, exc)
+
+    scan.stages_done = int(Stage.BROWSABLE)
+    scan.indexed_at = now
+    scan.attempts = 0
+    return IndexOutcome(
+        path=path,
+        pixel_hash=pixel_hash,
+        new_photo=new_photo,
+        thumbnails_written=written,
+        reconcile=reconcile,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Stage helpers
+# --------------------------------------------------------------------------- #
+def _needs_index(scan: ScanState | None, size: int, mtime_ns: int) -> bool:
+    if scan is None:
+        return True
+    if scan.error is not None:
+        return scan.attempts < _MAX_ATTEMPTS
+    if scan.size != size or scan.mtime_ns != mtime_ns:
+        return True
+    return (scan.stages_done & Stage.BROWSABLE) != Stage.BROWSABLE
+
+
+def _upsert_photo(
+    session: Session,
+    pixel_hash: str,
+    path: Path,
+    st: os.stat_result,
+    width: int,
+    height: int,
+    fmt: str,
+    now: datetime,
+) -> bool:
+    photo = session.get(Photo, pixel_hash)
+    if photo is None:
+        session.add(
+            Photo(
+                pixel_hash=pixel_hash,
+                primary_path=str(path),
+                width=width,
+                height=height,
+                format=fmt,
+                is_raw=is_raw(path),
+                file_size=st.st_size,
+                file_mtime_ns=st.st_mtime_ns,
+                first_indexed_at=now,
+                last_indexed_at=now,
+            )
+        )
+        return True
+    photo.last_indexed_at = now
+    photo.missing_since = None
+    if photo.primary_path == str(path):
+        photo.file_size = st.st_size
+        photo.file_mtime_ns = st.st_mtime_ns
+    return False
+
+
+def _upsert_path(session: Session, pixel_hash: str, path: Path, st: os.stat_result) -> None:
+    key = str(path)
+    row = session.exec(select(PhotoPath).where(PhotoPath.path == key)).first()
+    if row is None:
+        session.add(
+            PhotoPath(
+                pixel_hash=pixel_hash,
+                path=key,
+                size=st.st_size,
+                mtime_ns=st.st_mtime_ns,
+                present=True,
+            )
+        )
+        return
+    # Content at a known path changed identity: repoint it. The now-possibly
+    # orphaned old Photo is picked up by the end-of-scan presence sweep.
+    row.pixel_hash = pixel_hash
+    row.size = st.st_size
+    row.mtime_ns = st.st_mtime_ns
+    row.present = True
+
+
+def _apply_metadata(session: Session, pixel_hash: str, md: EmbeddedMetadata) -> None:
+    photo = session.get(Photo, pixel_hash)
+    if photo is None:
+        return
+    if md.taken_at is not None:
+        photo.taken_at = md.taken_at
+    if md.orientation is not None:
+        photo.orientation = md.orientation
+    if md.camera_make is not None:
+        photo.camera_make = md.camera_make
+    if md.camera_model is not None:
+        photo.camera_model = md.camera_model
+    if md.gps_lat is not None:
+        photo.gps_lat = md.gps_lat
+    if md.gps_lon is not None:
+        photo.gps_lon = md.gps_lon
+
+
+# --------------------------------------------------------------------------- #
+# End-of-scan presence sweep
+# --------------------------------------------------------------------------- #
+@dataclass
+class SweepResult:
+    marked_absent: int = 0
+    marked_missing: int = 0
+    revived: int = 0
+    repointed_primary: list[str] = field(default_factory=list)
+
+
+def sweep_presence(session: Session, seen_paths: set[str], *, now: datetime) -> SweepResult:
+    """Reconcile ``present``/``missing_since`` after a full scan pass.
+
+    Any ``photo_paths`` row whose path was not visited this pass becomes absent;
+    a :class:`Photo` with no present path gets ``missing_since`` (never purged --
+    hard constraint #8). ``primary_path`` is repointed to the lexically first
+    present path when the current one is gone.
+    """
+    result = SweepResult()
+
+    for pp in session.exec(select(PhotoPath)).all():
+        should_be_present = pp.path in seen_paths
+        if pp.present and not should_be_present:
+            pp.present = False
+            result.marked_absent += 1
+        elif not pp.present and should_be_present:
+            pp.present = True
+
+    for photo in session.exec(select(Photo)).all():
+        present = session.exec(
+            select(PhotoPath).where(
+                PhotoPath.pixel_hash == photo.pixel_hash,
+                col(PhotoPath.present).is_(True),
+            )
+        ).all()
+        if present:
+            if photo.missing_since is not None:
+                photo.missing_since = None
+                result.revived += 1
+            present_paths = sorted(p.path for p in present)
+            if photo.primary_path not in present_paths:
+                photo.primary_path = present_paths[0]
+                result.repointed_primary.append(present_paths[0])
+        elif photo.missing_since is None:
+            photo.missing_since = now
+            result.marked_missing += 1
+
+    return result

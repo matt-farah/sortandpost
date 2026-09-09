@@ -17,7 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 
 # Import models so SQLModel.metadata is fully populated on `import sortandpost.db`.
-from sortandpost.db import models as models  # noqa: F401
+from sortandpost.db import models as models
 
 
 def make_engine(db_path: Path, *, echo: bool = False) -> Engine:
@@ -34,6 +34,10 @@ def make_engine(db_path: Path, *, echo: bool = False) -> Engine:
         cursor.execute("PRAGMA journal_mode=DELETE")
         cursor.execute("PRAGMA synchronous=FULL")
         cursor.execute("PRAGMA foreign_keys=ON")
+        # The app, the sync publisher and the continuous indexer (step 6) can all
+        # hold connections to this file at once; wait out a peer's write lock
+        # instead of failing with "database is locked".
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 
     return engine

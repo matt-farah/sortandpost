@@ -1,0 +1,55 @@
+"""Read-only queries behind the thumbnail grid and photo-detail pages.
+
+Kept separate from the NiceGUI layer so the ordering/pagination rules are unit
+testable without a browser. Ordering: newest ``taken_at`` first, photos with no
+date last, ``pixel_hash`` as the stable tie-break.
+"""
+
+from __future__ import annotations
+
+from sqlmodel import Session, col, func, select
+
+from sortandpost.db.models import Photo, PhotoPath, Rating
+
+
+def photo_count(session: Session, *, include_missing: bool = False) -> int:
+    stmt = select(func.count()).select_from(Photo)
+    if not include_missing:
+        stmt = stmt.where(col(Photo.missing_since).is_(None))
+    return int(session.exec(stmt).one())
+
+
+def list_photos(
+    session: Session,
+    *,
+    limit: int = 120,
+    offset: int = 0,
+    include_missing: bool = False,
+) -> list[Photo]:
+    stmt = select(Photo)
+    if not include_missing:
+        stmt = stmt.where(col(Photo.missing_since).is_(None))
+    stmt = (
+        stmt.order_by(
+            col(Photo.taken_at).is_(None),
+            col(Photo.taken_at).desc(),
+            col(Photo.pixel_hash),
+        )
+        .offset(offset)
+        .limit(limit)
+    )
+    return list(session.exec(stmt).all())
+
+
+def get_photo(session: Session, pixel_hash: str) -> Photo | None:
+    return session.get(Photo, pixel_hash)
+
+
+def get_paths(session: Session, pixel_hash: str) -> list[PhotoPath]:
+    stmt = select(PhotoPath).where(PhotoPath.pixel_hash == pixel_hash).order_by(col(PhotoPath.path))
+    return list(session.exec(stmt).all())
+
+
+def get_rating(session: Session, pixel_hash: str) -> int | None:
+    row = session.get(Rating, pixel_hash)
+    return row.stars if row is not None else None

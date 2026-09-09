@@ -1,42 +1,61 @@
-"""CLIP engine: image embeddings + zero-shot tagging against the vocabulary.
+"""CLIP engine: image embeddings + zero-shot tagging.
 
-Embeddings are L2-normalized and stored as rows in a memory-mapped float32 matrix
-under ``sync/embeddings/``. See CLAUDE.md → "CLIP tagging & search".
-Implemented in build-order step 5.
+Embeddings are L2-normalized and stored as rows in a memory-mapped ``float32``
+matrix under ``sync/embeddings/``. See CLAUDE.md -> "CLIP tagging & search".
+
+* :mod:`sortandpost.clip.model` -- guarded ``open_clip`` wrapper (CPU).
+* :mod:`sortandpost.clip.store` -- the append-mostly embedding matrix + rowmap.
+* :mod:`sortandpost.clip.vocab` -- ``tags.yaml`` + its cached text embeddings.
+* :mod:`sortandpost.clip.tagging` -- zero-shot scoring + the ``/review`` flow.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+from sortandpost.clip.model import (
+    ClipModel,
+    ClipModelUnavailable,
+    clip_available,
+    known_dim,
+)
+from sortandpost.clip.store import (
+    EmbeddingDimMismatch,
+    EmbeddingStore,
+    ModelMismatch,
+    check_compatible,
+    ensure_meta,
+    load_meta,
+)
+from sortandpost.clip.tagging import (
+    ReviewGroup,
+    ScoredTerm,
+    approve,
+    pending_groups,
+    pick_terms,
+    reject,
+    upsert_prediction,
+)
+from sortandpost.clip.vocab import Vocab, VocabTerm, ensure_text_matrix, load_vocab
 
-import numpy as np
-
-from sortandpost.config import ClipConfig, TaggingConfig
-
-
-@dataclass
-class Prediction:
-    tag: str
-    facet: str | None
-    score: float
-
-
-class ClipEngine:
-    def __init__(self, config: ClipConfig, cache_dir: Path) -> None:
-        self.config = config
-        self.cache_dir = cache_dir
-
-    def load(self) -> None:
-        raise NotImplementedError("build-order step 5: CLIP engine")
-
-    def embed_images(self, images: list[Path]) -> np.ndarray:
-        raise NotImplementedError("build-order step 5: CLIP engine")
-
-    def embed_text(self, prompts: list[str]) -> np.ndarray:
-        raise NotImplementedError("build-order step 5: CLIP engine")
-
-    def zero_shot(
-        self, image_embedding: np.ndarray, vocab: dict[str, list[str]], tagging: TaggingConfig
-    ) -> list[Prediction]:
-        raise NotImplementedError("build-order step 5: CLIP engine")
+__all__ = [
+    "ClipModel",
+    "ClipModelUnavailable",
+    "EmbeddingDimMismatch",
+    "EmbeddingStore",
+    "ModelMismatch",
+    "ReviewGroup",
+    "ScoredTerm",
+    "Vocab",
+    "VocabTerm",
+    "approve",
+    "check_compatible",
+    "clip_available",
+    "ensure_meta",
+    "ensure_text_matrix",
+    "known_dim",
+    "load_meta",
+    "load_vocab",
+    "pending_groups",
+    "pick_terms",
+    "reject",
+    "upsert_prediction",
+]

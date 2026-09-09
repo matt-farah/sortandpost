@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+from sqlmodel import Session, select
+
+from sortandpost.config import Settings
+from sortandpost.db import make_engine
+from sortandpost.db.models import ChangeOp, Rating, RatingSource
+from sortandpost.sync.changelog import record_change
+from sortandpost.sync.lock import read_lock
+from sortandpost.sync.manager import SyncManager, WriteMode
+from sortandpost.sync.publish import read_generation
+from tests.factories import hash_for, make_db
+
+
+class FakeClock:
+    def __init__(self, start: datetime) -> None:
+        self.now = start
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now = self.now + timedelta(seconds=seconds)
+
+
+def _settings(monkeypatch: pytest.MonkeyPatch, app_data: Path) -> Settings:
+    monkeypatch.setenv("APP_DATA", str(app_data))
+    s = Settings.resolve()
+    make_db(s.paths.working_db, photos=["a", "b"])
+    return s
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock(datetime(2026, 9, 6, 12, 0, 0, tzinfo=UTC))
+
+
+def test_single_writer_then_read_only_second_machine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    a_data = tmp_path / "a"
+    settings_a = _settings(monkeypatch, a_data)
+
+    # machine B shares machine A's sync/ folder
+    b_data = tmp_path / "b"
+    b_data.mkdir()
+    (b_data / "sync").symlink_to(settings_a.paths.sync, target_is_directory=True)
+    settings_b = _settings(monkeypatch, b_data)
+
+    mgr_a = SyncManager(settings_a, clock=clock)
+    assert mgr_a.start(background=False) is WriteMode.writable
+    assert read_lock(settings_a.paths.lock_file).device_id == settings_a.device_id
+    assert settings_a.paths.published_db.exists()
+
+    mgr_b = SyncManager(settings_b, clock=clock)
+    assert mgr_b.start(background=False) is WriteMode.read_only
+    # B still catches up to A's published generation
+    assert read_generation(settings_b.paths.working_db) == read_generation(
+        settings_b.paths.published_db
+    )
+
+    mgr_a.stop()
+    mgr_b.stop()
+
+
+def test_read_only_machine_takes_over_a_stale_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    settings_a = _settings(monkeypatch, tmp_path / "a")
+    b_data = tmp_path / "b"
+    b_data.mkdir()
+    (b_data / "sync").symlink_to(settings_a.paths.sync, target_is_directory=True)
+    settings_b = _settings(monkeypatch, b_data)
+
+    mgr_a = SyncManager(settings_a, clock=clock)
+    mgr_a.start(background=False)
+
+    b_clock = FakeClock(clock.now)
+    mgr_b = SyncManager(settings_b, clock=b_clock)
+    assert mgr_b.start(background=False) is WriteMode.read_only
+
+    # A goes silent; B's clock runs past lock_stale_after_sec
+    b_clock.advance(settings_b.config.sync.lock_stale_after_sec + 60)
+    assert mgr_b.refresh() is WriteMode.writable
+    assert read_lock(settings_b.paths.lock_file).device_id == settings_b.device_id
+
+    mgr_b.stop()
+
+
+def test_publish_is_skipped_when_nothing_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    settings = _settings(monkeypatch, tmp_path / "a")
+    mgr = SyncManager(settings, clock=clock)
+    mgr.start(background=False)  # performs the first publish
+
+    clock.advance(settings.config.sync.publish_interval_sec + 1)
+    assert mgr.publish() is False  # DB untouched since the startup publish
+
+    gen_before = read_generation(settings.paths.working_db)
+    assert mgr.publish(force=True) is True
+    assert read_generation(settings.paths.working_db) == gen_before + 1
+
+    mgr.stop()
+
+
+def test_snapshot_cadence_and_prune(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    settings = _settings(monkeypatch, tmp_path / "a")
+    settings.config.sync.snapshot_every_publishes = 2
+    settings.config.sync.snapshot_keep = 1
+
+    mgr = SyncManager(settings, clock=clock)
+    mgr.start(background=False)
+
+    for _ in range(5):
+        clock.advance(1)
+        mgr.publish(force=True)
+
+    snaps = list((settings.paths.snapshots_dir).glob("sortandpost-*.db*"))
+    assert len(snaps) == settings.config.sync.snapshot_keep
+
+    mgr.stop()
+
+
+def test_stop_releases_the_lock_and_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    settings = _settings(monkeypatch, tmp_path / "a")
+    mgr = SyncManager(settings, clock=clock)
+    mgr.start(background=False)
+    assert settings.paths.lock_file.exists()
+
+    mgr.stop()
+    assert not settings.paths.lock_file.exists()
+    assert settings.paths.published_db.exists()
+
+
+def test_conflict_copy_is_merged_and_archived_on_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    settings = _settings(monkeypatch, tmp_path / "a")
+
+    # seed the working DB, publish it, then fabricate a conflict copy that
+    # carries an extra rating + its changes row.
+    boot = SyncManager(settings, clock=clock)
+    boot.start(background=False)
+    boot.stop()
+
+    conflict = settings.paths.sync / "sortandpost (1).db"
+    conflict.write_bytes(settings.paths.published_db.read_bytes())
+    ce = make_engine(conflict)
+    with Session(ce) as s:
+        ph = hash_for("a")
+        s.add(
+            Rating(
+                pixel_hash=ph,
+                stars=5,
+                updated_at=clock.now,
+                updated_by_device="other",
+                source=RatingSource.app,
+            )
+        )
+        record_change(
+            s,
+            device_id="other",
+            op=ChangeOp.rate,
+            pixel_hash=ph,
+            ts=clock.now,
+            field="stars",
+            new_value="5",
+        )
+        s.commit()
+    ce.dispose()
+
+    mgr = SyncManager(settings, clock=clock)
+    assert mgr.start(background=False) is WriteMode.writable
+
+    with Session(make_engine(settings.paths.working_db)) as s:
+        merged = {r.pixel_hash: r.stars for r in s.exec(select(Rating)).all()}
+    assert merged.get(hash_for("a")) == 5
+    assert not conflict.exists()
+    assert (settings.paths.merged_snapshots_dir / "sortandpost (1).db").exists()
+
+    mgr.stop()

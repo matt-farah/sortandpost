@@ -84,6 +84,9 @@ class IndexerConfig(BaseModel):
     full_scan_interval_min: int = 15
     workers: str | int = "auto"
     clip_deferred: bool = True
+    run_in_app: bool = True  # run the continuous indexer inside the web app process
+    watch: bool = True  # react to filesystem events (needs `watchdog`), not just the timer
+    debounce_sec: float = 2.0  # quiet period after an FS event before a rescan
 
 
 class RatingConfig(BaseModel):
@@ -140,9 +143,7 @@ def bootstrap(paths: Paths) -> None:
 
     if not paths.device_file.exists():
         paths.device_file.write_text(
-            json.dumps(
-                {"device_id": uuid.uuid4().hex, "hostname": socket.gethostname()}, indent=2
-            ),
+            json.dumps({"device_id": uuid.uuid4().hex, "hostname": socket.gethostname()}, indent=2),
             encoding="utf-8",
         )
 

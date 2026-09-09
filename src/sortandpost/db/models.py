@@ -12,7 +12,7 @@ whole-file hash. Tables split into:
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
@@ -21,28 +21,28 @@ from sqlmodel import Field, SQLModel
 # --------------------------------------------------------------------------- #
 # Enums
 # --------------------------------------------------------------------------- #
-class TagSource(str, Enum):
+class TagSource(StrEnum):
     manual = "manual"
     clip = "clip"
 
 
-class TagKind(str, Enum):
+class TagKind(StrEnum):
     manual = "manual"
     clip_approved = "clip-approved"
 
 
-class PredictionState(str, Enum):
+class PredictionState(StrEnum):
     pending = "pending"
     approved = "approved"
     rejected = "rejected"
 
 
-class RatingSource(str, Enum):
+class RatingSource(StrEnum):
     app = "app"
     file = "file"
 
 
-class ChangeOp(str, Enum):
+class ChangeOp(StrEnum):
     rate = "rate"
     tag_add = "tag_add"
     tag_remove = "tag_remove"
@@ -123,9 +123,7 @@ class PhotoTag(SQLModel, table=True):
 
 class Prediction(SQLModel, table=True):
     __tablename__ = "predictions"
-    __table_args__ = (
-        UniqueConstraint("pixel_hash", "tag_name", "model", name="uq_prediction"),
-    )
+    __table_args__ = (UniqueConstraint("pixel_hash", "tag_name", "model", name="uq_prediction"),)
 
     id: int | None = Field(default=None, primary_key=True)
     pixel_hash: str = Field(foreign_key="photos.pixel_hash", index=True)
@@ -174,6 +172,8 @@ class ScanState(SQLModel, table=True):
 
     path: str = Field(primary_key=True)
     pixel_hash: str | None = Field(default=None, index=True)
+    size: int | None = None  # last-seen stat, for the fast path
+    mtime_ns: int | None = None
     stages_done: int = 0  # bitmask of completed pipeline stages
     indexed_at: datetime | None = None
     error: str | None = None

@@ -59,7 +59,7 @@ strict = true
 plugins = []
 # SQLModel/NiceGUI ship partial stubs; don't fail the build on their internals.
 [[tool.mypy.overrides]]
-module = ["rawpy.*", "open_clip.*", "pillow_heif.*", "nicegui.*"]
+module = ["rawpy.*", "open_clip.*", "torch.*", "pillow_heif.*", "nicegui.*", "watchdog.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
