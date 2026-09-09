@@ -130,7 +130,11 @@ def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
         # -- discover + fast-path filter (main thread, one ScanState query) --- #
         scan_rows = {s.path: s for s in session.exec(select(ScanState)).all()}
         todo: list[str] = []
-        for path in iter_image_files(roots, exclude=[paths.app_data]):
+        for path in iter_image_files(
+            roots,
+            exclude=[paths.app_data],
+            exclude_names=settings.config.indexer.exclude_dir_names,
+        ):
             key = str(path)
             seen_paths.add(key)
             stats.seen += 1

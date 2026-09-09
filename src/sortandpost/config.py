@@ -87,10 +87,23 @@ class IndexerConfig(BaseModel):
     run_in_app: bool = True  # run the continuous indexer inside the web app process
     watch: bool = True  # react to filesystem events (needs `watchdog`), not just the timer
     debounce_sec: float = 2.0  # quiet period after an FS event before a rescan
+    # Directory names to skip entirely while scanning (case-insensitive, matched
+    # at any depth), e.g. ["RAW", "af", "Lightroom"]. Photos already indexed from
+    # a newly-excluded folder fall out of the library on the next scan.
+    exclude_dir_names: list[str] = Field(default_factory=list)
 
 
 class RatingConfig(BaseModel):
     write_windows_compat_tags: bool = True
+
+
+class StackingConfig(BaseModel):
+    """Group near-duplicate photos in the same folder into one grid entry.
+    Computed at read time -- toggling this never triggers a re-index."""
+
+    enabled: bool = False
+    raw_jpeg: bool = True  # pair a RAW with its same-named JPEG
+    similar_names: bool = True  # group "img.jpg" / "img copy.jpg" / "img (1).jpg" / "copy img.jpg"
 
 
 class AppConfig(BaseModel):
@@ -104,6 +117,7 @@ class AppConfig(BaseModel):
     thumbnails: ThumbnailsConfig = Field(default_factory=ThumbnailsConfig)
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     rating: RatingConfig = Field(default_factory=RatingConfig)
+    stacking: StackingConfig = Field(default_factory=StackingConfig)
 
     @classmethod
     def load(cls, path: Path) -> AppConfig:

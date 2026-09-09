@@ -41,6 +41,21 @@ def list_photos(
     return list(session.exec(stmt).all())
 
 
+def list_photo_ids(session: Session, *, include_missing: bool = False) -> list[str]:
+    """Every photo's ``pixel_hash`` in the same order as :func:`list_photos`.
+    Used by the grid when stacking is on -- it pages over this in memory after
+    dropping hidden stack members."""
+    stmt = select(Photo.pixel_hash)
+    if not include_missing:
+        stmt = stmt.where(col(Photo.missing_since).is_(None))
+    stmt = stmt.order_by(
+        col(Photo.taken_at).is_(None),
+        col(Photo.taken_at).desc(),
+        col(Photo.pixel_hash),
+    )
+    return list(session.exec(stmt).all())
+
+
 def get_photo(session: Session, pixel_hash: str) -> Photo | None:
     return session.get(Photo, pixel_hash)
 

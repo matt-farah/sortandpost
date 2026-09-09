@@ -42,6 +42,12 @@ indexer:
   run_in_app: true                # run the continuous indexer inside the web app process
   watch: true                     # react to filesystem events (needs `watchdog`), not just the timer
   debounce_sec: 2.0               # quiet period after an FS event before a rescan
+  exclude_dir_names: []           # folder names to skip while scanning, e.g. ["RAW", "af"] (case-insensitive)
 
 rating:
   write_windows_compat_tags: true
+
+stacking:
+  enabled: false                  # group near-duplicate photos in the same folder into one grid entry
+  raw_jpeg: true                  # pair a RAW with its same-named JPEG
+  similar_names: true             # group "img.jpg" / "img copy.jpg" / "img (1).jpg" / "copy img.jpg"
