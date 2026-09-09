@@ -22,20 +22,24 @@ def iter_image_files(
     roots: Iterable[Path | str],
     *,
     exclude: Iterable[Path | str] = (),
+    exclude_names: Iterable[str] = (),
 ) -> Iterator[Path]:
     """Yield image files under *roots*, depth-first, names sorted at each level.
 
     *exclude* is a set of directory paths to prune (typically ``APP_DATA`` so the
-    generated ``thumbnails/`` tree is never re-ingested).
+    generated ``thumbnails/`` tree is never re-ingested). *exclude_names* prunes
+    any directory whose name matches (case-insensitive) at any depth -- e.g.
+    ``["RAW", "af"]``.
     """
     pruned = {Path(e).resolve() for e in exclude}
+    pruned_names = {n.strip().casefold() for n in exclude_names if n.strip()}
     for root in roots:
         root_path = Path(root)
         if root_path.is_dir():
-            yield from _walk(root_path, pruned)
+            yield from _walk(root_path, pruned, pruned_names)
 
 
-def _walk(directory: Path, pruned: set[Path]) -> Iterator[Path]:
+def _walk(directory: Path, pruned: set[Path], pruned_names: set[str]) -> Iterator[Path]:
     try:
         entries = sorted(directory.iterdir(), key=lambda p: p.name)
     except OSError:
@@ -46,8 +50,8 @@ def _walk(directory: Path, pruned: set[Path]) -> Iterator[Path]:
         if entry.is_symlink():
             continue
         if entry.is_dir():
-            if entry.resolve() in pruned:
+            if entry.resolve() in pruned or entry.name.casefold() in pruned_names:
                 continue
-            yield from _walk(entry, pruned)
+            yield from _walk(entry, pruned, pruned_names)
         elif entry.is_file() and entry.suffix.lower() in IMAGE_SUFFIXES:
             yield entry

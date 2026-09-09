@@ -1,7 +1,118 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (cross-machine Docker test → read-only auto-promotion + a stale-engine bug fix)._
+_Last updated: 2026-09-09 (Features.md rounds 1–3 — library UX + bulk editing + marked-for-editing flag; all uncommitted)._
 _Working branch: `scaffold` (pushed to `origin/scaffold`). PR: `scaffold → main` = #2._
+
+---
+
+## 🎨 2026-09-09 — Features.md rounds 1–3: library UX, bulk editing, marked-for-editing
+
+New user-facing feature work driven by `Features.md` (new file, untracked).
+**All of this session's work is uncommitted** — working-tree edits to `app.py`
+et al. plus untracked `src/sortandpost/{stacks,reveal,db/ratings,db/tags,db/flags}.py`
+and their tests. `217 tests pass; ruff + ruff format + mypy clean.` Verified in a
+real browser this time — Playwright headless Chromium against a live app
+(`APP_DATA=<repo>/browser_test_data`, ~300 photos, `library_roots` →
+`~/Downloads/sampleImages`); scratch repro scripts were in the session scratchpad
+and have been removed.
+
+**Backend modules added (each: DB write + `changes` row in one txn, hard
+constraint #4; exiftool mirror off the event loop, hard constraint #7):**
+
+- `sortandpost.db.ratings.set_rating` — the UI's single rating write path
+  (`ratings` row + `rate` change + `XMP:Rating` / Windows-compat mirror). +6 tests.
+- `sortandpost.db.tags.{add,remove}_manual_tag` — manual keyword add/remove
+  (`photo_tags` source=`manual` + `tag_add`/`tag_remove` + `XMP:Subject` union).
+  `RESERVED_TAG_NAMES` + `embeddable_keywords()` strip workflow-only tags before
+  any file write (mirrored in `clip.tagging._embed_keywords`). +6 tests.
+- `sortandpost.db.flags` — the **"marked for editing" queue**. Stored as a
+  reserved manual tag `to-edit` so it rides the changes log / conflict merge and
+  filters via `PhotoFilter.tags_all` for free, but is **never** embedded into a
+  photo file. `set_edit_flag` / `edit_flagged_hashes` / `edit_flag_count` /
+  `clear_all_edit_flags`. +8 tests.
+- `sortandpost.stacks` — **read-time image stacking** (no schema change, no
+  re-index). Same-parent-folder only; two modes (`raw_jpeg` pairs,
+  `similar_names` — `img.jpg` / `img copy.jpg` / `img (1).jpg` / `copy img.jpg`);
+  newest mtime is the representative. `build_stacks(session, cfg) -> StackIndex`.
+  Config `stacking.{enabled,raw_jpeg,similar_names}` (default off), toggle on
+  `/settings`. Grid + `/search` collapse to the representative with a `⧉ N`
+  badge; the photo page shows a stack filmstrip; ratings/flags fan to every
+  member. +25 tests.
+- `sortandpost.reveal` — `reveal_in_file_manager` / `open_in_default_app`
+  (macOS `open -R`, Windows `explorer /select,`, Linux `xdg-open`), native runs
+  only. +6 tests.
+
+**Config:** `IndexerConfig.exclude_dir_names` (case-insensitive, any depth — the
+scanner prunes matching dirs; excluded photos go `missing`, not purged, and
+revive when un-excluded) and `StackingConfig`. `db/browse.list_photo_ids()`.
+
+**`app.py` (the big diff — ~950 lines):**
+
+- `/` grid rebuilt: **infinite scroll** (80/batch, appends near the bottom, live
+  header counter, no more `?page=`) replacing the pager; **full-bleed responsive
+  grid** (`repeat(auto-fill, minmax(220px, 1fr))`) on `/`, `/search`, `/review`.
+- **Scroll-position restore across back/forward** (hard-won — see the dedicated
+  note below): position lives in `history.state.spGrid`, `scrollRestoration =
+  'manual'`, a retry-loop `_scroll_to_js`, and the per-tick save must keep
+  running even after all tiles are loaded.
+- **Bulk select + toolbar**: hover checkbox per tile + shift-click ranges
+  (`_GridSelection`), floating toolbar with ★1–5 / clear / tag input / flag /
+  unflag; every write fans to stack members.
+- **Clickable star widget on each grid tile** — top row by the checkbox,
+  hover-only, desaturated amber; rate straight from the grid.
+- **Marked-for-editing UI**: clickable ⚑ in each tile's top-right corner (solid
+  amber + persistent when set, dim + hover-only when not); bulk flag/unflag that
+  repaint visible tiles live (a `pixel_hash -> set(on)` registry threaded through
+  `_thumb_cell`); a "Mark for editing" switch on the photo page; a live
+  "⚑ N marked for editing" quick link on the library header →
+  `/search?mark=true`, with a **"clear all"** button (confirm dialog) shown
+  whenever ≥1 is flagged; a "⚑ to edit" checkbox on `/search`.
+- Photo page: `← Back` / `← Back to library` use `history.back()`; **Paths**
+  panel with Copy path always + Reveal / Open (native).
+- `/settings`: excluded-folders chip editor (Save & rescan) + stacking toggles.
+
+**Features.md status:** done — rating widget, back-nav, responsive grid, infinite
+scroll, bulk rate/tag, marked-for-editing, grid hover rating, exclude
+subfolders, image stacking, file-path exposure. Not started — dark/light mode,
+bulk **delete** (needs a `CLAUDE.md` hard-constraint-#1 carve-out + `send2trash`;
+decisions already taken: move to system Trash, full cleanup incl. embedding
+compaction), design pass, keyboard nav on the photo/grid pages, saved searches,
+swipe-triage page, robopost social composer.
+
+---
+
+### Grid scroll-restore mechanism (don't regress this)
+
+Position for the `/` grid lives in **`history.state.spGrid` = `{n: loaded, y:
+scrollY}`**, written every 0.3 s by the page tick — which **must keep writing
+even after `done`** (all tiles loaded); stopping there was the "jumps to a fixed
+mid-page spot near the bottom" bug. On back/forward, `_GRID_RESTORE_JS` reads it,
+rebuilds `n` batches, then `_scroll_to_js` re-applies `scrollTo(0, y)` on a 50 ms
+loop for up to 8 s (grid rows stream in over the websocket, so the document is
+still growing — a single `scrollTo` lands short), stopping once on-target or once
+the height has been stable a while. `history.scrollRestoration = 'manual'` so the
+browser doesn't also guess. Filmstrip cells navigate with `location.replace` (not
+real links) so hopping stack members never grows history.
+
+---
+
+### Local dev / browser testing
+
+`.venv` carries only light deps (added `nicegui`, `rawpy`, `pillow-heif`,
+`playwright` + `playwright install chromium`) — **no torch**, so CLIP degrades
+gracefully (`clip_available()` / `ClipModelUnavailable`; semantic search +
+auto-tag are inert locally, filters still work). Run the app natively:
+
+```
+APP_DATA=<repo>/browser_test_data PHOTO_LIBRARY=~/Downloads/sampleImages \
+  .venv/bin/python -m sortandpost        # http://localhost:8080
+```
+
+`browser_test_data/` is git-excluded (`.git/info/exclude`) and holds ~300
+indexed photos + thumbnails. No browser tool in-session — drive the running app
+with headless Playwright scripts when a UI change needs real-browser
+verification. `.env` in the repo points `APP_DATA` at a stale scratchpad and a
+`/library` root that doesn't exist on this Mac — ignore it, pass env explicitly.
 
 ---
 
@@ -281,26 +392,42 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-The build is feature-complete, a full `docker compose up --build` pass works,
-spec gap #1 (process pool) is closed, the CLIP per-cycle reload is fixed,
-two-machine convergence has an end-to-end `SyncManager` test **and a live
-cross-container run**, and a read-only instance now auto-promotes to writable
-without a restart. PR #2 (`scaffold → main`) is open. Remaining work:
+**First: this session's feature work (Features.md rounds 1–3) is entirely
+uncommitted.** `git status` shows working-tree edits (`app.py` +9 files) and
+untracked `Features.md`, `src/sortandpost/{stacks,reveal,db/ratings,db/tags,
+db/flags}.py`, and 5 new test files. `217 tests pass; ruff + format + mypy clean.`
+Decide how to land it: one squashed "Features round" commit, or split
+(backend modules → grid UX → bulk editing → marked-for-editing). It has **not**
+been reviewed or pushed; PR #2 (`scaffold → main`) does not include it.
 
-1. **Browser smoke** at `http://localhost:8080` (only HTTP-GET + in-container
-   Python calls were exercised so far — not a real browser): keyboard nav +
-   `1`–`5` rating on `/`, the `/search` box + filter row + dupes toggle,
-   `/review` bulk approve/reject buttons, `/settings` "run indexer pass now",
-   the status-bar footer ticking, read-only banner behaviour. Also confirm the
-   `_header` banner (not just the footer) reflects a live read-only→writable
-   promotion — it currently only re-renders on page load.
-2. **RAW + HEIC**: point `PHOTO_LIBRARY` at a folder with a few real `.CR2`/`.NEF`
-   + `.HEIC` files; confirm RAW decodes via embedded preview and is **never**
-   written (check mtimes / logs), HEIC decodes + thumbnails.
-3. **Dockerfile caching** (optional): the single combined install layer
-   re-downloads `torch` on any source edit. A deps-only pre-layer
-   (`uv pip compile pyproject.toml` → install, then `COPY src/` → install
-   `--no-deps`) would cache the ~150 MB torch wheel across code changes.
+Then, remaining `Features.md` items (unchecked, roughly in priority order):
+
+1. **Bulk delete files** — decisions already taken: move to system Trash
+   (`send2trash` dep), full cleanup now (drop `photos`/`photo_paths`/`ratings`/
+   `photo_tags`/`predictions`/`embedding_rows`/`scan_state`, delete thumbnails,
+   compact the embedding memmap per `clip/store.py`, log `ChangeOp.unindex`).
+   Needs a **`CLAUDE.md` hard-constraint-#1 carve-out** for an explicit
+   user-initiated delete, plus a bulk-toolbar button + confirm dialog.
+2. **Keyboard nav / shortcuts** on the photo page and grid — ← → / `j` `k` to
+   move, `1`–`5` rate, `0` clear, `f` toggle the edit flag.
+3. **Dark / light mode** with a `/settings` manual/system choice.
+4. **Saved searches** (Search features).
+5. **Design pass** — scaffold → production looks.
+6. Other pages — swipe-style triage of unrated photos; robopost.app social
+   composer (API key → `.env`, per-machine, never synced).
+
+Older still-open verification work (from before this session):
+
+7. **Browser smoke** of the non-feature surface at `http://localhost:8080`:
+   `/review` bulk approve/reject, `/settings` "run indexer pass now", the
+   status-bar footer, read-only banner. Confirm the `_header` banner (not just
+   the footer) reflects a live read-only→writable promotion — it currently only
+   re-renders on page load.
+8. **RAW + HEIC** end-to-end with real `.CR2`/`.NEF`/`.HEIC` files — decode via
+   embedded preview, RAW **never** written (check mtimes / logs). (The `.venv`
+   now has `rawpy` + `pillow-heif`, so this can be done natively.)
+9. **Dockerfile caching** (optional): a deps-only pre-layer to cache the ~150 MB
+   torch wheel across code changes.
 
 Full caveat list is in **"Open threads / not blocking"** near the bottom.
 

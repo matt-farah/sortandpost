@@ -39,6 +39,7 @@ from sortandpost.db.models import (
     TagKind,
     TagSource,
 )
+from sortandpost.db.tags import embeddable_keywords
 from sortandpost.metadata import ExiftoolClient, MetadataError, can_embed_metadata, is_raw
 from sortandpost.sync.changelog import record_change
 
@@ -260,7 +261,7 @@ def _embed_keywords(session: Session, pixel_hash: str, exiftool: ExiftoolClient 
     skipped (DB stays the source of truth for those)."""
     if exiftool is None:
         return False
-    keywords = _current_keywords(session, pixel_hash)
+    keywords = embeddable_keywords(_current_keywords(session, pixel_hash))
     wrote = False
     paths = session.exec(
         select(PhotoPath).where(
