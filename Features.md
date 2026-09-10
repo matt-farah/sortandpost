@@ -34,15 +34,20 @@
     - Done: Copy path always; Reveal in file manager + Open in default app on native runs
 - [x] Move from paginated version to infinite scroll that loads images as needed
     - Done: 80/batch, appends near bottom, header counter, no more ?page= URLs
-- [~] Keyboard navigation & shortcuts
+- [x] Keyboard navigation & shortcuts
     - Photo page — DONE: ←/`k` prev, →/`j` next (representative order, clamped at
-      ends; maps a filmstrip member back to its stack rep), `1`–`5` rate, `0`
-      clear, `f` toggle the edit flag. Rating/flag keys drive the same widgets as
-      a click (one write path); read-only aware; ignores Ctrl/Alt/Meta chords and
-      key-repeat. Hint line on the page.
-    - Grid — TODO: arrows move a focused tile, number keys rate it, `f` flags it,
-      Enter opens it. Needs a focus system that touches the infinite-scroll /
-      scroll-restore code — deferred to its own change.
+      ends; maps a filmstrip member back to its stack rep; `location.replace` so
+      Back returns to the grid), `1`–`5` rate, `0` clear, `f` toggle the edit
+      flag. Rating/flag keys drive the same widgets as a click (one write path);
+      read-only aware; ignores Ctrl/Alt/Meta chords and key-repeat. Hint line.
+    - Grid — DONE: a "target" tile = the keyboard-focus ring (moved by ← → ↑ ↓;
+      ↑/↓ step a full row via a live column count) OR, if you haven't used the
+      arrows, the tile under the mouse. Amber ring + the hover overlays (stars,
+      flag, checkbox) shown on the target via one shared `ui.add_css` block.
+      `Space` toggles selection (Shift+Space extends a range; its page-scroll is
+      suppressed over the grid), `1`–`5`/`0` rate, `f` flag, `Enter` open, `Esc`
+      clears ring + selection. Additive over infinite scroll (moving the ring
+      loads more batches); one `ui.keyboard` per page (two don't both fire).
 ## Search features
 - [ ] Ability to save searches for future review
 ## Design

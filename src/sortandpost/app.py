@@ -94,6 +94,31 @@ _GRID_SAVE_JS = (
     "window.innerHeight + window.scrollY >= document.body.offsetHeight - 1400"
 )
 
+# How many tiles are in the grid's first row -- the step for up/down keyboard
+# focus. Measured from the DOM so it tracks the responsive `auto-fill` reflow.
+_GRID_COLS_JS = """
+(() => {
+  const g = document.querySelector('.nicegui-grid');
+  if (!g || !g.firstElementChild) return 1;
+  const top = g.firstElementChild.offsetTop;
+  let n = 0;
+  for (const c of g.children) { if (c.offsetTop === top) n++; else break; }
+  return n || 1;
+})()
+"""
+
+# Keyboard-focus on a grid tile: an amber border (via ::after, so it sits above
+# the opaque thumbnail) plus -- like a real mouse hover -- the tile's rating and
+# flag/checkbox overlays revealed. Toggled by adding `.kb-focus` to the tile <a>;
+# every hover-revealed child carries `.kbreveal`.
+_GRID_KB_CSS = """
+a.group.kb-focus::after {
+  content: ""; position: absolute; inset: 0; box-sizing: border-box;
+  border: 4px solid #fbbf24; pointer-events: none; z-index: 20;
+}
+a.group.kb-focus .kbreveal { opacity: 1 !important; }
+"""
+
 
 def _scroll_to_js(y: int) -> str:
     """Scroll to *y*, then keep re-applying until it sticks. The grid rows we just
@@ -201,6 +226,7 @@ def _thumb_src(pixel_hash: str, size: int) -> str:
 
 
 def build_ui(settings: Settings) -> None:
+    ui.add_css(_GRID_KB_CSS, shared=True)  # grid keyboard-focus styling, all pages
     engine = make_engine(settings.paths.working_db)
     init_db(engine)  # ensure an empty DB still renders an empty grid
     State.engine = engine
@@ -247,6 +273,10 @@ def build_ui(settings: Settings) -> None:
         # pixel_hash -> the tile element, so a delete can drop it from the grid
         # in place (no reload -> no scroll jump, no torn-down-slot races).
         cell_els: dict[str, ui.element] = {}
+        # pixel_hash -> drive that tile's rating / flag from the keyboard (same
+        # write path as a click). Only populated for writable sessions.
+        rating_setters: dict[str, Callable[[int], Any]] = {}
+        flag_toggles: dict[str, Callable[[], Any]] = {}
         writable = State.write_mode == WriteMode.writable
 
         with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
@@ -322,7 +352,8 @@ def build_ui(settings: Settings) -> None:
             "rounded-full bg-gray-900/95 px-4 py-2 text-white shadow-lg backdrop-blur"
         )
         toolbar.set_visibility(False)
-        ui.keyboard(on_key=lambda e: setattr(sel, "shift_down", bool(e.modifiers.shift)))
+        # shift-state for _GridSelection ranges is tracked in the single _grid_key
+        # handler below (one ui.keyboard per page -- two of them don't both fire).
 
         async def _bulk_rate(stars: int) -> None:
             hashes = list(sel.selected)
@@ -375,6 +406,7 @@ def build_ui(settings: Settings) -> None:
                 return
             with client:  # the awaited gap + tile deletes can invalidate the ambient slot
                 sel.clear()
+                _clear_focus()
                 removed = 0
                 for h in hashes:
                     el = cell_els.pop(h, None)
@@ -382,6 +414,8 @@ def build_ui(settings: Settings) -> None:
                         el.delete()  # drop the tile in place -- it's above the load cursor
                         removed += 1
                     flag_setters.pop(h, None)
+                    rating_setters.pop(h, None)
+                    flag_toggles.pop(h, None)
                 total = max(0, total - removed)
                 counter.set_text(
                     f"{loaded} of {total} {noun}" if loaded < total else f"{total} {noun}"
@@ -492,6 +526,9 @@ def build_ui(settings: Settings) -> None:
                                     on_flag=_flag_one,
                                     flag_registry=flag_setters,
                                     cell_registry=cell_els,
+                                    rating_registry=rating_setters,
+                                    flag_toggle_registry=flag_toggles,
+                                    on_hover=_on_hover,
                                 )
                 loaded += len(slice_ids)
                 counter.set_text(
@@ -525,6 +562,116 @@ def build_ui(settings: Settings) -> None:
                 return
             if near_bottom and not done:
                 append_batch()
+
+        # -- keyboard / hover focus: arrows move a ring, hover tracks the pointer;
+        # Space selects, digits rate, f flags, Enter opens -- all act on the
+        # "target" tile: the keyboard ring if set, else whatever the mouse is over.
+        # Additive over infinite scroll -- `focus` is just an index into rep_ids.
+        focus = [-1]
+        hover_hash: list[str | None] = [None]
+
+        def _on_hover(h: str, entered: bool) -> None:
+            if entered:
+                hover_hash[0] = h
+            elif hover_hash[0] == h:
+                hover_hash[0] = None
+
+        def _paint_focus(new_idx: int, *, scroll: bool = True) -> None:
+            old = focus[0]
+            if old == new_idx:
+                return
+            if 0 <= old < len(rep_ids):
+                el = cell_els.get(rep_ids[old])
+                if el is not None:
+                    el.classes(remove="kb-focus")
+            focus[0] = new_idx
+            if 0 <= new_idx < len(rep_ids):
+                el = cell_els.get(rep_ids[new_idx])
+                if el is not None:
+                    el.classes(add="kb-focus")
+                    if scroll:
+                        ui.run_javascript(
+                            f"getElement({el.id})?.$el?.scrollIntoView"
+                            "({block:'nearest',inline:'nearest'})"
+                        )
+
+        def _clear_focus() -> None:
+            _paint_focus(-1)
+
+        async def _columns() -> int:
+            try:
+                n = await ui.run_javascript(_GRID_COLS_JS, timeout=1.0)
+                return max(1, int(n))
+            except (TimeoutError, ValueError, TypeError):
+                return 1
+
+        async def _move_focus(step: int, *, by_row: bool) -> None:
+            if not rep_ids:
+                return
+            if focus[0] < 0:
+                _paint_focus(0)
+                return
+            delta = step * (await _columns()) if by_row else step
+            target = max(0, min(len(rep_ids) - 1, focus[0] + delta))
+            while loaded <= target and not done:
+                append_batch()
+            _paint_focus(target)
+
+        def _target_hash() -> str | None:
+            """The tile a shortcut acts on: the keyboard ring if set, else the
+            tile under the mouse."""
+            if 0 <= focus[0] < len(rep_ids):
+                return rep_ids[focus[0]]
+            return hover_hash[0]
+
+        async def _grid_key(e: KeyEventArguments) -> None:
+            sel.shift_down = bool(e.modifiers.shift)  # for shift-click / shift-space ranges
+            if not e.action.keydown or e.action.repeat or restoring:
+                return
+            if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
+                return
+            key = e.key
+            if key == "ArrowLeft":
+                await _move_focus(-1, by_row=False)
+            elif key == "ArrowRight":
+                await _move_focus(1, by_row=False)
+            elif key == "ArrowUp":
+                await _move_focus(-1, by_row=True)
+            elif key == "ArrowDown":
+                await _move_focus(1, by_row=True)
+            elif key == "Escape":
+                _clear_focus()
+                sel.clear()
+            elif key == " ":
+                h = _target_hash()
+                if h is not None:
+                    sel.click(h)  # toggle (or extend a range while Shift is held)
+            elif key == "Enter":
+                h = _target_hash()
+                if h is not None:
+                    ui.navigate.to(f"/photo/{h}")
+            elif key.number is not None and 0 <= key.number <= 5:
+                h = _target_hash()
+                setter = rating_setters.get(h) if h is not None else None
+                if setter is not None:
+                    setter(key.number)  # fires the tile's own write path
+            elif key == "f":
+                h = _target_hash()
+                toggle = flag_toggles.get(h) if h is not None else None
+                if toggle is not None:
+                    await toggle()
+
+        ui.keyboard(on_key=_grid_key)
+        # Space would otherwise scroll the page -- swallow its default over the
+        # grid (but not while typing in a field or on a focused button).
+        ui.run_javascript(
+            "if(!window.__spNoSpaceScroll){window.__spNoSpaceScroll=1;"
+            "addEventListener('keydown',e=>{"
+            "if((e.key===' '||e.code==='Space')&&"
+            "!['INPUT','TEXTAREA','SELECT','BUTTON'].includes"
+            "(document.activeElement?.tagName))e.preventDefault();"
+            "},true);}"
+        )
 
         append_batch()  # first screenful, synchronously
         ui.timer(0.3, _on_tick)
@@ -1534,7 +1681,7 @@ class _GridSelection:
     @staticmethod
     def _box_cls(selected: bool) -> str:
         base = (
-            "absolute left-1 top-1 z-10 flex h-6 w-6 cursor-pointer items-center "
+            "kbreveal absolute left-1 top-1 z-10 flex h-6 w-6 cursor-pointer items-center "
             "justify-center rounded-md border-2 border-white transition "
         )
         return base + (
@@ -1556,10 +1703,16 @@ def _thumb_cell(
     on_flag: Callable[[str, bool], Any] | None = None,
     flag_registry: dict[str, Callable[[bool], Any]] | None = None,
     cell_registry: dict[str, ui.element] | None = None,
+    rating_registry: dict[str, Callable[[int], Any]] | None = None,
+    flag_toggle_registry: dict[str, Callable[[], Any]] | None = None,
+    on_hover: Callable[[str, bool], Any] | None = None,
 ) -> None:
     with ui.link(target=f"/photo/{photo.pixel_hash}").classes("group relative block") as cell:
         if cell_registry is not None:
             cell_registry[photo.pixel_hash] = cell
+        if on_hover is not None:
+            cell.on("mouseenter", lambda: on_hover(photo.pixel_hash, True))
+            cell.on("mouseleave", lambda: on_hover(photo.pixel_hash, False))
         ui.image(_thumb_src(photo.pixel_hash, size)).classes(
             "w-full aspect-square object-cover bg-gray-100"
         ).props("loading=lazy")
@@ -1569,7 +1722,7 @@ def _thumb_cell(
                 "text-xs font-medium text-white"
             )
         if on_flag is not None:
-            _grid_flag(photo.pixel_hash, flagged, on_flag, flag_registry)
+            _grid_flag(photo.pixel_hash, flagged, on_flag, flag_registry, flag_toggle_registry)
         elif flagged:
             ui.icon("flag", size="1.1rem").classes(
                 "absolute right-1 top-1 z-10 rounded bg-black/60 p-0.5 text-amber-400"
@@ -1577,15 +1730,24 @@ def _thumb_cell(
         if selection is not None:
             selection.checkbox(photo.pixel_hash)
         if on_rate is not None:
-            _grid_rating(photo.pixel_hash, stars, on_rate)
+            _grid_rating(photo.pixel_hash, stars, on_rate, rating_registry)
 
 
-def _grid_rating(pixel_hash: str, stars: int, on_rate: Callable[[str, int], Any]) -> None:
+def _grid_rating(
+    pixel_hash: str,
+    stars: int,
+    on_rate: Callable[[str, int], Any],
+    registry: dict[str, Callable[[int], Any]] | None = None,
+) -> None:
     """Inline, clickable star rating on a grid tile -- top row next to the
     checkbox, shown only while the tile is hovered. Clicks are swallowed so they
-    don't open the photo."""
+    don't open the photo.
+
+    When *registry* is given (writable sessions only), the tile registers a
+    ``set(stars)`` callback so the keyboard handler can rate it -- ``set_value``
+    fires the same write path as a click."""
     box = ui.element("div").classes(
-        "absolute left-9 top-1 z-10 flex items-center rounded bg-black/55 px-1 "
+        "kbreveal absolute left-9 top-1 z-10 flex items-center rounded bg-black/55 px-1 "
         "opacity-0 transition group-hover:opacity-100"
     )
     box.on("click.stop.prevent", lambda: None)
@@ -1605,6 +1767,8 @@ def _grid_rating(pixel_hash: str, stars: int, on_rate: Callable[[str, int], Any]
             await result
 
     widget.on_value_change(_changed)
+    if registry is not None:
+        registry[pixel_hash] = lambda n: widget.set_value(n)
 
 
 def _grid_flag(
@@ -1612,6 +1776,7 @@ def _grid_flag(
     flagged: bool,
     on_flag: Callable[[str, bool], Any],
     registry: dict[str, Callable[[bool], Any]] | None = None,
+    toggle_registry: dict[str, Callable[[], Any]] | None = None,
 ) -> None:
     """Clickable "marked for editing" flag in a grid tile's top-right corner.
     Solid amber and always visible when set; dim and revealed on hover when not.
@@ -1619,9 +1784,11 @@ def _grid_flag(
     a static indicator (shown only when set).
 
     When *registry* is given, the tile registers a ``set(on)`` callback under its
-    ``pixel_hash`` so bulk actions and "clear all" can repaint it live."""
+    ``pixel_hash`` so bulk actions and "clear all" can repaint it live.
+    *toggle_registry* (writable only) gets a no-arg ``toggle()`` so the keyboard
+    handler can flip it through the same write + paint path as a click."""
     writable = State.write_mode == WriteMode.writable
-    base = "absolute right-1 top-1 z-10 rounded bg-black/55 p-0.5 transition" + (
+    base = "kbreveal absolute right-1 top-1 z-10 rounded bg-black/55 p-0.5 transition" + (
         " cursor-pointer" if writable else ""
     )
     state = {"on": flagged}
@@ -1655,6 +1822,8 @@ def _grid_flag(
             await result
 
     box.on("click.stop.prevent", _toggle)
+    if toggle_registry is not None:
+        toggle_registry[pixel_hash] = _toggle
 
 
 def _facts(photo: Photo) -> None:

@@ -1,7 +1,42 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (Features.md: bulk delete + photo-page keyboard shortcuts — uncommitted)._
-_Working branch: `scaffold`. Features.md rounds 1–3 landed via PR #3 (merge `10b9462`)._
+_Last updated: 2026-09-09 (Features.md: grid keyboard nav — uncommitted; bulk delete + photo-page shortcuts committed, PR #4 open)._
+_Working branch: `scaffold`. PR #4 `scaffold → main` open (covers everything below)._
+
+---
+
+## ⌨️ 2026-09-09 — Features.md: grid keyboard nav (finishes the shortcuts item)
+
+**Uncommitted** — `src/sortandpost/app.py` only. `231 tests pass`; ruff + format
++ mypy clean (`app.py` too). Verified in a real browser: ring moves with the
+arrows, hover overlays appear on the target, Space selects without scrolling
+(keyboard-focus and mouse-hover paths both), Shift+Space ranges, Esc clears,
+digits/`f`/Enter act on the target.
+
+- **"Target" tile** = the keyboard-focus ring if the arrows have been used, else
+  the tile under the mouse (`hover_hash` tracked via per-tile
+  `mouseenter`/`mouseleave`). `Space` toggles its selection (`sel.click`, so
+  Shift+Space extends a range like shift-click); `1`–`5`/`0` rate, `f` flag,
+  `Enter` open, `Esc` clears the ring + selection.
+- **Ring**: `← →` step one tile, `↑ ↓` step a row — column count measured live
+  from the grid DOM (`_GRID_COLS_JS`) so it follows the responsive `auto-fill`
+  reflow. Moving the ring past the load cursor calls `append_batch()`; it never
+  fights scroll-restore (`if restoring: return`, and the hover path paints with
+  `scroll=False`).
+- **Highlight**: one shared `ui.add_css(_GRID_KB_CSS, shared=True)` — `.kb-focus`
+  on the tile `<a>` draws an amber border via `::after` (a `ring`/`outline` sits
+  *behind* the opaque thumbnail) and forces every `.kbreveal` child (the stars /
+  flag / checkbox overlays, which are otherwise `group-hover:opacity-100`) to
+  full opacity. `_paint_focus` just toggles that one class.
+- **`Space` page-scroll**: a one-time capture-phase `keydown` `preventDefault`
+  for Space, skipped while an INPUT/TEXTAREA/SELECT/BUTTON is focused.
+- **Gotcha fixed**: the page had two `ui.keyboard` elements (old shift-tracker +
+  new nav) and NiceGUI only fires one — merged into a single `_grid_key` that
+  also keeps `sel.shift_down` current.
+- `_grid_rating` / `_grid_flag` gained registries (`set_value` / `toggle`) so the
+  keys reuse each tile's own write path; `_thumb_cell` threads them + `on_hover`.
+  `ui.run.io_bound`'s `R | None` now guarded in the two delete handlers, so
+  `app.py` is mypy-clean.
 
 ---
 
@@ -513,18 +548,13 @@ alembic autogenerate empty.` Not reviewed or pushed.
 
 Then, remaining `Features.md` items (unchecked, roughly in priority order):
 
-1. **Grid keyboard nav** — the deferred half (photo-page shortcuts are done): a
-   focused-tile ring that arrows move, number keys rate, `f` flags, Enter opens.
-   Needs a focus index into `rep_ids`, a ring toggled via the `cell_els`
-   registry, scroll-into-view, a runtime column count (JS) for up/down, loading
-   tiles past the scroll cursor, and a rating-setter registry like
-   `flag_setters`. Touches the fragile infinite-scroll / scroll-restore code.
-2. **Dark / light mode** with a `/settings` manual/system choice.
-3. **Saved searches** (Search features).
-4. **Design pass** — scaffold → production looks.
-5. Other pages — swipe-style triage of unrated photos; robopost.app social
+1. **Dark / light mode** with a `/settings` manual/system choice (persist
+   per-machine in `local/`, never synced).
+2. **Saved searches** (Search features).
+3. **Design pass** — scaffold → production looks.
+4. Other pages — swipe-style triage of unrated photos; robopost.app social
    composer (API key → `.env`, per-machine, never synced).
-6. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
+5. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
    delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
    view of the local trash folder; a live two-container check of the
    cross-machine lazy-trash path (unit-tested only so far).
