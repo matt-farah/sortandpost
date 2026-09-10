@@ -152,6 +152,131 @@ a.group.kb-focus .kbreveal,
 .nicegui-grid > a.nicegui-link.group { scroll-margin-top: 4.5rem; }
 """
 
+# Global design layer -- "warm editorial": paper backgrounds, an old-style serif
+# for display type, indigo accent (via ``ui.colors``), amber kept only for the
+# keyboard-focus ring and the edit flag. Tokens flip on Quasar's ``body--dark``.
+# System fonts only -- the app is offline-first, so no webfont fetch.
+_THEME_CSS = """
+:root {
+  --sp-bg: #faf8f4;
+  --sp-surface: #ffffff;
+  --sp-surface-2: #f2ede3;
+  --sp-border: #ddd0ba;
+  --sp-text: #2c2823;
+  --sp-text-dim: #6b6357;
+  --sp-text-faint: #9c9284;
+  --sp-shadow: 0 1px 2px rgba(44,40,35,.06), 0 10px 28px -14px rgba(44,40,35,.22);
+  --sp-shadow-lg: 0 2px 6px rgba(44,40,35,.09), 0 22px 48px -20px rgba(44,40,35,.34);
+}
+body.body--dark {
+  --sp-bg: #1b1815;
+  --sp-surface: #262019;
+  --sp-surface-2: #2f2820;
+  --sp-border: #3c332a;
+  --sp-text: #f0e9dd;
+  --sp-text-dim: #b8ad9c;
+  --sp-text-faint: #877c6b;
+  --sp-shadow: 0 1px 2px rgba(0,0,0,.32), 0 12px 30px -16px rgba(0,0,0,.62);
+  --sp-shadow-lg: 0 2px 6px rgba(0,0,0,.4), 0 26px 56px -22px rgba(0,0,0,.72);
+}
+
+body, .q-page, .nicegui-content {
+  background-color: var(--sp-bg);
+  color: var(--sp-text);
+}
+::selection { background: color-mix(in srgb, var(--q-primary) 26%, transparent); }
+
+.sp-display {
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua",
+               "Hoefler Text", Cambria, Georgia, serif;
+  letter-spacing: .005em;
+  font-feature-settings: "liga" 1, "kern" 1;
+}
+.sp-muted { color: var(--sp-text-dim); }
+.sp-faint { color: var(--sp-text-faint); }
+
+/* app bar --------------------------------------------------------------- */
+.sp-appbar.q-header {
+  background-color: color-mix(in srgb, var(--sp-bg) 82%, transparent) !important;
+  color: var(--sp-text) !important;
+  border-bottom: 1px solid var(--sp-border);
+  -webkit-backdrop-filter: saturate(1.6) blur(10px);
+  backdrop-filter: saturate(1.6) blur(10px);
+}
+.sp-nav {
+  color: var(--sp-text-dim);
+  text-decoration: none !important;
+  font-size: .875rem;
+  padding: .2rem .55rem;
+  border-radius: .4rem;
+  transition: color .12s, background-color .12s;
+}
+.sp-nav:hover { color: var(--sp-text); background-color: var(--sp-surface-2); }
+.sp-nav-active { color: var(--q-primary); font-weight: 600; }
+.sp-chip {
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: .16rem .5rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+/* status bar ---------------------------------------------------------------- */
+.sp-statusbar.q-footer {
+  background-color: #201b15 !important;
+  color: #c9beac !important;
+  border-top: 1px solid #3c332a;
+  font-size: .72rem;
+}
+
+/* surfaces ------------------------------------------------------------------ */
+.sp-card {
+  background-color: var(--sp-surface);
+  border: 1px solid var(--sp-border);
+  border-radius: .6rem;
+  box-shadow: var(--sp-shadow);
+  transition: box-shadow .15s ease, transform .15s ease;
+}
+.sp-card:hover { box-shadow: var(--sp-shadow-lg); transform: translateY(-1px); }
+.sp-section-header {
+  background-color: color-mix(in srgb, var(--sp-bg) 86%, transparent);
+  border-bottom: 1px solid var(--sp-border);
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+}
+.sp-section-header:hover { background-color: var(--sp-surface-2); }
+
+/* segmented controls (ui.toggle) ----------------------------------------- */
+.q-btn-group.q-btn-toggle {
+  border: 1px solid var(--sp-border);
+  background-color: var(--sp-surface);
+  box-shadow: none;
+  border-radius: .5rem;
+  overflow: hidden;
+}
+.q-btn-toggle .q-btn { border-radius: 0; }
+.q-btn-toggle .q-btn:not(.q-btn--active) {
+  background-color: var(--sp-surface) !important;
+  color: var(--sp-text-dim) !important;
+}
+.q-btn-toggle .q-btn--active {
+  background-color: var(--q-primary) !important;
+  color: #fff !important;
+}
+
+/* empty states --------------------------------------------------------------- */
+.sp-empty {
+  display: flex; flex-direction: column; align-items: center; gap: .5rem;
+  text-align: center; margin: 4rem auto; max-width: 26rem; color: var(--sp-text-dim);
+}
+.sp-empty .sp-empty-title {
+  font-size: 1.15rem; color: var(--sp-text);
+}
+"""
+
 
 def _scroll_to_js(y: int) -> str:
     """Scroll to *y*, then keep re-applying until it sticks. The grid rows we just
@@ -208,16 +333,27 @@ _THEME_TO_DARK: dict[Theme, bool | None] = {"system": None, "light": False, "dar
 
 
 def _header(active: str) -> ui.dark_mode:
+    ui.colors(
+        primary="#4f46e5",  # indigo -- flows into every color=primary / ring-primary / bg-primary
+        secondary="#7c6df2",
+        accent="#d97706",
+        positive="#3f9d6d",
+        negative="#c0392b",
+    )
     dark = ui.dark_mode(_THEME_TO_DARK[State.theme])  # per-machine; None = follow the OS
-    with ui.header().classes("items-center justify-between"):
-        ui.label(f"sortandpost {__version__}").classes("text-lg font-bold")
-        with ui.row():
+    with ui.header().classes("sp-appbar items-center justify-between gap-4"):
+        with ui.row().classes("items-baseline gap-2 no-wrap"):
+            ui.link("sortandpost", "/").classes("sp-display text-xl font-semibold sp-nav")
+            ui.label(__version__).classes("sp-faint text-[11px]")
+        with ui.row().classes("items-center gap-1 no-wrap"):
             for path, name in _PAGES:
-                ui.link(name, path).classes("text-white" + (" underline" if path == active else ""))
+                ui.link(name, path).classes("sp-nav" + (" sp-nav-active" if path == active else ""))
         if State.write_mode == WriteMode.writable:
-            ui.label("[writable]").classes("text-emerald-300")
+            ui.label("writable").classes("sp-chip text-emerald-600 dark:text-emerald-400")
         else:
-            ui.label(f"[read-only · {State.lock_holder} is writing]").classes("text-amber-300")
+            ui.label(f"read-only · {State.lock_holder}").classes(
+                "sp-chip text-amber-600 dark:text-amber-400"
+            )
     _status_bar()
     return dark
 
@@ -227,9 +363,7 @@ def _status_bar() -> None:
     every 5s; a transient DB lock just shows 'status unavailable' for one tick."""
     if State.engine is None:
         return
-    with ui.footer().classes(
-        "bg-gray-800 text-gray-200 text-xs px-4 py-1 items-center justify-between"
-    ):
+    with ui.footer().classes("sp-statusbar px-4 py-1 items-center justify-between"):
         summary = ui.label("…")
 
         def _tick() -> None:
@@ -266,6 +400,7 @@ def _thumb_src(pixel_hash: str, size: int) -> str:
 
 def build_ui(settings: Settings) -> None:
     ui.add_css(_GRID_KB_CSS, shared=True)  # grid keyboard-focus styling, all pages
+    ui.add_css(_THEME_CSS, shared=True)  # design tokens + component polish, all pages
     engine = make_engine(settings.paths.working_db)
     init_db(engine)  # ensure an empty DB still renders an empty grid
     State.engine = engine
@@ -357,7 +492,7 @@ def build_ui(settings: Settings) -> None:
 
         with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
             with ui.row().classes("items-center gap-3"):
-                counter = ui.label(f"{total} {noun}").classes("text-sm text-gray-500")
+                counter = ui.label(f"{total} {noun}").classes("text-sm sp-muted")
                 group_toggle = (
                     ui.toggle(
                         {
@@ -447,8 +582,10 @@ def build_ui(settings: Settings) -> None:
         _refresh_flag_link(flag_n)
 
         if total == 0:
-            ui.label("No photos indexed yet. Run  python -m sortandpost.indexer --once").classes(
-                "m-4 text-gray-500"
+            _empty_state(
+                "photo_library",
+                "No photos yet",
+                "Run  python -m sortandpost.indexer --once  to index your library.",
             )
             return
 
@@ -467,22 +604,18 @@ def build_ui(settings: Settings) -> None:
             hdr = (
                 ui.element("div")
                 .classes(
-                    "sticky top-16 z-30 flex w-full items-baseline gap-2 border-b "
-                    "border-gray-200 bg-white/90 px-1 py-1.5 backdrop-blur cursor-pointer "
-                    "hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900/90 "
-                    "dark:hover:bg-gray-800"
+                    "sp-section-header sticky top-16 z-30 flex w-full items-baseline "
+                    "gap-2 px-2 py-1.5 cursor-pointer"
                 )
                 .style("user-select: none")
             )
             with hdr:
-                chev = ui.icon("expand_more").classes("text-gray-500")
+                chev = ui.icon("expand_more").classes("sp-faint")
                 _style_chevron(chev, g.key)
-                ui.label(g.label).classes("text-sm font-semibold text-gray-800 dark:text-gray-100")
-                ui.label(f"({g.count})").classes("text-xs text-gray-400")
+                ui.label(g.label).classes("sp-display text-base font-semibold")
+                ui.label(f"({g.count})").classes("text-xs sp-faint")
                 if g.sublabel and g.sublabel != g.label:
-                    ui.label(g.sublabel).classes("truncate text-xs text-gray-400").tooltip(
-                        g.sublabel
-                    )
+                    ui.label(g.sublabel).classes("truncate text-xs sp-faint").tooltip(g.sublabel)
             hdr.on("click", lambda k=g.key: _toggle_group(k))
             header_chevrons[g.key] = chev
 
@@ -506,9 +639,13 @@ def build_ui(settings: Settings) -> None:
 
         # -- multi-select + bulk toolbar ----------------------------------- #
         sel = _GridSelection(rep_ids, lambda: _render_toolbar())
-        toolbar = ui.element("div").classes(
-            "fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 "
-            "rounded-full bg-gray-900/95 px-4 py-2 text-white shadow-lg backdrop-blur"
+        toolbar = (
+            ui.element("div")
+            .classes(
+                "fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 "
+                "rounded-full px-4 py-2 text-white shadow-lg backdrop-blur"
+            )
+            .style("background-color: rgba(32,27,21,.96)")
         )
         toolbar.set_visibility(False)
         # shift-state for _GridSelection ranges is tracked in the single _grid_key
@@ -950,7 +1087,7 @@ def build_ui(settings: Settings) -> None:
             all_ids = list_photo_ids(session) if photo else []
 
         if photo is None:
-            ui.label(f"Unknown photo {pixel_hash}").classes("m-4 text-gray-500")
+            _empty_state("image_not_supported", "Photo not found", pixel_hash)
             return
 
         # -- prev/next order: the grid's representative order --------------- #
@@ -1325,16 +1462,19 @@ def build_ui(settings: Settings) -> None:
             the block is always a clean square with no overflow."""
             previews = c.photos[:4]
             if not previews:
-                with ui.element("div").classes(
-                    "flex aspect-square w-full items-center justify-center "
-                    "bg-gray-100 text-gray-400 dark:bg-gray-800"
+                with (
+                    ui.element("div")
+                    .classes("flex aspect-square w-full items-center justify-center sp-faint")
+                    .style("background-color: var(--sp-surface-2)")
                 ):
                     ui.icon("photo_library", size="2.5rem")
                 return
             with ui.element("div").classes("grid w-full grid-cols-2 gap-0.5"):
                 for i in range(4):
-                    cell = ui.element("div").classes(
-                        "aspect-square w-full bg-gray-200 dark:bg-gray-700"
+                    cell = (
+                        ui.element("div")
+                        .classes("aspect-square w-full")
+                        .style("background-color: var(--sp-surface-2)")
                     )
                     if i < len(previews):
                         cell.style(
@@ -1346,32 +1486,31 @@ def build_ui(settings: Settings) -> None:
             # A clickable <div> (not <a>): NiceGUI's link element collapses to
             # ~0 height around a block child, which was clipping the mosaic.
             card = ui.element("div").classes(
-                "group relative flex cursor-pointer flex-col overflow-hidden rounded-lg "
-                "border border-gray-200 bg-white transition hover:shadow-lg "
-                "dark:border-gray-700 dark:bg-gray-900"
+                "sp-card group relative flex cursor-pointer flex-col overflow-hidden"
             )
             card.on("click", lambda c=c: ui.navigate.to(f"/collections/{c.id}"))
             with card:
                 _mosaic(c)
                 with ui.element("div").classes("px-3 py-2"):
                     ui.label(c.name).classes(
-                        "block w-full truncate text-base font-semibold "
-                        "text-gray-900 dark:text-gray-100"
+                        "block w-full truncate text-base font-semibold sp-display"
                     )
-                    ui.label(f"{c.count} photo(s)").classes("block text-xs text-gray-500")
+                    ui.label(f"{c.count} photo(s)").classes("block text-xs sp-muted")
                 ui.button(icon="delete").props("flat dense round size=sm color=red-4").classes(
                     "absolute right-1 top-1 bg-black/40 opacity-0 group-hover:opacity-100"
                 ).on("click.stop", lambda c=c: _confirm_delete(c))
 
         with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
-            ui.label(f"{len(colls)} collection(s)").classes("text-sm text-gray-500")
+            ui.label(f"{len(colls)} collection(s)").classes("text-sm sp-muted")
             ui.button("New collection", icon="add", on_click=_new_collection).props("flat")
 
         if not colls:
-            ui.label(
-                "No collections yet. Create one, then add photos from the library "
-                "(select tiles, then Add to collection) or an individual photo page."
-            ).classes("m-4 text-gray-500")
+            _empty_state(
+                "bookmarks",
+                "No collections yet",
+                "Create one, then add photos from the library (select tiles → Add to "
+                "collection) or from a photo page.",
+            )
             return
 
         with _photo_grid(300):
@@ -1387,16 +1526,16 @@ def build_ui(settings: Settings) -> None:
         _header("/collections")
         coll = get_collection(settings.paths, coll_id)
         if coll is None:
-            ui.label("Unknown collection.").classes("m-4 text-gray-500")
-            ui.link("← All collections", "/collections").classes("mx-4")
+            _empty_state("bookmark_remove", "Collection not found")
+            ui.link("← All collections", "/collections").classes("mx-auto")
             return
 
         ui.button("← All collections", on_click=lambda: ui.navigate.to("/collections")).props(
             "flat dense"
         ).classes("mx-4 mt-2")
 
-        title = ui.label(coll.name).classes("px-4 text-2xl font-bold")
-        meta = ui.label().classes("px-4 text-sm text-gray-500")
+        title = ui.label(coll.name).classes("px-4 text-2xl font-bold sp-display")
+        meta = ui.label().classes("px-4 text-sm sp-muted")
 
         def _rename() -> None:
             with ui.dialog() as dialog, ui.card().classes("gap-2"):
@@ -2006,9 +2145,10 @@ def build_ui(settings: Settings) -> None:
             rows.append(("Restored from", manager.restored_from_snapshot.name))
 
         with ui.column().classes("p-4 gap-4 max-w-3xl"):
+            ui.label("Settings").classes("sp-display text-2xl font-semibold")
             with ui.grid(columns=2).classes("gap-x-6 gap-y-1 text-sm"):
                 for key, value in rows:
-                    ui.label(key).classes("text-gray-400")
+                    ui.label(key).classes("sp-faint")
                     ui.label(value)
 
             ui.separator()
@@ -2513,6 +2653,15 @@ def _exclude_editor(settings: Settings, engine: Engine) -> None:
 
     ui.button("Save & rescan", on_click=_save).props("color=primary")
     render()
+
+
+def _empty_state(icon: str, title: str, hint: str = "") -> None:
+    """A centred placeholder for the "nothing here yet" pages."""
+    with ui.element("div").classes("sp-empty"):
+        ui.icon(icon, size="2.75rem").classes("sp-faint")
+        ui.label(title).classes("sp-empty-title sp-display")
+        if hint:
+            ui.label(hint).classes("text-sm")
 
 
 def _thumb_sizes(settings: Settings) -> tuple[int, int]:
