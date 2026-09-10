@@ -631,15 +631,15 @@ Remaining `Features.md` items (unchecked, roughly in priority order):
 
 Older still-open verification work (from before this session):
 
-7. **Browser smoke** of the non-feature surface at `http://localhost:8080`:
+4. **Browser smoke** of the non-feature surface at `http://localhost:8080`:
    `/review` bulk approve/reject, `/settings` "run indexer pass now", the
    status-bar footer, read-only banner. Confirm the `_header` banner (not just
    the footer) reflects a live read-only→writable promotion — it currently only
    re-renders on page load.
-8. **RAW + HEIC** end-to-end with real `.CR2`/`.NEF`/`.HEIC` files — decode via
+5. **RAW + HEIC** end-to-end with real `.CR2`/`.NEF`/`.HEIC` files — decode via
    embedded preview, RAW **never** written (check mtimes / logs). (The `.venv`
    now has `rawpy` + `pillow-heif`, so this can be done natively.)
-9. **Dockerfile caching** (optional): a deps-only pre-layer to cache the ~150 MB
+6. **Dockerfile caching** (optional): a deps-only pre-layer to cache the ~150 MB
    torch wheel across code changes.
 
 Full caveat list is in **"Open threads / not blocking"** near the bottom.
