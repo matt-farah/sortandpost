@@ -157,12 +157,14 @@ Leave the app running until the user says they're done, then shut it down.
     sortandpost.db (+ -wal/-shm/-journal while running)   # the working copy the app runs against
     device.json                # {"device_id": "<random>", "hostname": "..."}  created on first run
     publish_state.json         # last published DB generation counter + hash
+    helper.json                # {port, token, ...} — written by the optional host file-manager agent
     models/                    # downloaded CLIP weights
     logs/
   sync/                        # user points OneDrive / Drive / Synology / Dropbox HERE
     sortandpost.db             # published snapshot of the DB — the cross-machine source of truth
     .sortandpost.lock          # {device_id, hostname, pid, acquired_at, heartbeat_at, db_generation}
     config.yaml
+    devices/<slug(hostname)>-<device_id[:8]>/library.json # PER-DEVICE library folders (see below)
     tags.yaml                  # user-editable zero-shot vocabulary (facet-grouped)
     snapshots/sortandpost-YYYYMMDD-HHMMSS.db.zst          # last N clean snapshots (corruption recovery)
     thumbnails/<hh>/<pixel_hash>_<size>.webp              # content-addressed, write-once, conflict-free
@@ -171,10 +173,39 @@ Leave the app running until the user says they're done, then shut it down.
     embeddings/rowmap.json                                # row_index -> pixel_hash
 ```
 
+### Library folders are per-device
+
+`sync/devices/<slug(hostname)>-<device_id[:8]>/library.json` holds this machine's
+library folders as `{"roots": [{container, host, label}, …]}`:
+
+- `container` — the path the **scanner** walks (a Docker bind-mount target,
+  usually `/library`; on a native run just the real folder).
+- `host` — the real path on *this* computer, used for display, "copy path", and
+  the file-manager helper. Same as `container` when running natively.
+
+It rides in `sync/` so the sync tool backs it up, but a device only ever writes
+its **own** subfolder, so two devices never collide (unlike `config.yaml`). The
+folder is matched by the `-<device_id[:8]>` suffix, so a hostname change still
+adopts the existing folder. `config.yaml`'s `library_roots` key is now only a
+one-time seed for this file on first boot after upgrading. Edit roots in the
+Settings page. See `sortandpost.library_roots`.
+
+### File-manager helper (optional)
+
+Under Docker the server is a Linux container with no host GUI, so "Reveal in
+Finder / File Explorer" and the native folder browser need a small agent run on
+the **host**, outside Docker: `python3 tools/sortandpost_helper.py --app-data
+<host APP_DATA>`. It listens on `127.0.0.1`, writes `local/helper.json`
+(`{port, token}`, seen by the container through the `/data` mount), and the
+browser calls it directly. Token-gated, CORS-restricted to localhost origins,
+and `/reveal` + `/open` are confined to registered `host` roots. Everything
+degrades gracefully to a "copy host path" button when the agent isn't running.
+See `sortandpost.helper` (server-side reader) + `tools/sortandpost_helper.py`.
+
 `config.yaml` (created from a template on first boot):
 
 ```yaml
-library_roots: ["/library"]        # container paths of the mounted libraries
+library_roots: ["/library"]        # one-time PER-DEVICE seed only (see above)
 server: { host: 0.0.0.0, port: 8080 }
 sync:
   publish_interval_sec: 60         # how often the working DB is published to sync/ when dirty & idle

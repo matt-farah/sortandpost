@@ -71,8 +71,17 @@ from sortandpost.db.flags import (
 from sortandpost.db.meta import get_generation
 from sortandpost.db.models import EmbeddingRow, Photo, Prediction, PredictionState, Rating
 from sortandpost.grouping import PhotoGroup, group_photos, parse_folder_sort, parse_mode
+from sortandpost.helper import HelperInfo, read_helper_info
 from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.service import run_indexer
+from sortandpost.library_roots import (
+    LibraryRoot,
+    clean_path,
+    compose_volume_line,
+    running_in_docker,
+    save_roots,
+    to_host_path,
+)
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.prefs import Theme, get_theme, set_theme
 from sortandpost.reveal import open_in_default_app, reveal_in_file_manager, reveal_supported
@@ -348,14 +357,32 @@ def _header(active: str) -> ui.dark_mode:
         with ui.row().classes("items-center gap-1 no-wrap"):
             for path, name in _PAGES:
                 ui.link(name, path).classes("sp-nav" + (" sp-nav-active" if path == active else ""))
-        if State.write_mode == WriteMode.writable:
-            ui.label("writable").classes("sp-chip text-emerald-600 dark:text-emerald-400")
-        else:
-            ui.label(f"read-only · {State.lock_holder}").classes(
-                "sp-chip text-amber-600 dark:text-amber-400"
-            )
+        with ui.row().classes("items-center gap-2 no-wrap"):
+            _inject_helper()
+            if State.write_mode == WriteMode.writable:
+                ui.label("writable").classes("sp-chip text-emerald-600 dark:text-emerald-400")
+            else:
+                ui.label(f"read-only · {State.lock_holder}").classes(
+                    "sp-chip text-amber-600 dark:text-amber-400"
+                )
     _status_bar()
     return dark
+
+
+def _current_helper() -> HelperInfo | None:
+    return read_helper_info(State.settings.paths) if State.settings is not None else None
+
+
+def _inject_helper() -> None:
+    """Hand the browser the running helper agent's ``{port, token}`` (if any) so
+    the Reveal / Open / Browse buttons can ``fetch`` it directly. The agent is on
+    the host; the server never talks to it."""
+    hi = _current_helper()
+    if hi is None:
+        ui.run_javascript("window.__spHelper = null;")
+        return
+    ui.run_javascript(f"window.__spHelper = {json.dumps({'port': hi.port, 'token': hi.token})};")
+    ui.label("🖥").classes("text-sm").tooltip("file-manager helper connected")
 
 
 def _status_bar() -> None:
@@ -1120,9 +1147,16 @@ def build_ui(settings: Settings) -> None:
                 _facts(photo)
                 ui.separator()
                 ui.label("Paths").classes("font-bold mt-2")
-                can_reveal = reveal_supported()
+                native_reveal = reveal_supported()
+                helper_info = _current_helper()
                 for pp in paths:
-                    _path_row(pp.path, present=pp.present, can_reveal=can_reveal)
+                    _path_row(
+                        pp.path,
+                        present=pp.present,
+                        roots=settings.library_roots,
+                        helper=helper_info,
+                        native_reveal=native_reveal,
+                    )
 
         collections_wrap = ui.column().classes("w-full gap-1 px-4")
 
@@ -2133,7 +2167,10 @@ def build_ui(settings: Settings) -> None:
             ),
             ("Publishes this session", str(getattr(manager, "_publish_count", 0))),
             ("Snapshots", f"{len(snaps)} (newest {snaps[-1].name})" if snaps else "0"),
-            ("Library roots", ", ".join(str(r) for r in settings.config.library_roots)),
+            (
+                "Library roots",
+                ", ".join(r.container for r in settings.library_roots) or "— none set —",
+            ),
             ("Photos", f"{present} indexed · {total - present} missing"),
             ("CLIP model", f"{ccfg.model} / {ccfg.pretrained} on {ccfg.device}"),
             ("CLIP embeddings", str(embeddings)),
@@ -2150,6 +2187,9 @@ def build_ui(settings: Settings) -> None:
                 for key, value in rows:
                     ui.label(key).classes("sp-faint")
                     ui.label(value)
+
+            ui.separator()
+            _library_roots_editor(settings, engine)
 
             ui.separator()
             _theme_editor(settings, dark)
@@ -2603,6 +2643,212 @@ def _deletion_editor(settings: Settings) -> None:
     ui.button("Save", on_click=_save).props("color=primary")
 
 
+def _library_roots_editor(settings: Settings, engine: Engine) -> None:
+    """`/settings` editor for this device's library folders
+    (``sync/devices/<name>/library.json`` -- see :mod:`sortandpost.library_roots`).
+
+    A container cannot see the host filesystem or change its own bind-mounts, so
+    "add a folder" here just records the entry and shows the ``docker-compose.yml``
+    line to add; the folder goes live after ``docker compose up -d``. When the
+    host helper agent is running, "Add folder" also gets a real native browser.
+    """
+    roots: list[LibraryRoot] = list(settings.library_roots)
+    helper = read_helper_info(settings.paths)
+    writable = State.write_mode == WriteMode.writable
+    in_docker = running_in_docker()
+
+    ui.label("Library folders").classes("font-bold mt-4")
+    ui.label(
+        "Folders scanned for photos — specific to this computer. Under Docker a "
+        "new folder only becomes active after you add its line to "
+        "docker-compose.yml and run  docker compose up -d."
+        if in_docker
+        else "Folders scanned for photos — specific to this computer."
+    ).classes("text-xs sp-faint max-w-xl")
+
+    rows_box = ui.column().classes("w-full gap-1")
+
+    def _persist() -> None:
+        save_roots(settings.paths, settings.device_id, settings.hostname, roots)
+        settings.library_roots = list(roots)
+
+    def _drop(container: str) -> None:
+        roots[:] = [r for r in roots if r.container != container]
+        _persist()
+        _render()
+
+    def _render() -> None:
+        rows_box.clear()
+        with rows_box:
+            if not roots:
+                ui.label("No folders yet — add one below.").classes("text-xs sp-faint")
+            for r in roots:
+                ok = Path(r.container).is_dir()
+                if ok:
+                    tip = "scanned"
+                elif in_docker:
+                    tip = "not mounted — add the compose line and run docker compose up -d"
+                else:
+                    tip = "folder not found on this computer"
+                with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                    ui.icon("check_circle" if ok else "error_outline").classes(
+                        "text-emerald-500" if ok else "text-amber-500"
+                    ).tooltip(tip)
+                    with ui.column().classes("min-w-0 flex-1 gap-0"):
+                        ui.label(r.label or r.host).classes("truncate text-sm")
+                        sub = r.host if r.host == r.container else f"{r.host}  →  {r.container}"
+                        if r.label or sub != r.host:
+                            ui.label(sub).classes("truncate text-xs sp-faint")
+                    ui.button(icon="close", on_click=lambda _=None, c=r.container: _drop(c)).props(
+                        "flat dense round size=sm"
+                    ).tooltip("remove")
+
+    def _next_mount_point() -> str:
+        used = {r.container for r in roots}
+        if "/library" not in used:
+            return "/library"
+        i = 1
+        while f"/library/{i}" in used:
+            i += 1
+        return f"/library/{i}"
+
+    async def _browse(host_in: ui.input) -> None:
+        with (
+            ui.dialog() as dlg,
+            ui.card().classes("flex h-[70vh] w-[42rem] max-w-full flex-col gap-2"),
+        ):
+            crumb = ui.label("…").classes("truncate text-xs sp-faint")
+            listing = ui.column().classes("w-full flex-1 gap-0 overflow-y-auto")
+            state = {"path": (host_in.value or "").strip() or None}
+
+            async def _load(path: str | None) -> None:
+                js = (
+                    "(async () => { const h = window.__spHelper; if (!h) return {entries: []};"
+                    " const u = new URL('http://127.0.0.1:' + h.port + '/listdir');"
+                    f" const p = {json.dumps(path)}; if (p) u.searchParams.set('path', p);"
+                    " const r = await fetch(u, {headers: {'X-SP-Token': h.token}});"
+                    " return await r.json(); })()"
+                )
+                try:
+                    data = await ui.run_javascript(js, timeout=6.0)
+                except Exception:  # helper stopped mid-browse
+                    data = {"entries": [], "parent": None}
+                state["path"] = path
+                crumb.text = path or "Pick a starting point"
+                listing.clear()
+                with listing:
+                    if data.get("parent"):
+                        ui.button("⬆  parent", on_click=lambda p=data["parent"]: _load(p)).props(
+                            "flat dense align=left"
+                        ).classes("w-full justify-start")
+                    for entry in data.get("entries", []):
+                        ui.button(
+                            entry["name"],
+                            icon="folder",
+                            on_click=lambda p=entry["path"]: _load(p),
+                        ).props("flat dense align=left").classes("w-full justify-start")
+
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                def _use() -> None:
+                    if state["path"]:
+                        host_in.value = state["path"]
+                    dlg.close()
+
+                ui.button("Use this folder", on_click=_use).props("color=primary")
+            await _load(state["path"])
+        dlg.open()
+
+    def _add_dialog() -> None:
+        with ui.dialog() as dialog, ui.card().classes("w-[40rem] max-w-full gap-2"):
+            ui.label("Add a library folder").classes("font-bold")
+            with ui.row().classes("w-full items-end gap-2 no-wrap"):
+                host_in = (
+                    ui.input("Folder on this computer (host path)").props("dense").classes("flex-1")
+                )
+                if helper is not None:
+                    ui.button(
+                        "Browse…", icon="folder_open", on_click=lambda: _browse(host_in)
+                    ).props("flat dense")
+            ui.label(
+                "e.g.  ~/Library/CloudStorage/OneDrive-Personal/Photos  ·  "
+                "~/Dropbox/Photos  ·  C:\\Users\\you\\OneDrive\\Photos"
+            ).classes("text-xs sp-faint")
+            cont_in = (
+                ui.input("Mount point inside the container", value=_next_mount_point())
+                .props("dense")
+                .classes("w-full")
+            )
+            cont_in.set_visibility(in_docker)  # native: the folder is scanned directly
+            label_in = ui.input("Label (optional)").props("dense").classes("w-full")
+            snippet = ui.code("", language="yaml").classes("w-full text-xs")
+            snippet.set_visibility(in_docker)
+
+            def _entry() -> LibraryRoot | None:
+                host = clean_path(host_in.value or "")
+                if not host:
+                    return None
+                cont = clean_path(cont_in.value or "") if in_docker else ""
+                return LibraryRoot(
+                    container=cont or host, host=host, label=(label_in.value or "").strip()
+                )
+
+            def _refresh() -> None:
+                r = _entry()
+                if r is None or not in_docker:
+                    snippet.content = "# fill in the folder path" if r is None else ""
+                    return
+                snippet.content = (
+                    "# docker-compose.yml  →  services: app: volumes:\n"
+                    f"      {compose_volume_line(r)}\n"
+                    "# then:  docker compose up -d"
+                )
+
+            host_in.on_value_change(lambda _: _refresh())
+            cont_in.on_value_change(lambda _: _refresh())
+            _refresh()
+
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                def _save_entry() -> None:
+                    r = _entry()
+                    if r is None:
+                        ui.notify("enter the folder path", type="warning")
+                        return
+                    roots[:] = [x for x in roots if x.container != r.container]
+                    roots.append(r)
+                    _persist()
+                    _render()
+                    dialog.close()
+                    ui.notify(
+                        "saved — add the compose line, run docker compose up -d, then rescan"
+                        if in_docker
+                        else "saved — Save & rescan to index it"
+                    )
+
+                ui.button("Save", on_click=_save_entry).props("color=primary")
+        dialog.open()
+
+    with ui.row().classes("items-center gap-2"):
+        ui.button("Add folder", icon="add", on_click=_add_dialog).props("flat dense")
+        if helper is not None:
+            ui.label("🖥 helper connected — Browse enabled").classes("text-xs text-emerald-600")
+
+    if writable:
+
+        async def _save_rescan() -> None:
+            _persist()
+            ui.notify("saved — rescanning…")
+            result = await nicegui_run.io_bound(_run_index_pass, settings, engine)
+            ui.notify(result)
+
+        ui.button("Save & rescan", on_click=_save_rescan).props("color=primary")
+
+    _render()
+
+
 def _exclude_editor(settings: Settings, engine: Engine) -> None:
     """`/settings` editor for ``indexer.exclude_dir_names``. Save persists to
     ``config.yaml``, updates the live config, and kicks a rescan -- the sweep
@@ -2744,26 +2990,66 @@ def _copy_path(path: str) -> None:
     ui.notify("path copied")
 
 
-def _path_row(path: str, *, present: bool, can_reveal: bool) -> None:
-    """One row in the photo page's Paths list: the path text plus copy / reveal /
-    open buttons. Reveal + open only appear when the server can drive a file
-    manager (native run) and the file is present."""
+def _helper_action_js(endpoint: str, host_path: str) -> str:
+    """Client-side ``fetch`` of the host helper agent, returning ``{ok, error}``
+    so the Python handler can ``ui.notify`` the outcome."""
+    return (
+        "(async () => { const h = window.__spHelper;"
+        " if (!h) return {ok: false, error: 'helper not running'};"
+        f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
+        "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
+        f"   body: JSON.stringify({{path: {json.dumps(host_path)}}})}});"
+        "   const j = await r.json().catch(() => ({}));"
+        "   return {ok: r.ok, error: j.error}; }"
+        " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
+    )
+
+
+def _path_row(
+    path: str,
+    *,
+    present: bool,
+    roots: list[LibraryRoot],
+    helper: HelperInfo | None,
+    native_reveal: bool,
+) -> None:
+    """One row in the photo page's Paths list. Shows the **host** path (translated
+    from the stored container path). Reveal / Open go through the host helper
+    agent under Docker, or the local openers on a native run; otherwise the Copy
+    button is the way in (paste into Finder's Go to Folder / Explorer's bar)."""
+    host_path = to_host_path(path, roots)
     with ui.row().classes("items-center gap-1"):
-        ui.label(path + ("" if present else "  (missing)")).classes(
-            "text-xs break-all " + ("text-gray-600" if present else "text-red-500")
-        )
-        ui.button(icon="content_copy", on_click=lambda: _copy_path(path)).props(
+        with ui.column().classes("min-w-0 gap-0"):
+            ui.label(host_path + ("" if present else "  (missing)")).classes(
+                "break-all text-xs " + ("text-gray-600" if present else "text-red-500")
+            )
+            if host_path != path:
+                ui.label(f"container: {path}").classes("break-all text-[10px] sp-faint")
+        ui.button(icon="content_copy", on_click=lambda: _copy_path(host_path)).props(
             "flat dense round size=xs"
-        ).tooltip("Copy path")
-        if can_reveal and present:
+        ).tooltip("Copy path (paste into Finder's Go to Folder / Explorer's address bar)")
+        if not present:
+            return
+        if helper is not None:
+
+            async def _act(endpoint: str) -> None:
+                res = await ui.run_javascript(_helper_action_js(endpoint, host_path), timeout=6.0)
+                if not (res or {}).get("ok"):
+                    ui.notify((res or {}).get("error") or "helper error", type="warning")
+
+            ui.button(icon="folder_open", on_click=lambda: _act("reveal")).props(
+                "flat dense round size=xs"
+            ).tooltip("Reveal in file manager")
+            ui.button(icon="open_in_new", on_click=lambda: _act("open")).props(
+                "flat dense round size=xs"
+            ).tooltip("Open in default app")
+        elif native_reveal:
             ui.button(
-                icon="folder_open",
-                on_click=lambda: reveal_in_file_manager(Path(path)),
+                icon="folder_open", on_click=lambda: reveal_in_file_manager(Path(path))
             ).props("flat dense round size=xs").tooltip("Reveal in file manager")
-            ui.button(
-                icon="open_in_new",
-                on_click=lambda: open_in_default_app(Path(path)),
-            ).props("flat dense round size=xs").tooltip("Open in default app")
+            ui.button(icon="open_in_new", on_click=lambda: open_in_default_app(Path(path))).props(
+                "flat dense round size=xs"
+            ).tooltip("Open in default app")
 
 
 def _stack_filmstrip(current: str, members: list[str], size: int) -> None:

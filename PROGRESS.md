@@ -1,7 +1,95 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-10 (Features.md: Design pass first cut — committed on `scaffold`, PR to `main`)._
+_Last updated: 2026-09-10 (per-device library folders + Settings picker + host reveal helper — committed on `scaffold`, PR to `main`)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 📁 2026-09-10 — Per-device library folders + Settings picker + host file-manager helper (PR 1 of 2)
+
+**Committed on `scaffold` (PR `scaffold → main`).** `320 tests pass` (+29);
+ruff + ruff format + mypy (gated + `library_roots.py` + `helper.py` +
+`tools/sortandpost_helper.py`) clean; alembic autogenerate empty (no schema
+change). Verified headless + a live native run against `browser_test_data` +
+the helper agent — add/remove folders, de-quoting, native-vs-Docker dialog,
+`/health` + `/listdir` + host-path reveal buttons, Save & rescan — zero JS
+errors. **PR 2 = online-only / placeholder files** (still to build; plan file
+`~/.claude/plans/recursive-doodling-frost.md`).
+
+**Why.** Library lives in a cloud-sync folder that mounts at a different path on
+every machine; `library_roots` was one shared value in `sync/config.yaml`
+(wrong cross-platform), hand-edited, and "Reveal in Finder" was dead under
+Docker.
+
+**Per-device roots** — new `src/sortandpost/library_roots.py`:
+- `LibraryRoot(container, host, label)` — `container` = what the scanner walks
+  (a bind-mount target under Docker; the real folder natively), `host` = the
+  real per-machine path for display / copy / reveal.
+- Stored in `sync/devices/<slug(hostname)>-<device_id[:8]>/library.json` (rides
+  the sync tool, but a device only writes its own subfolder — no conflict copy).
+  `device_dir()` matches by the `-<id8>` suffix so a hostname change still
+  adopts the folder. `paths.devices_dir`.
+- `load_roots` / `save_roots` (atomic), tolerant of corrupt / bare-list /
+  legacy-string. `container_roots()`, `to_host_path()` (longest-prefix swap,
+  Windows-separator aware), `compose_volume_line()`, `clean_path()` (strips
+  wrapping quotes/space — users paste `'…'` from a shell), `running_in_docker()`
+  (`/.dockerenv` / cgroup).
+- `config.py`: `Settings.library_roots` + `hostname`; `resolve()` seeds the
+  per-device file **once** from `AppConfig.library_roots` on first run after
+  upgrade, then that file is canonical. `Settings.set_library_roots()` for the
+  test fixtures. `load_device()` returns `(id, hostname)`.
+- Consumers (`indexer/scan.py`, `indexer/service.py`, `/settings` row) →
+  `container_roots(settings.library_roots)`.
+
+**Host helper agent** — `tools/sortandpost_helper.py` (stdlib only, ~240 lines):
+- `ThreadingHTTPServer` on `127.0.0.1` (`--app-data <host path>`, `--port`
+  41847). **`_Server` overrides `server_bind`** to skip `socket.getfqdn()` —
+  that reverse-DNS lookup hangs for many seconds on macOS.
+- Writes `local/helper.json` `{port, token, os, heartbeat_at}` (rewritten every
+  60 s); the container reads it via the `/data` mount. `src/sortandpost/helper.py`
+  `read_helper_info()` (stale after 150 s).
+- Endpoints (all need `X-SP-Token`; CORS reflects only `localhost`/`127.0.0.1`
+  origins): `/health`, `/reveal`, `/open`, `/listdir` (native FS browser; dir
+  names only, dotfiles hidden). `/reveal` + `/open` are confined to the `host`
+  roots from `sync/devices/*/library.json`; subprocess = argv array, never a
+  shell.
+
+**`app.py`**:
+- `_header` injects `window.__spHelper = {port, token}` (or `null`) + a 🖥 chip
+  when connected (`_current_helper`, `_inject_helper`).
+- `_library_roots_editor` in `/settings` — rows with a scanned / not-found
+  badge + remove; **Add folder** dialog: native run shows just the host-path
+  field (+ **Browse** via the helper's `/listdir` when up); Docker run adds the
+  mount-point field + a live `ui.code` compose snippet. Save persists to the
+  per-device file; **Save & rescan** (writable only) also runs `_run_index_pass`.
+- `_path_row` shows/copies `to_host_path(pp.path, roots)` (+ a `container: …`
+  caption); Reveal / Open call the helper client-side (`_helper_action_js` →
+  `{ok, error}` → `ui.notify`), falling back to the native openers, then to
+  copy-only.
+
+**Bug fixed (pre-existing) — `indexer/scanner.py._walk` aborted the whole scan
+on one unreadable entry.** Only `iterdir()` was guarded; a per-entry
+`is_symlink()` / `is_dir()` raising `PermissionError` (a macOS SIP data-vault
+under `/Library`, a locked mount) propagated out and killed `scan_once`. Now
+each entry is in its own `try/except OSError` → skip it, keep walking. Surfaced
+when a native user accidentally set a root's `container` to `/library` (→
+macOS `/Library`).
+
+**Docs**: `CLAUDE.md` (app-data layout + a "Library folders are per-device" +
+"File-manager helper" section), `docker-compose.yml` (multi-mount pattern +
+helper note), `.env.example`, `config.default.yaml`.
+
+**Tests** (+29): `test_library_roots.py` (round-trip, corrupt/legacy, dedupe,
+`device_dir` stale-hostname adopt, `to_host_path` POSIX+Windows+passthrough,
+`clean_path`), `test_helper.py` (in-process server: `/health` no-auth, token
+401/403, `/reveal` argv + outside-roots 403 + relative 400, `/listdir` dirs-only
++ dotfiles + PermissionError, `read_helper_info` staleness), `test_scanner.py`
+(unstatable entry skipped not fatal), fixture switch in 4 indexer test files.
+
+**Not done / follow-ups**: PR 2 online-only files; the Browse dialog is tall
+with lots of empty space; `run_indexer` still fixes the `watchdog` roots at
+startup (a roots change triggers an immediate `scan_once` + the timer, but new
+roots aren't *watched* until restart — same as `exclude_dir_names`).
 
 ---
 
@@ -872,7 +960,16 @@ Remaining `Features.md` items (unchecked, roughly in priority order):
 
 Follow-ups on shipped features:
 
-2. **Design pass — round 2** (first cut shipped 2026-09-10, `[x]` in
+2. **PR 2 — online-only / placeholder file handling** (PR 1 = per-device roots +
+   helper shipped 2026-09-10). Plan: `~/.claude/plans/recursive-doodling-frost.md`
+   → "Part C". New `indexer/placeholder.py` (`is_online_only`: `st_blocks==0 &&
+   st_size>4096`, + Windows attrs), `IndexerConfig.online_only: skip|download`,
+   `decode_local` checks it pre-decode (mode via `DecodeJob`), new
+   `ScanState.online_only` col (absorbed by `0001` — no migration),
+   `persist_decoded` sets it *without* bumping `attempts`, `indexer/hydrate.py`
+   `hydrate_online_only()` behind a `/` banner + `/settings` action,
+   `browse.online_only_count()`.
+3. **Design pass — round 2** (first cut shipped 2026-09-10, `[x]` in
    `Features.md`; user sending detailed feedback later). Likely: card-definition
    strength, how far the serif leans, header density, accent weight, `ui.input`
    / `q-field` styling, `/search` + `/review` + `/photo` fit, photo-page layout.

@@ -24,6 +24,7 @@ import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from sortandpost.library_roots import LibraryRoot, load_roots, save_roots
 from sortandpost.paths import Paths
 
 _DEFAULT_APP_DATA = Path("appdata").resolve()
@@ -173,7 +174,15 @@ def bootstrap(paths: Paths) -> None:
 
 
 def load_device_id(paths: Paths) -> str:
-    return str(json.loads(paths.device_file.read_text(encoding="utf-8"))["device_id"])
+    return load_device(paths)[0]
+
+
+def load_device(paths: Paths) -> tuple[str, str]:
+    """``(device_id, hostname)`` from ``local/device.json`` (written by
+    :func:`bootstrap`). A pre-existing file without ``hostname`` falls back to
+    the current machine's name."""
+    data = json.loads(paths.device_file.read_text(encoding="utf-8"))
+    return str(data["device_id"]), str(data.get("hostname") or socket.gethostname())
 
 
 class Settings(BaseModel):
@@ -185,6 +194,10 @@ class Settings(BaseModel):
     paths: Paths
     config: AppConfig
     device_id: str
+    hostname: str = ""
+    # Per-device library folders (``sync/devices/<name>-<id8>/library.json``).
+    # NOT ``config.library_roots`` -- see sortandpost.library_roots.
+    library_roots: list[LibraryRoot] = Field(default_factory=list)
 
     @classmethod
     def resolve(cls) -> Settings:
@@ -194,4 +207,24 @@ class Settings(BaseModel):
         config = AppConfig.load(paths.config_file)
         if env.clip_model_override:
             config.clip.model = env.clip_model_override
-        return cls(env=env, paths=paths, config=config, device_id=load_device_id(paths))
+        device_id, hostname = load_device(paths)
+        roots = load_roots(paths, device_id, hostname)
+        if not roots and config.library_roots:
+            # First run after upgrading: seed the per-device file once from the
+            # old shared config, then treat the per-device file as canonical.
+            roots = [LibraryRoot(container=str(p), host=str(p)) for p in config.library_roots]
+            save_roots(paths, device_id, hostname, roots)
+        return cls(
+            env=env,
+            paths=paths,
+            config=config,
+            device_id=device_id,
+            hostname=hostname,
+            library_roots=roots,
+        )
+
+    def set_library_roots(self, roots: list[str | Path]) -> None:
+        """Replace the in-memory root list (``host`` == ``container``). Used by
+        tests and the first-run seed; the Settings UI persists its edits via
+        :mod:`sortandpost.library_roots`."""
+        self.library_roots = [LibraryRoot(container=str(r), host=str(r)) for r in roots]

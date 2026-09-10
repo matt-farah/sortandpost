@@ -26,6 +26,7 @@ from sortandpost.clip.model import ClipModel
 from sortandpost.clip.store import ModelMismatch
 from sortandpost.config import Settings
 from sortandpost.indexer.scan import scan_clip_once, scan_once
+from sortandpost.library_roots import container_roots
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def run_indexer(
     clip_model: ClipModel | None = None,
 ) -> None:
     cfg = loop_config or IndexerLoopConfig.from_settings(settings)
-    roots = [Path(r) for r in settings.config.library_roots if Path(r).is_dir()]
+    roots = [r for r in container_roots(settings.library_roots) if r.is_dir()]
 
     debouncer = _Debouncer(cfg.debounce_sec)
     observer = _start_observer(roots, debouncer) if cfg.watch else None

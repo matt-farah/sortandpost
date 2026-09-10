@@ -47,11 +47,19 @@ def _walk(directory: Path, pruned: set[Path], pruned_names: set[str]) -> Iterato
     for entry in entries:
         if entry.name.startswith("."):
             continue
-        if entry.is_symlink():
+        try:
+            if entry.is_symlink():
+                continue
+            is_dir = entry.is_dir()
+            is_file = entry.is_file()
+            resolved = entry.resolve() if is_dir else None
+        except OSError:
+            # unreadable entry (permission denied, a macOS data-vault, a broken
+            # mount point). Skip it -- one bad path must not abort the whole scan.
             continue
-        if entry.is_dir():
-            if entry.resolve() in pruned or entry.name.casefold() in pruned_names:
+        if is_dir:
+            if resolved in pruned or entry.name.casefold() in pruned_names:
                 continue
             yield from _walk(entry, pruned, pruned_names)
-        elif entry.is_file() and entry.suffix.lower() in IMAGE_SUFFIXES:
+        elif is_file and entry.suffix.lower() in IMAGE_SUFFIXES:
             yield entry

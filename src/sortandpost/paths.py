@@ -56,6 +56,13 @@ class Paths:
         return self.local / "ui_prefs.json"
 
     @property
+    def helper_file(self) -> Path:
+        """Written by the optional host file-manager helper agent
+        (``tools/sortandpost_helper.py``): ``{port, token, ...}``. The web app
+        reads it to know whether/how to reach the helper. Never synced."""
+        return self.local / "helper.json"
+
+    @property
     def models_dir(self) -> Path:
         return self.local / "models"
 
@@ -95,6 +102,17 @@ class Paths:
         return self.sync / "collections.json"
 
     @property
+    def devices_dir(self) -> Path:
+        """Per-device config, keyed by ``<slug(hostname)>-<device_id[:8]>``.
+
+        Rides in ``sync/`` so a device's library-folder list is backed up by the
+        file-sync tool, but each device only ever writes its own subfolder, so
+        two devices never collide (unlike ``config.yaml``). See
+        :mod:`sortandpost.library_roots`.
+        """
+        return self.sync / "devices"
+
+    @property
     def snapshots_dir(self) -> Path:
         return self.sync / "snapshots"
 
@@ -130,6 +148,7 @@ class Paths:
             self.models_dir,
             self.logs_dir,
             self.sync,
+            self.devices_dir,
             self.snapshots_dir,
             self.merged_snapshots_dir,
             self.thumbnails_dir,

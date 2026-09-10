@@ -49,6 +49,7 @@ from sortandpost.indexer.pipeline import (
 )
 from sortandpost.indexer.scanner import iter_image_files
 from sortandpost.indexer.workers import DecodedFile, DecodeJob, decode_file, decode_local
+from sortandpost.library_roots import container_roots
 from sortandpost.metadata import ExiftoolClient
 
 log = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
     engine = make_engine(paths.working_db)
     init_db(engine)  # no-op once Alembic has run; safety net for native --once
 
-    roots = [Path(r) for r in settings.config.library_roots]
+    roots = container_roots(settings.library_roots)
     tcfg = settings.config.thumbnails
     pcfg = PipelineConfig(
         thumbnail_sizes=tuple(tcfg.sizes),

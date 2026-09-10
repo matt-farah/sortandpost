@@ -37,6 +37,27 @@
 - [x] File path exposure
     - The image page shows a link that will open the file in the native file viewer to be able to edit the image or copy it to a new folder
     - Done: Copy path always; Reveal in file manager + Open in default app on native runs
+    - Done (2026-09-10): under Docker, "Reveal / Open" now work via an optional
+      host helper agent (`tools/sortandpost_helper.py`, run outside Docker on
+      127.0.0.1) — token-gated, CORS-locked to localhost, `/reveal` + `/open`
+      confined to registered folders. The photo page shows and copies the
+      **host** path (translated from the container path); degrades to
+      "copy host path" when the agent isn't running.
+- [x] Choose library folders from the Settings UI (per computer)
+    - The folders scanned should be pickable in Settings, not hand-edited YAML,
+      and must work across Mac/Windows/Linux + Docker where paths differ
+    - Done (2026-09-10): library folders moved out of the shared `config.yaml`
+      into a **per-device** file, `sync/devices/<hostname>-<id8>/library.json`
+      (new `src/sortandpost/library_roots.py`; each root is `{container, host,
+      label}`; folder matched by the id suffix so a hostname change still adopts
+      it; seeded once from the old `config.yaml` on upgrade). Settings →
+      **Library folders**: add / remove folders with a live "scanned / not found"
+      badge. Native run → just pick the folder (a real filesystem browser when
+      the helper is up). Docker run → the dialog generates the exact
+      `docker-compose.yml` volume line + `docker compose up -d` (the app never
+      mutates compose or restarts itself). Pasted paths are de-quoted; the
+      scanner now skips an unreadable dir (macOS data-vault / locked mount)
+      instead of aborting the whole pass. +29 tests.
 - [x] Move from paginated version to infinite scroll that loads images as needed
     - Done: 80/batch, appends near bottom, header counter, no more ?page= URLs
 - [x] Keyboard navigation & shortcuts
