@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 
 from sortandpost.db import make_engine
 from sortandpost.db.meta import get_generation
-from sortandpost.db.models import Change, Photo, PhotoPath
+from sortandpost.db.models import Change, ChangeOp, Photo, PhotoPath, Tombstone
 from sortandpost.sync.merge import find_conflict_copies, merge_all
 from tests.factories import hash_for, make_db, rate, read_ratings, ts
 
@@ -125,6 +125,39 @@ def test_derived_union_adds_photos_only_in_the_source(tmp_path: Path) -> None:
             hash_for("c"),
         }
         assert len(s.exec(select(PhotoPath)).all()) == 3
+
+
+def test_unindex_replay_writes_a_tombstone_and_marks_missing(tmp_path: Path) -> None:
+    target = tmp_path / "t.db"
+    source = tmp_path / "s.db"
+    make_db(target, photos=["a", "b"], generation=1)
+    make_db(source, photos=["a", "b"], generation=2)
+
+    # machine that owns `source` deleted photo "a"
+    se = make_engine(source)
+    with Session(se) as s:
+        s.add(
+            Change(
+                ts=NOW,
+                device_id="dev-src",
+                op=ChangeOp.unindex,
+                pixel_hash=hash_for("a"),
+                field="delete",
+                new_value="1",
+            )
+        )
+        s.commit()
+    se.dispose()
+
+    _merge(target, source, target_gen=1, source_gen=2)
+
+    with Session(make_engine(target)) as s:
+        tomb = s.get(Tombstone, hash_for("a"))
+        assert tomb is not None and tomb.applied is False
+        assert tomb.deleted_by_device == "dev-src"
+        assert s.get(Photo, hash_for("a")).missing_since is not None
+        assert s.get(Photo, hash_for("b")).missing_since is None
+        assert s.get(Tombstone, hash_for("b")) is None
 
 
 def test_merge_bumps_generation_past_every_input(tmp_path: Path) -> None:

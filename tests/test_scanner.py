@@ -53,3 +53,22 @@ def test_exclude_prunes_subtree(tmp_path: Path) -> None:
 
 def test_missing_root_is_ignored(tmp_path: Path) -> None:
     assert list(iter_image_files([tmp_path / "does-not-exist"])) == []
+
+
+def test_exclude_names_prunes_folders_case_insensitively_at_any_depth(tmp_path: Path) -> None:
+    _touch_image(tmp_path / "keep.jpg")
+    _touch_image(tmp_path / "RAW" / "r.jpg")
+    _touch_image(tmp_path / "trip" / "raw" / "r2.jpg")
+    _touch_image(tmp_path / "trip" / "af" / "a.jpg")
+    _touch_image(tmp_path / "trip" / "good.jpg")
+
+    names = sorted(p.name for p in iter_image_files([tmp_path], exclude_names=["raw", " AF "]))
+    assert names == ["good.jpg", "keep.jpg"]
+
+
+def test_exclude_names_empty_and_blank_entries_are_noops(tmp_path: Path) -> None:
+    _touch_image(tmp_path / "a.jpg")
+    _touch_image(tmp_path / "sub" / "b.jpg")
+
+    names = sorted(p.name for p in iter_image_files([tmp_path], exclude_names=["", "   "]))
+    assert names == ["a.jpg", "b.jpg"]

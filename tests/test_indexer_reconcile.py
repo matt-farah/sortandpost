@@ -96,6 +96,96 @@ def test_import_rating_when_db_has_none(session: Session) -> None:
     assert et.rating_calls == []
 
 
+def test_embedded_rating_zero_with_no_db_row_is_noop(session: Session) -> None:
+    """Many cameras stamp a literal ``Rating=0`` on every frame. That must not
+    create a ``ratings`` row or a ``rate`` change on first index."""
+    ph = "z" * 64
+    _photo(session, ph, "/lib/z.jpg")
+    et = MockExiftool()
+
+    out = reconcile_metadata(
+        session,
+        pixel_hash=ph,
+        path=Path("/lib/z.jpg"),
+        md=_md(rating=0),
+        exiftool=et,
+        device_id=DEVICE,
+        file_mtime_ns=_ns(NEW),
+        now=NOW,
+    )
+
+    assert not out.rating_imported and not out.rating_written
+    assert session.get(Rating, ph) is None
+    assert session.exec(select(Change).where(Change.op == ChangeOp.rate)).all() == []
+    assert et.rating_calls == []
+
+
+def test_embedded_rating_zero_clears_a_newer_db_rating(session: Session) -> None:
+    """But an explicit 0 from a file *newer* than the DB rating is the user
+    clearing the star in Lightroom -- honour it."""
+    ph = "y" * 64
+    _photo(session, ph, "/lib/y.jpg")
+    session.add(
+        Rating(
+            pixel_hash=ph,
+            stars=4,
+            updated_at=OLD,
+            updated_by_device=DEVICE,
+            source=RatingSource.app,
+        )
+    )
+    session.commit()
+    et = MockExiftool()
+
+    out = reconcile_metadata(
+        session,
+        pixel_hash=ph,
+        path=Path("/lib/y.jpg"),
+        md=_md(rating=0),
+        exiftool=et,
+        device_id=DEVICE,
+        file_mtime_ns=_ns(NEW),
+        now=NOW,
+    )
+
+    assert out.rating_imported and not out.rating_written
+    assert session.get(Rating, ph).stars == 0
+    change = session.exec(select(Change).where(Change.op == ChangeOp.rate)).one()
+    assert (change.old_value, change.new_value) == ("4", "0")
+    assert et.rating_calls == []
+
+
+def test_embedded_rating_zero_older_than_db_pushes_db_out(session: Session) -> None:
+    ph = "x" * 64
+    _photo(session, ph, "/lib/x.jpg")
+    session.add(
+        Rating(
+            pixel_hash=ph,
+            stars=3,
+            updated_at=NEW,
+            updated_by_device=DEVICE,
+            source=RatingSource.app,
+        )
+    )
+    session.commit()
+    et = MockExiftool()
+
+    out = reconcile_metadata(
+        session,
+        pixel_hash=ph,
+        path=Path("/lib/x.jpg"),
+        md=_md(rating=0),
+        exiftool=et,
+        device_id=DEVICE,
+        file_mtime_ns=_ns(OLD),
+        now=NOW,
+    )
+
+    assert out.rating_written and not out.rating_imported
+    assert session.get(Rating, ph).stars == 3
+    assert et.rating_calls == [("x.jpg", 3)]
+
+
 def test_file_wins_when_mtime_newer(session: Session) -> None:
     ph = "b" * 64
     _photo(session, ph, "/lib/b.jpg")

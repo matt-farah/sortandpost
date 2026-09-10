@@ -108,10 +108,19 @@ def _reconcile_rating(
     file_stars = md.rating  # 0-5, or None when the file carries no rating tag
     row = session.get(Rating, pixel_hash)
 
-    if file_stars is None:
-        # Nothing embedded. Push a real DB rating out so other tools see it.
-        if row is not None and row.stars > 0 and embed_capable:
-            _write_rating(exiftool, path, row.stars, out)
+    # A file with no rating tag *and* one that embeds ``Rating=0`` (many cameras
+    # write a literal 0 on every frame) both mean "unrated". Only a real DB
+    # rating is worth pushing back out.
+    if not file_stars:  # None or 0
+        if row is not None and row.stars > 0:
+            if file_stars == 0 and file_mtime_ns > _dt_to_ns(row.updated_at):
+                # The file explicitly cleared a rating we still hold -- honour it.
+                _import_rating(
+                    session, pixel_hash, 0, device_id=device_id, now=now, old=row.stars, row=row
+                )
+                out.rating_imported = True
+            elif embed_capable:
+                _write_rating(exiftool, path, row.stars, out)
         return
 
     if row is None:

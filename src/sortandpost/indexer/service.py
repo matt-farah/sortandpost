@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from sortandpost.clip.model import ClipModel
 from sortandpost.clip.store import ModelMismatch
 from sortandpost.config import Settings
 from sortandpost.indexer.scan import scan_clip_once, scan_once
@@ -98,6 +99,7 @@ def run_indexer(
     is_writable: Callable[[], bool],
     stop: threading.Event,
     loop_config: IndexerLoopConfig | None = None,
+    clip_model: ClipModel | None = None,
 ) -> None:
     cfg = loop_config or IndexerLoopConfig.from_settings(settings)
     roots = [Path(r) for r in settings.config.library_roots if Path(r).is_dir()]
@@ -107,13 +109,23 @@ def run_indexer(
     if cfg.watch and observer is None and not watchdog_available():
         log.info("watchdog not installed; continuous indexer runs on the timer only")
 
+    # One CLIP model for the whole loop. ``ClipModel.load()`` is a no-op after the
+    # first call, so every cycle after the first reuses the weights already in
+    # memory instead of re-instantiating the architecture and re-reading the
+    # safetensors file (~2-4s of wasted CPU on every otherwise-idle cycle). The
+    # app hands in its process-wide model so search and the indexer share one
+    # copy; the standalone ``python -m sortandpost.indexer`` gets its own here.
+    model = None
+    if cfg.run_clip:
+        model = clip_model or ClipModel(settings.config.clip, settings.paths.models_dir)
+
     next_full = 0.0  # run immediately on start
     try:
         while not stop.is_set():
             if is_writable():
                 now = time.monotonic()
                 if now >= next_full or debouncer.take_if_ready():
-                    _run_cycle(settings, run_clip=cfg.run_clip)
+                    _run_cycle(settings, clip_model=model)
                     next_full = time.monotonic() + cfg.full_scan_interval_sec
             stop.wait(cfg.poll_sec)
     finally:
@@ -122,12 +134,12 @@ def run_indexer(
             observer.join(timeout=5)
 
 
-def _run_cycle(settings: Settings, *, run_clip: bool) -> None:
+def _run_cycle(settings: Settings, *, clip_model: ClipModel | None) -> None:
     try:
         stats = scan_once(settings)
         log.info("indexer cycle: %s", stats)
-        if run_clip:
-            clip_stats = scan_clip_once(settings)
+        if clip_model is not None:
+            clip_stats = scan_clip_once(settings, model=clip_model)
             log.info("indexer cycle: %s", clip_stats)
     except ModelMismatch as exc:
         log.error("CLIP pass needs --reembed: %s", exc)

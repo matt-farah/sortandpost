@@ -22,9 +22,19 @@ updated as decisions are made or changed.
 
 ## Hard constraints — do not violate these
 
-1. **Never modify the user's photo files or folder structure**, with exactly one exception:
-   writing embedded EXIF/XMP metadata (ratings, approved keywords) into formats that support it
-   (JPEG, HEIC, TIFF, PNG). No renames, no moves, no deletes, no new files, no new folders, no
+1. **Never modify the user's photo files or folder structure**, with exactly two exceptions:
+   1. writing embedded EXIF/XMP metadata (ratings, approved keywords) into formats that support
+      it (JPEG, HEIC, TIFF, PNG);
+   2. the **explicit user-invoked "Delete photos" action** (bulk toolbar / photo page, behind a
+      confirm dialog) *moves* the selected photo files to a recoverable location — the operating
+      system Trash / Recycle Bin via `send2trash` on macOS and Windows, or a managed
+      `<APP_DATA>/local/trash/<timestamp>/` folder with a `manifest.json` on Linux / headless /
+      Docker. It is never an `unlink`, never writes anything under a library root (no `.Trash-*`
+      dir on the library filesystem), and never runs automatically — only from a user click.
+      RAW files are moved by this action too (constraint #2 governs *metadata writes*, not an
+      explicit user delete).
+
+   Outside those two: no renames, no moves, no other deletes, no new files, no new folders, no
    `.xmp` sidecars anywhere under a library root — ever.
 2. **RAW files are read-only.** No metadata is written to them or beside them. Their ratings and
    tags live only in the database.
@@ -113,6 +123,30 @@ applies — the native indexer and the container app must not both write.)
 
 ---
 
+## Development workflow
+
+**Every new feature gets a hands-on browser test by the user before it's considered done.**
+Automated tests + a headless smoke are necessary but not sufficient. After building a feature:
+
+1. Run the quality gate (ruff, ruff format, mypy on the gated paths, pytest, alembic
+   autogenerate-empty).
+2. **Boot the app so the user can click through it themselves** — native run against the
+   `browser_test_data` app-data tree on `http://localhost:8080`:
+
+   ```
+   APP_DATA=<repo>/browser_test_data PORT=8080 HF_HUB_OFFLINE=1 \
+     .venv/bin/python -m sortandpost
+   ```
+
+   (`library_roots` there points at `~/Downloads/sampleImages`; ~300 photos already indexed;
+   `.venv` has no torch, so CLIP features degrade gracefully.)
+3. Tell the user exactly which keys / buttons / flows to exercise, and what each should do.
+4. Wait for their sign-off. Only then update `PROGRESS.md` / `Features.md` and commit.
+
+Leave the app running until the user says they're done, then shut it down.
+
+---
+
 ## App-data layout
 
 `APP_DATA` has two subtrees. The user points their file-sync app at **`sync/` only**.
@@ -165,6 +199,8 @@ indexer:
   workers: auto
   clip_deferred: true              # make photos browsable first, run CLIP after
 rating: { write_windows_compat_tags: true }
+deletion:
+  stack_scope: selected             # "selected" = only the clicked photo; "whole_stack" = every stack member
 ```
 
 ---
@@ -241,6 +277,40 @@ Lightroom/Windows). On re-index, if a file's embedded `XMP:Rating` differs from 
 if the file's mtime is newer than the DB row's `updated_at`, the file wins and we emit a
 `changes` row; otherwise the DB wins and we rewrite the file.
 
+### Deletion (explicit, user-invoked — constraint #1 exception 2)
+
+The "Delete photos" action is the one destructive operation. On the machine that runs it:
+
+1. Present file copies of each selected `pixel_hash` are **moved to trash** (see constraint #1):
+   the OS Trash on macOS/Windows, else `<APP_DATA>/local/trash/<ts>/` + `manifest.json`. RAW
+   included. Duplicates (one `pixel_hash`, several present paths) all go together.
+2. The DB rows for that `pixel_hash` are purged — `photos`, `photo_paths`, `ratings`,
+   `photo_tags`, `predictions`, `embedding_rows`, `scan_state` — the embedding matrix is
+   compacted, and the content-addressed thumbnails are deleted.
+3. A `changes` row `op=unindex` is appended (constraint #4) **and** a `tombstones` row is
+   written: `(pixel_hash, deleted_at, deleted_by_device)`.
+
+**Stack scope** is a config choice, `deletion.stack_scope` — `selected` (default; only the
+clicked photo) or `whole_stack` (every stack member, like ratings fan out).
+
+**Cross-machine.** Conflict-copy merge replays `op=unindex` by writing the same `tombstones`
+row on every machine (it no longer merely sets `missing_since`). Each machine then applies its
+tombstones on its next scan: purge the local DB rows / thumbnails / embedding row as above, and
+**lazily move its own local copy of the file to trash** if the file is still present. The
+scanner refuses to re-index a `pixel_hash` that has a tombstone, so a not-yet-deleted file
+cannot resurrect a deleted photo. `tombstones` is append-only and travels in the DB; it is
+never GC'd (a tiny row per deleted photo, bounded by real deletes).
+
+**Caveat — this genuinely removes files from the library folder.** "Move to trash" is not a
+soft-delete flag: on macOS/Windows the file leaves its folder for the OS Trash/Recycle Bin; on
+Linux/headless it leaves for `<APP_DATA>/local/trash/`. Recovery is a manual "Put Back" (OS
+Trash) or a hand-move from the managed folder using its `manifest.json` — the app has no
+in-UI undo yet. If a **library root is itself inside a third-party sync folder** (OneDrive,
+Drive, Dropbox, …), that sync tool then propagates the deletion to every other copy and to the
+provider's own trash/version history, independently of our `tombstones` mechanism. The confirm
+dialog must state plainly that files are moved out of the library; never widen this action to
+skip the dialog, act on a hover, or run from anything other than a direct click.
+
 ---
 
 ## Indexer pipeline
@@ -265,7 +335,9 @@ real path in `scan_state`, each stage idempotent and separately resumable:
 8. **finalize** — set `scan_state.indexed_at`, clear dirty flags.
 
 Deletions: file gone ⇒ set `photos.missing_since` and `photo_paths.present = false`. Never purge
-without an explicit user action.
+without an explicit user action (see Sync model → Deletion). A pending `tombstones` row is the
+one case the scanner acts on: it skips re-indexing that `pixel_hash` and, on the post-scan
+sweep, trashes the still-present local file and purges the derived rows.
 
 Concurrency: `ProcessPoolExecutor` sized to `cpu_count - 1` for decode/hash/CLIP. `watchdog`
 observers on the library roots, debounced, plus a periodic full reconcile scan
@@ -325,6 +397,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   `state` (`pending`|`approved`|`rejected`).
 - `changes` — append-only user-authored mutation log (see Sync model). Powers conflict merge,
   audit, and undo.
+- `tombstones` — `pixel_hash` (pk), `deleted_at`, `deleted_by_device`, `applied` (has this
+  machine purged its derived rows + trashed its local file yet). Written by an explicit delete
+  and by `unindex` merge replay; the scanner refuses to re-index a tombstoned `pixel_hash`.
 - `embedding_rows` — `pixel_hash` (pk), `row_index`, `model`.
 - `embeddings_meta` — `model`, `pretrained`, `dim`, `count`, `updated_at`.
 - `scan_state` — `path` (pk), `pixel_hash`, per-stage progress, `error`, `attempts`.

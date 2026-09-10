@@ -9,11 +9,15 @@ works as soon as this returns.
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import shutil
 from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +29,7 @@ from sortandpost.clip.tagging import pick_terms, upsert_prediction
 from sortandpost.clip.vocab import Vocab, ensure_text_matrix, load_vocab
 from sortandpost.config import Settings, TaggingConfig
 from sortandpost.db import init_db, make_engine
+from sortandpost.db.deletion import apply_pending_tombstones
 from sortandpost.db.models import (
     EmbeddingRow,
     EmbeddingsMeta,
@@ -38,13 +43,19 @@ from sortandpost.indexer.pipeline import (
     IndexOutcome,
     PipelineConfig,
     Stage,
-    index_file,
+    needs_reindex,
+    persist_decoded,
     sweep_presence,
 )
 from sortandpost.indexer.scanner import iter_image_files
+from sortandpost.indexer.workers import DecodedFile, DecodeJob, decode_file, decode_local
 from sortandpost.metadata import ExiftoolClient
 
 log = logging.getLogger(__name__)
+
+# Below this many files needing work, the spawn cost of a process pool is not
+# worth it -- decode them inline on the calling thread instead.
+_MIN_FILES_FOR_POOL = 8
 
 
 @dataclass
@@ -52,6 +63,8 @@ class ScanStats:
     seen: int = 0
     indexed: int = 0
     skipped: int = 0
+    tombstoned: int = 0  # files skipped because the user deleted that pixel_hash
+    tombstones_applied: int = 0  # tombstones this pass purged + trashed
     new_photos: int = 0
     thumbnails: int = 0
     errors: int = 0
@@ -68,12 +81,18 @@ class ScanStats:
                 f"; reconciled {self.ratings_imported} ratings in / "
                 f"{self.ratings_written} out, {self.keywords_imported} keywords in"
             )
+        tomb = ""
+        if self.tombstoned or self.tombstones_applied:
+            tomb = (
+                f"; {self.tombstoned} skipped as deleted, "
+                f"{self.tombstones_applied} tombstone(s) applied"
+            )
         return (
             f"{self.seen} files seen, {self.indexed} indexed "
             f"({self.new_photos} new, {self.thumbnails} thumbnails), "
             f"{self.skipped} unchanged, {self.errors} errors; "
             f"{self.marked_absent} paths now absent, {self.marked_missing} photos now missing"
-            f"{reconciled}"
+            f"{reconciled}{tomb}"
         )
 
 
@@ -81,7 +100,16 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def scan_once(settings: Settings) -> ScanStats:
+def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
+    """One full pass over the library roots (stages 1-6).
+
+    Stages 2-4 (decode, pixel + perceptual hash, thumbnails) are CPU-bound and
+    run in a ``ProcessPoolExecutor`` (hard constraint #7); the main process does
+    the fast-path check, the DB upserts and the ``exiftool`` reconcile serially.
+    ``workers`` overrides ``config.indexer.workers`` (``1`` forces the inline
+    path -- used by the tests and as an escape hatch). A pool is only spun up
+    when enough files actually need work to amortise the ``spawn`` cost.
+    """
     paths = settings.paths
     engine = make_engine(paths.working_db)
     init_db(engine)  # no-op once Alembic has run; safety net for native --once
@@ -94,6 +122,7 @@ def scan_once(settings: Settings) -> ScanStats:
         thumbnail_quality=tcfg.quality,
         thumbnail_path=paths.thumbnail_file,
     )
+    n_workers = settings.config.worker_count() if workers is None else max(1, workers)
 
     have_exiftool = shutil.which("exiftool") is not None
     if not have_exiftool:
@@ -107,14 +136,36 @@ def scan_once(settings: Settings) -> ScanStats:
     stats = ScanStats()
     seen_paths: set[str] = set()
     with Session(engine) as session, et_ctx as exiftool:
-        for path in iter_image_files(roots, exclude=[paths.app_data]):
-            seen_paths.add(str(path))
+        # -- discover + fast-path filter (main thread, one ScanState query) --- #
+        scan_rows = {s.path: s for s in session.exec(select(ScanState)).all()}
+        todo: list[str] = []
+        for path in iter_image_files(
+            roots,
+            exclude=[paths.app_data],
+            exclude_names=settings.config.indexer.exclude_dir_names,
+        ):
+            key = str(path)
+            seen_paths.add(key)
             stats.seen += 1
             try:
-                outcome = index_file(
+                st = path.stat()
+            except OSError as exc:
+                log.warning("stat failed for %s: %s", path, exc)
+                _record_failure(session, path, exc)
+                session.commit()
+                stats.errors += 1
+                continue
+            if not needs_reindex(scan_rows.get(key), st.st_size, st.st_mtime_ns):
+                stats.skipped += 1
+                continue
+            todo.append(key)
+
+        # -- stages 2-4 in parallel, stages 5-6 + DB serial here ------------- #
+        for decoded in _decode_stream(todo, pcfg, paths.app_data, n_workers):
+            try:
+                outcome = persist_decoded(
                     session,
-                    path,
-                    config=pcfg,
+                    decoded,
                     exiftool=exiftool,
                     device_id=settings.device_id,
                     now=_utcnow(),
@@ -122,8 +173,8 @@ def scan_once(settings: Settings) -> ScanStats:
                 session.commit()
             except Exception as exc:  # never let one bad file kill the pass
                 session.rollback()
-                log.exception("unhandled error indexing %s", path)
-                _record_failure(session, path, exc)
+                log.exception("unhandled error indexing %s", decoded.path)
+                _record_failure(session, Path(decoded.path), exc)
                 session.commit()
                 stats.errors += 1
                 continue
@@ -134,13 +185,115 @@ def scan_once(settings: Settings) -> ScanStats:
         stats.marked_absent = result.marked_absent
         stats.marked_missing = result.marked_missing
 
+        # Apply any not-yet-applied tombstones (from a user delete on this
+        # machine, or one that arrived via merge): purge the derived rows and
+        # move this machine's still-present copy of the file to trash.
+        tomb = apply_pending_tombstones(
+            session,
+            paths=paths,
+            clip_model=settings.config.clip.model,
+            thumb_sizes=tuple(tcfg.sizes),
+            now=_utcnow(),
+            trash_local_files=True,
+        )
+        session.commit()
+        stats.tombstones_applied = len(tomb.purged)
+
     log.info("scan complete: %s", stats)
     return stats
+
+
+def _decode_stream(
+    paths_to_do: list[str],
+    pcfg: PipelineConfig,
+    app_data: Path,
+    n_workers: int,
+) -> Iterator[DecodedFile]:
+    """Yield a :class:`DecodedFile` per input path -- via a process pool when the
+    batch is large enough, otherwise inline. Bounded in-flight work keeps peak
+    memory flat regardless of library size. If the pool cannot run (``spawn``
+    can't re-import ``__main__``, sandbox limits, ...) the scan falls back to
+    inline decoding rather than failing."""
+    if not paths_to_do:
+        return
+
+    def _inline(key: str) -> DecodedFile:
+        return decode_local(
+            Path(key),
+            thumb_path_fn=pcfg.thumbnail_path,
+            sizes=pcfg.thumbnail_sizes,
+            fmt=pcfg.thumbnail_format,
+            quality=pcfg.thumbnail_quality,
+        )
+
+    if n_workers <= 1 or len(paths_to_do) < _MIN_FILES_FOR_POOL:
+        for key in paths_to_do:
+            yield _inline(key)
+        return
+
+    job = DecodeJob(
+        app_data=str(app_data),
+        thumb_sizes=pcfg.thumbnail_sizes,
+        thumb_fmt=pcfg.thumbnail_format,
+        thumb_quality=pcfg.thumbnail_quality,
+    )
+    max_inflight = n_workers * 2
+    ctx = multiprocessing.get_context("spawn")  # safe from the app's indexer thread
+    log.info("indexing %d files across %d worker processes", len(paths_to_do), n_workers)
+    done_keys: set[str] = set()
+    try:
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+            pending: dict[Future[DecodedFile], str] = {}
+            stream = iter(paths_to_do)
+            for key in islice(stream, max_inflight):
+                pending[pool.submit(decode_file, job, key)] = key
+            while pending:
+                finished, _ = wait(list(pending), return_when=FIRST_COMPLETED)
+                for fut in finished:
+                    key = pending.pop(fut)
+                    try:
+                        result = fut.result()
+                    except BrokenProcessPool:
+                        raise  # abandon the pool; finish the rest inline below
+                    except Exception as exc:  # a single worker's un-picklable failure
+                        log.exception("decode worker crashed on %s", key)
+                        result = _worker_crash(key, exc)
+                    done_keys.add(key)
+                    yield result
+                    nxt = next(stream, None)
+                    if nxt is not None:
+                        pending[pool.submit(decode_file, job, nxt)] = nxt
+    except BrokenProcessPool as exc:
+        remaining = [k for k in paths_to_do if k not in done_keys]
+        log.warning(
+            "decode process pool unusable (%s); indexing %d remaining file(s) inline",
+            exc,
+            len(remaining),
+        )
+        for key in remaining:
+            yield _inline(key)
+
+
+def _worker_crash(key: str, exc: BaseException) -> DecodedFile:
+    try:
+        st = Path(key).stat()
+        size, mtime_ns = st.st_size, st.st_mtime_ns
+    except OSError:
+        size = mtime_ns = 0
+    return DecodedFile(
+        path=key,
+        size=size,
+        mtime_ns=mtime_ns,
+        error=f"worker crashed: {type(exc).__name__}: {exc}"[:400],
+        failed_stage="decode",
+    )
 
 
 def _tally(stats: ScanStats, outcome: IndexOutcome) -> None:
     if outcome.error is not None:
         stats.errors += 1
+    elif outcome.tombstoned:
+        stats.tombstoned += 1
     elif outcome.skipped:
         stats.skipped += 1
     else:

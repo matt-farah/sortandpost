@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -8,12 +9,12 @@ from sqlmodel import Session, select
 
 from sortandpost.config import Settings
 from sortandpost.db import make_engine
-from sortandpost.db.models import ChangeOp, Rating, RatingSource
+from sortandpost.db.models import Change, ChangeOp, Photo, Rating, RatingSource
 from sortandpost.sync.changelog import record_change
 from sortandpost.sync.lock import read_lock
 from sortandpost.sync.manager import SyncManager, WriteMode
 from sortandpost.sync.publish import read_generation
-from tests.factories import hash_for, make_db
+from tests.factories import hash_for, make_db, rate, read_ratings, ts
 
 
 class FakeClock:
@@ -64,6 +65,47 @@ def test_single_writer_then_read_only_second_machine(
     )
 
     mgr_a.stop()
+    mgr_b.stop()
+
+
+def test_pull_disposes_stale_engine_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    """A read-only machine that pulls a newer published DB on start must not keep
+    serving the pre-pull file: ``os.replace`` unlinks the inode the engine's
+    pooled SQLite connections still hold, and SQLite then refuses writes to it
+    ("attempt to write a readonly database"). Regression for the crash when such
+    an instance later promotes to writable and publishes.
+    """
+    settings_a = _settings(monkeypatch, tmp_path / "a")  # working DB has photos a, b
+
+    b_data = tmp_path / "b"
+    b_data.mkdir()
+    (b_data / "sync").symlink_to(settings_a.paths.sync, target_is_directory=True)
+    monkeypatch.setenv("APP_DATA", str(b_data))
+    settings_b = Settings.resolve()
+    make_db(settings_b.paths.working_db, photos=[], generation=1)  # emptier + older
+
+    mgr_a = SyncManager(settings_a, clock=clock)
+    assert mgr_a.start(background=False) is WriteMode.writable  # publishes gen >= 2
+
+    # Pin a pooled connection to machine B's pre-pull (empty) working DB.
+    b_engine = make_engine(settings_b.paths.working_db)
+    with Session(b_engine) as s:
+        assert s.exec(select(Photo)).all() == []
+
+    mgr_b = SyncManager(settings_b, engine=b_engine, clock=clock)
+    assert mgr_b.start(background=False) is WriteMode.read_only
+
+    # The shared engine must now see A's rows, not the stale empty inode.
+    with Session(b_engine) as s:
+        assert {p.pixel_hash for p in s.exec(select(Photo)).all()} == {hash_for("a"), hash_for("b")}
+
+    # Promotion + publish must not raise OperationalError(readonly database).
+    mgr_a.stop()  # releases the lock
+    assert mgr_b.refresh() is WriteMode.writable
+    assert mgr_b.publish(force=True) is True
+
     mgr_b.stop()
 
 
@@ -188,3 +230,89 @@ def test_conflict_copy_is_merged_and_archived_on_start(
     assert (settings.paths.merged_snapshots_dir / "sortandpost (1).db").exists()
 
     mgr.stop()
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end two-machine convergence (build-order step 4 acceptance test):
+# two independent APP_DATA trees, each with its own local/ + sync/, a fake
+# sync tool that ferries files (and drops a conflicted copy) between the two
+# sync/ folders, and a restart on each side. Both must land on identical
+# user state.
+# --------------------------------------------------------------------------- #
+def _count(db: Path, model: type) -> int:
+    engine = make_engine(db)
+    try:
+        with Session(engine) as s:
+            return len(s.exec(select(model)).all())
+    finally:
+        engine.dispose()
+
+
+def _drop_conflict_copy(src_sync: Path, dst_sync: Path, name: str) -> Path:
+    """Simulate a third-party sync tool copying the canonical DB from *src_sync*
+    into *dst_sync* under a conflicted-copy name (dst already has its own)."""
+    dst = dst_sync / name
+    shutil.copy(src_sync / "sortandpost.db", dst)
+    return dst
+
+
+def test_two_machines_with_separate_sync_dirs_converge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_a = _settings(monkeypatch, tmp_path / "a")
+    settings_b = _settings(monkeypatch, tmp_path / "b")
+    assert settings_a.device_id != settings_b.device_id
+
+    # -- each machine edits offline against its own sync/ ------------------- #
+    clock_a = FakeClock(datetime(2026, 9, 6, 12, 0, 0, tzinfo=UTC))
+    mgr_a = SyncManager(settings_a, clock=clock_a)
+    assert mgr_a.start(background=False) is WriteMode.writable
+    rate(settings_a.paths.working_db, "a", 5, device=settings_a.device_id, when=ts(10))
+    mgr_a.stop()  # publishes a/sync/sortandpost.db
+
+    clock_b = FakeClock(datetime(2026, 9, 6, 12, 5, 0, tzinfo=UTC))
+    mgr_b = SyncManager(settings_b, clock=clock_b)
+    assert mgr_b.start(background=False) is WriteMode.writable
+    rate(settings_b.paths.working_db, "a", 3, device=settings_b.device_id, when=ts(20))
+    rate(settings_b.paths.working_db, "b", 4, device=settings_b.device_id, when=ts(30))
+    mgr_b.stop()  # publishes b/sync/sortandpost.db
+
+    # -- the sync tool cross-delivers each side's DB as a conflicted copy -- #
+    _drop_conflict_copy(settings_b.paths.sync, settings_a.paths.sync, "sortandpost (1).db")
+    _drop_conflict_copy(settings_a.paths.sync, settings_b.paths.sync, "sortandpost (1).db")
+
+    # -- both machines restart and merge --------------------------------- #
+    mgr_a2 = SyncManager(settings_a, clock=FakeClock(clock_a.now))
+    assert mgr_a2.start(background=False) is WriteMode.writable
+    mgr_a2.stop()
+
+    mgr_b2 = SyncManager(settings_b, clock=FakeClock(clock_b.now))
+    assert mgr_b2.start(background=False) is WriteMode.writable
+    mgr_b2.stop()
+
+    # -- identical user state on both machines --------------------------- #
+    want = {hash_for("a"): 3, hash_for("b"): 4}  # B's edits are newer
+    assert read_ratings(settings_a.paths.working_db) == want
+    assert read_ratings(settings_b.paths.working_db) == want
+    assert _count(settings_a.paths.working_db, Change) == 3
+    assert _count(settings_b.paths.working_db, Change) == 3
+    assert _count(settings_a.paths.working_db, Photo) == _count(settings_b.paths.working_db, Photo)
+    assert read_generation(settings_a.paths.working_db) == read_generation(
+        settings_b.paths.working_db
+    )
+
+    # conflict copies were consumed and archived, not left to re-merge
+    assert not (settings_a.paths.sync / "sortandpost (1).db").exists()
+    assert not (settings_b.paths.sync / "sortandpost (1).db").exists()
+    assert (settings_a.paths.merged_snapshots_dir / "sortandpost (1).db").exists()
+
+    # -- a second sync round must be a no-op (no double-applied changes) - #
+    gen_b_before = read_generation(settings_b.paths.working_db)
+    _drop_conflict_copy(settings_a.paths.sync, settings_b.paths.sync, "sortandpost (2).db")
+    mgr_b3 = SyncManager(settings_b, clock=FakeClock(clock_b.now))
+    mgr_b3.start(background=False)
+    mgr_b3.stop()
+
+    assert read_ratings(settings_b.paths.working_db) == want
+    assert _count(settings_b.paths.working_db, Change) == 3  # deduped on change_key
+    assert read_generation(settings_b.paths.working_db) >= gen_b_before

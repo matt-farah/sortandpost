@@ -119,3 +119,34 @@ def test_check_compatible_and_ensure_meta(tmp_path: Path) -> None:
         s.commit()
         row = s.exec(select(EmbeddingsMeta)).one()
         assert row.count == 9
+
+
+def test_remove_many_compacts_and_returns_new_rowmap(tmp_path: Path) -> None:
+    mp, rp = _paths(tmp_path)
+    with EmbeddingStore.open(mp, rp, dim=DIM, model=MODEL) as store:
+        for i, tag in enumerate("abcde"):
+            store.upsert(_hash(tag), _vec(i + 1))
+
+        new_index = store.remove_many([_hash("b"), _hash("d"), _hash("zz")])
+
+        assert new_index == {_hash("a"): 0, _hash("c"): 1, _hash("e"): 2}
+        assert len(store) == 3
+        assert store.row_for(_hash("b")) is None
+        # surviving rows keep their vectors, just at compacted indices
+        np.testing.assert_allclose(store.vector_for(_hash("c")), _vec(3), rtol=1e-6)
+        np.testing.assert_allclose(store.vector_for(_hash("e")), _vec(5), rtol=1e-6)
+
+    reopened = EmbeddingStore.open(mp, rp, dim=DIM, model=MODEL)
+    assert reopened.row_for(_hash("a")) == 0
+    assert reopened.row_for(_hash("e")) == 2
+    assert reopened.matrix().shape == (3, DIM)
+    reopened.close()
+
+
+def test_remove_many_noop_when_nothing_matches(tmp_path: Path) -> None:
+    mp, rp = _paths(tmp_path)
+    with EmbeddingStore.open(mp, rp, dim=DIM, model=MODEL) as store:
+        store.upsert(_hash("a"), _vec(1))
+        store.upsert(_hash("b"), _vec(2))
+        assert store.remove_many([_hash("zz")]) == {_hash("a"): 0, _hash("b"): 1}
+        assert len(store) == 2
