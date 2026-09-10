@@ -7,6 +7,9 @@ date last, ``pixel_hash`` as the stable tie-break.
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
+from sqlalchemy import or_
 from sqlmodel import Session, col, func, select
 
 from sortandpost.db.models import Photo, PhotoPath, Rating
@@ -53,6 +56,42 @@ def list_photo_ids(session: Session, *, include_missing: bool = False) -> list[s
         col(Photo.taken_at).desc(),
         col(Photo.pixel_hash),
     )
+    return list(session.exec(stmt).all())
+
+
+# A photo is *unrated* when it has no ``ratings`` row at all, or one with
+# ``stars == 0`` (present photos only -- ``missing_since`` NULL).
+_UNRATED = or_(col(Rating.pixel_hash).is_(None), col(Rating.stars) == 0)
+
+
+def unrated_count(session: Session) -> int:
+    """How many present photos still have no star rating."""
+    stmt = (
+        select(func.count())
+        .select_from(Photo)
+        .outerjoin(Rating, col(Rating.pixel_hash) == col(Photo.pixel_hash))
+        .where(col(Photo.missing_since).is_(None), _UNRATED)
+    )
+    return int(session.exec(stmt).one())
+
+
+def unrated_photo_ids(
+    session: Session,
+    *,
+    limit: int = 60,
+    exclude: Collection[str] = (),
+) -> list[str]:
+    """A random-ordered batch of unrated photos' ``pixel_hash`` values, for the
+    ``/rate`` triage page. *exclude* drops hashes already pulled this session so
+    repeat visits within one page load keep advancing."""
+    stmt = (
+        select(Photo.pixel_hash)
+        .outerjoin(Rating, col(Rating.pixel_hash) == col(Photo.pixel_hash))
+        .where(col(Photo.missing_since).is_(None), _UNRATED)
+    )
+    if exclude:
+        stmt = stmt.where(col(Photo.pixel_hash).not_in(list(exclude)))
+    stmt = stmt.order_by(func.random()).limit(limit)
     return list(session.exec(stmt).all())
 
 
