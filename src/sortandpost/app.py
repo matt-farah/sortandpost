@@ -32,6 +32,20 @@ from sortandpost.clip.model import ClipModel, ClipModelUnavailable, clip_availab
 from sortandpost.clip.store import ModelMismatch
 from sortandpost.clip.tagging import approve, pending_groups, reject
 from sortandpost.clip.vocab import load_vocab
+from sortandpost.collections import (
+    Collection,
+    add_to_collection,
+    clean_name,
+    collections_containing,
+    create_collection,
+    delete_collection,
+    get_collection,
+    load_collections,
+    remove_from_collection,
+    rename_collection,
+    reorder_collection,
+    set_collection_notes,
+)
 from sortandpost.config import Settings
 from sortandpost.db import add_manual_tag, init_db, make_engine, set_rating
 from sortandpost.db.browse import (
@@ -69,6 +83,7 @@ log = logging.getLogger(__name__)
 
 _PAGES = [
     ("/", "Library"),
+    ("/collections", "Collections"),
     ("/rate", "Rate"),
     ("/search", "Search"),
     ("/review", "Review"),
@@ -76,6 +91,7 @@ _PAGES = [
 ]
 _PAGE_SIZE = 120  # search result cap
 _GRID_BATCH = 80  # thumbnails appended per infinite-scroll step
+_PICKER_CAP = 500  # photos offered at once in the "add photos to collection" picker
 _THUMB_URL = "/thumbs"
 
 # The grid's scroll position + loaded count live in this history entry's
@@ -116,11 +132,13 @@ _GRID_COLS_JS = """
 # flag/checkbox overlays revealed. Toggled by adding `.kb-focus` to the tile <a>;
 # every hover-revealed child carries `.kbreveal`.
 _GRID_KB_CSS = """
-a.group.kb-focus::after {
+a.group.kb-focus::after,
+.sp-pick.kb-focus::after {
   content: ""; position: absolute; inset: 0; box-sizing: border-box;
   border: 4px solid #fbbf24; pointer-events: none; z-index: 20;
 }
-a.group.kb-focus .kbreveal { opacity: 1 !important; }
+a.group.kb-focus .kbreveal,
+.sp-pick.kb-focus .kbreveal { opacity: 1 !important; }
 """
 
 
@@ -494,6 +512,9 @@ def build_ui(settings: Settings) -> None:
                     ).tooltip("delete — move files to trash")
                 else:
                     ui.label("read-only").classes("text-xs text-amber-300")
+                _collection_add_button(
+                    settings, lambda: list(sel.selected), label=None, on_added=sel.clear
+                )
                 ui.button(icon="close", on_click=sel.clear).props("flat dense round").tooltip(
                     "deselect all"
                 )
@@ -758,6 +779,40 @@ def build_ui(settings: Settings) -> None:
                 for pp in paths:
                     _path_row(pp.path, present=pp.present, can_reveal=can_reveal)
 
+        collections_wrap = ui.column().classes("w-full gap-1 px-4")
+
+        def _paint_collections() -> None:
+            collections_wrap.clear()
+            member_of = collections_containing(settings.paths, pixel_hash)
+            with collections_wrap:
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    ui.label("Collections").classes("font-bold text-sm")
+                    _collection_add_button(
+                        settings, lambda: [pixel_hash], on_added=_paint_collections
+                    )
+                if not member_of:
+                    ui.label("Not in any collection.").classes("text-xs text-gray-500")
+                    return
+                with ui.row().classes("items-center gap-1 flex-wrap"):
+                    for c in member_of:
+                        with ui.row().classes(
+                            "items-center gap-0 rounded-full bg-gray-200 pl-2 dark:bg-gray-700"
+                        ):
+                            ui.button(
+                                f"{c.name}  ·  {c.count}",
+                                on_click=lambda c=c: ui.navigate.to(f"/collections/{c.id}"),
+                            ).props("flat dense no-caps size=sm")
+                            ui.button(
+                                icon="close", on_click=lambda c=c: _leave_collection(c)
+                            ).props("flat dense round size=xs").tooltip(f'remove from "{c.name}"')
+
+        def _leave_collection(c: Collection) -> None:
+            remove_from_collection(settings.paths, c.id, [pixel_hash])
+            ui.notify(f'removed from "{c.name}"')
+            _paint_collections()
+
+        _paint_collections()
+
         if len(members) > 1:
             _stack_filmstrip(pixel_hash, members, thumb_small)
 
@@ -1002,6 +1057,498 @@ def build_ui(settings: Settings) -> None:
             "},true);}"
         )
         _render()
+
+    @ui.page("/collections")
+    def collections_index() -> None:
+        """All collections -- a big card per collection: a mosaic of the first
+        few member photos plus the name and count. Collections are ordered,
+        hand-curated photo groups kept in ``sync/collections.json`` (synced like
+        ``tags.yaml``, not merged)."""
+        _header("/collections")
+        colls = load_collections(settings.paths)
+
+        def _confirm_delete(c: Collection) -> None:
+            with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                ui.label(f'Delete collection "{c.name}"?').classes("font-medium")
+                ui.label(
+                    "Only the collection is removed — no photo files, ratings or tags are touched."
+                ).classes("text-xs text-gray-500")
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                    def _go() -> None:
+                        delete_collection(settings.paths, c.id)
+                        dialog.close()
+                        ui.navigate.reload()
+
+                    ui.button("Delete", on_click=_go).props("color=negative")
+            dialog.open()
+
+        def _new_collection() -> None:
+            with ui.dialog() as dialog, ui.card().classes("gap-2 w-80"):
+                ui.label("New collection").classes("font-medium")
+                name_in = ui.input(placeholder="name").props("dense autofocus").classes("w-full")
+                notes_in = (
+                    ui.textarea(placeholder="notes (optional)").props("dense").classes("w-full")
+                )
+
+                def _go(*, then_add: bool) -> None:
+                    name = clean_name(name_in.value or "")
+                    if not name:
+                        ui.notify("Enter a name (letters, numbers, spaces).", type="warning")
+                        return
+                    c = create_collection(settings.paths, name, notes=notes_in.value or "")
+                    dialog.close()
+                    ui.navigate.to(f"/collections/{c.id}" + ("?add=1" if then_add else ""))
+
+                name_in.on("keydown.enter", lambda: _go(then_add=True))
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    ui.button("Create", on_click=lambda: _go(then_add=False)).props("flat")
+                    ui.button("Create & add photos", on_click=lambda: _go(then_add=True)).props(
+                        "color=primary"
+                    )
+            dialog.open()
+
+        def _mosaic(c: Collection) -> None:
+            """A square 2x2 preview: the first up-to-4 members, empty slots
+            filled with a muted tile. Cells are plain ``aspect-square`` divs with
+            a CSS ``background-image`` -- divs honour ``aspect-ratio`` exactly, so
+            the block is always a clean square with no overflow."""
+            previews = c.photos[:4]
+            if not previews:
+                with ui.element("div").classes(
+                    "flex aspect-square w-full items-center justify-center "
+                    "bg-gray-100 text-gray-400 dark:bg-gray-800"
+                ):
+                    ui.icon("photo_library", size="2.5rem")
+                return
+            with ui.element("div").classes("grid w-full grid-cols-2 gap-0.5"):
+                for i in range(4):
+                    cell = ui.element("div").classes(
+                        "aspect-square w-full bg-gray-200 dark:bg-gray-700"
+                    )
+                    if i < len(previews):
+                        cell.style(
+                            f"background-image:url('{_thumb_src(previews[i], thumb_small)}');"
+                            "background-size:cover;background-position:center"
+                        )
+
+        def _card(c: Collection) -> None:
+            # A clickable <div> (not <a>): NiceGUI's link element collapses to
+            # ~0 height around a block child, which was clipping the mosaic.
+            card = ui.element("div").classes(
+                "group relative flex cursor-pointer flex-col overflow-hidden rounded-lg "
+                "border border-gray-200 bg-white transition hover:shadow-lg "
+                "dark:border-gray-700 dark:bg-gray-900"
+            )
+            card.on("click", lambda c=c: ui.navigate.to(f"/collections/{c.id}"))
+            with card:
+                _mosaic(c)
+                with ui.element("div").classes("px-3 py-2"):
+                    ui.label(c.name).classes(
+                        "block w-full truncate text-base font-semibold "
+                        "text-gray-900 dark:text-gray-100"
+                    )
+                    ui.label(f"{c.count} photo(s)").classes("block text-xs text-gray-500")
+                ui.button(icon="delete").props("flat dense round size=sm color=red-4").classes(
+                    "absolute right-1 top-1 bg-black/40 opacity-0 group-hover:opacity-100"
+                ).on("click.stop", lambda c=c: _confirm_delete(c))
+
+        with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
+            ui.label(f"{len(colls)} collection(s)").classes("text-sm text-gray-500")
+            ui.button("New collection", icon="add", on_click=_new_collection).props("flat")
+
+        if not colls:
+            ui.label(
+                "No collections yet. Create one, then add photos from the library "
+                "(select tiles, then Add to collection) or an individual photo page."
+            ).classes("m-4 text-gray-500")
+            return
+
+        with _photo_grid(300):
+            for c in colls:
+                _card(c)
+
+    @ui.page("/collections/{coll_id}")
+    def collection_detail(coll_id: str, add: int = 0) -> None:
+        """One collection: its photos in membership order (per-tile remove /
+        move-earlier / move-later), with the editable notes at the bottom.
+        ``?add=1`` auto-opens the "add photos" picker (used right after
+        creating)."""
+        _header("/collections")
+        coll = get_collection(settings.paths, coll_id)
+        if coll is None:
+            ui.label("Unknown collection.").classes("m-4 text-gray-500")
+            ui.link("← All collections", "/collections").classes("mx-4")
+            return
+
+        ui.button("← All collections", on_click=lambda: ui.navigate.to("/collections")).props(
+            "flat dense"
+        ).classes("mx-4 mt-2")
+
+        title = ui.label(coll.name).classes("px-4 text-2xl font-bold")
+        meta = ui.label().classes("px-4 text-sm text-gray-500")
+
+        def _rename() -> None:
+            with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                ui.label("Rename collection").classes("font-medium")
+                name_in = ui.input(value=title.text).props("dense autofocus").classes("w-64")
+
+                def _go() -> None:
+                    new = clean_name(name_in.value or "")
+                    if not new:
+                        ui.notify("Enter a name (letters, numbers, spaces).", type="warning")
+                        return
+                    rename_collection(settings.paths, coll_id, new)
+                    title.set_text(new)
+                    dialog.close()
+
+                name_in.on("keydown.enter", _go)
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    ui.button("Save", on_click=_go).props("color=primary")
+            dialog.open()
+
+        def _confirm_delete() -> None:
+            with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                ui.label(f'Delete collection "{title.text}"?').classes("font-medium")
+                ui.label("Only the collection is removed — no photo files are touched.").classes(
+                    "text-xs text-gray-500"
+                )
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                    def _go() -> None:
+                        delete_collection(settings.paths, coll_id)
+                        dialog.close()
+                        ui.navigate.to("/collections")
+
+                    ui.button("Delete", on_click=_go).props("color=negative")
+            dialog.open()
+
+        def _add_photos_dialog() -> None:
+            c = get_collection(settings.paths, coll_id)
+            if c is None:
+                return
+            have = set(c.photos)
+            with _session() as session:
+                candidates = [h for h in list_photo_ids(session) if h not in have]
+            shown = candidates[:_PICKER_CAP]
+
+            cells: dict[str, ui.element] = {}
+            focus = [-1]
+            hover_hash: list[str | None] = [None]
+
+            def _on_change() -> None:
+                count_lbl.set_text(f"{len(sel.selected)} selected")
+                for hh, cell in cells.items():
+                    if hh in sel.selected:
+                        cell.classes(add="ring-2 ring-primary")
+                    else:
+                        cell.classes(remove="ring-2 ring-primary")
+
+            # Same multi-select model as the library grid: hover checkbox,
+            # click / shift-click ranges. Space (below) drives the same .click().
+            sel = _GridSelection(shown, _on_change)
+
+            def _paint_focus(idx: int) -> None:
+                old = focus[0]
+                if old == idx:
+                    return
+                if 0 <= old < len(shown):
+                    prev = cells.get(shown[old])
+                    if prev is not None:
+                        prev.classes(remove="kb-focus")
+                focus[0] = idx
+                if 0 <= idx < len(shown):
+                    cur = cells.get(shown[idx])
+                    if cur is not None:
+                        cur.classes(add="kb-focus")
+                        # Scroll the focused tile into view inside the picker's
+                        # overflow container. Target the raw DOM node by position
+                        # -- `getElement(id).$el` isn't the <div> for a plain
+                        # ui.element, so scrollIntoView through it is a no-op.
+                        ui.run_javascript(
+                            f"document.querySelectorAll('.q-dialog .sp-pick')[{idx}]"
+                            "?.scrollIntoView({block:'nearest',inline:'nearest'})"
+                        )
+
+            _cols_cache = [0]  # measured once on first up/down; reflow is not a concern here
+
+            async def _cols() -> int:
+                if _cols_cache[0]:
+                    return _cols_cache[0]
+                try:
+                    n = await ui.run_javascript(
+                        "(()=>{const g=document.querySelector('.q-dialog .nicegui-grid');"
+                        "if(!g||!g.firstElementChild)return 1;"
+                        "const t=g.firstElementChild.offsetTop;let n=0;"
+                        "for(const c of g.children){if(c.offsetTop===t)n++;else break;}"
+                        "return n||1;})()",
+                        timeout=2.0,
+                    )
+                    val = max(1, int(n))
+                except (TimeoutError, ValueError, TypeError):
+                    return 1  # don't cache a failed read -- retry next press
+                _cols_cache[0] = val
+                return val
+
+            async def _move(step: int, *, by_row: bool) -> None:
+                if not shown:
+                    return
+                if focus[0] < 0:
+                    _paint_focus(0)
+                    return
+                delta = step * (await _cols()) if by_row else step
+                _paint_focus(max(0, min(len(shown) - 1, focus[0] + delta)))
+
+            def _target() -> str | None:
+                if 0 <= focus[0] < len(shown):
+                    return shown[focus[0]]
+                return hover_hash[0]
+
+            def _hover(h: str, entered: bool) -> None:
+                if entered:
+                    hover_hash[0] = h
+                elif hover_hash[0] == h:
+                    hover_hash[0] = None
+
+            with (
+                ui.dialog().props("maximized") as dialog,
+                ui.card().classes("flex h-full w-full flex-col gap-2"),
+            ):
+
+                def _do_add() -> None:
+                    if sel.selected:
+                        added = add_to_collection(
+                            settings.paths, coll_id, [h for h in shown if h in sel.selected]
+                        )
+                        ui.notify(f"added {added} photo(s)")
+                    dialog.close()
+                    _render_grid()
+
+                async def _key(e: KeyEventArguments) -> None:
+                    if not dialog.value:  # stale handler from a previous open
+                        return
+                    sel.shift_down = bool(e.modifiers.shift)
+                    if not e.action.keydown or e.action.repeat:
+                        return
+                    if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
+                        return
+                    key = e.key
+                    if key == "ArrowLeft":
+                        await _move(-1, by_row=False)
+                    elif key == "ArrowRight":
+                        await _move(1, by_row=False)
+                    elif key == "ArrowUp":
+                        await _move(-1, by_row=True)
+                    elif key == "ArrowDown":
+                        await _move(1, by_row=True)
+                    elif key == "Escape":
+                        dialog.close()
+                    elif key == " ":
+                        h = _target()
+                        if h is not None:
+                            sel.click(h)  # toggle, or extend a range while Shift is held
+                    elif key == "Enter":
+                        _do_add()
+
+                with ui.row().classes("w-full items-center justify-between"):
+                    with ui.row().classes("items-center gap-3"):
+                        ui.label("Add photos to this collection").classes("text-lg font-medium")
+                        ui.label("↔ move · space select · shift+space range · enter add").classes(
+                            "text-xs text-gray-400"
+                        )
+                    count_lbl = ui.label("0 selected").classes("text-sm text-gray-500")
+                if len(candidates) > _PICKER_CAP:
+                    ui.label(
+                        f"Showing the first {_PICKER_CAP} of {len(candidates)} — add the rest "
+                        "from the library's bulk toolbar."
+                    ).classes("text-xs text-amber-600")
+                if not shown:
+                    ui.label("Every photo is already in this collection.").classes("text-gray-500")
+
+                # a plain overflow-y-auto div (not ui.scroll_area): q-scroll-area
+                # moves its content with a transform, so native scrollIntoView --
+                # what the keyboard focus uses to stay in view -- has no effect.
+                with (
+                    ui.element("div")
+                    .classes("w-full flex-1 overflow-y-auto")
+                    .style("min-height: 0"),  # let the flex item shrink so it can scroll
+                    _photo_grid(150),
+                ):
+                    for h in shown:
+                        cell = ui.element("div").classes(
+                            "sp-pick group relative block cursor-pointer overflow-hidden "
+                            "rounded ring-0"
+                        )
+                        cells[h] = cell
+                        with cell:
+                            ui.image(_thumb_src(h, thumb_small)).classes(
+                                "aspect-square w-full bg-gray-100 object-cover"
+                            ).props("loading=lazy")
+                            sel.checkbox(h)
+                        cell.on("click", lambda h=h: sel.click(h))
+                        cell.on("mouseenter", lambda h=h: _hover(h, True))
+                        cell.on("mouseleave", lambda h=h: _hover(h, False))
+
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    ui.button("Add selected", icon="add", on_click=_do_add).props("color=primary")
+
+                # ignore keys only while a real text field is focused -- NOT while
+                # a <button> is (the default), or the arrow/space shortcuts go
+                # dead whenever the picker is opened from a button click.
+                ui.keyboard(on_key=_key, ignore=["input", "select", "textarea"])
+                # don't let Space scroll the picker (shared one-time guard)
+                ui.run_javascript(
+                    "if(!window.__spNoSpaceScroll){window.__spNoSpaceScroll=1;"
+                    "addEventListener('keydown',e=>{"
+                    "if((e.key===' '||e.code==='Space')&&"
+                    "!['INPUT','TEXTAREA','SELECT','BUTTON'].includes"
+                    "(document.activeElement?.tagName))e.preventDefault();"
+                    "},true);}"
+                )
+            dialog.open()
+            # When opened from the "Add photos" button, that <button> keeps DOM
+            # focus -- and ui.keyboard ignores keys while a button is focused, so
+            # the arrow/space shortcuts silently do nothing. Blur it; q-dialog's
+            # focus trap then holds focus on the dialog itself (a div).
+            ui.run_javascript(
+                "setTimeout(() => { const a = document.activeElement;"
+                " if (a && a.tagName === 'BUTTON') a.blur(); }, 60)"
+            )
+
+        with ui.row().classes("items-center gap-2 px-4"):
+            ui.button("Add photos", icon="add_photo_alternate", on_click=_add_photos_dialog).props(
+                "color=primary flat"
+            )
+            ui.button("Rename", icon="edit", on_click=_rename).props("flat dense")
+            ui.button("Delete", icon="delete", on_click=_confirm_delete).props(
+                "flat dense color=negative"
+            )
+
+        grid_wrap = ui.element("div").classes("w-full")
+
+        def _members() -> tuple[list[Photo], list[str]]:
+            c = get_collection(settings.paths, coll_id)
+            member_hashes = c.photos if c else []
+            if not member_hashes:
+                return [], []
+            with _session() as session:
+                found = {
+                    p.pixel_hash: p
+                    for p in session.exec(
+                        select(Photo).where(col(Photo.pixel_hash).in_(member_hashes))
+                    ).all()
+                }
+            present = [
+                found[h] for h in member_hashes if h in found and found[h].missing_since is None
+            ]
+            gone = [
+                h for h in member_hashes if h not in found or found[h].missing_since is not None
+            ]
+            return present, gone
+
+        def _move(pixel_hash: str, step: int, ids: list[str]) -> None:
+            order = list(ids)
+            if pixel_hash not in order:
+                return
+            i = order.index(pixel_hash)
+            j = i + step
+            if not 0 <= j < len(order):
+                return
+            order[i], order[j] = order[j], order[i]
+            reorder_collection(settings.paths, coll_id, order)
+            _render_grid()
+
+        def _remove(hashes: list[str]) -> None:
+            n = remove_from_collection(settings.paths, coll_id, hashes)
+            if n:
+                ui.notify(f"removed {n} from collection")
+            _render_grid()
+
+        def _member_tile(photo: Photo, i: int, ids: list[str]) -> None:
+            with ui.element("div").classes("group relative block"):
+                with ui.link(target=f"/photo/{photo.pixel_hash}"):
+                    ui.image(_thumb_src(photo.pixel_hash, thumb_small)).classes(
+                        "w-full aspect-square object-cover bg-gray-100"
+                    ).props("loading=lazy")
+                ui.label(str(i + 1)).classes(
+                    "absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-xs "
+                    "font-medium text-white"
+                )
+                with ui.row().classes(
+                    "absolute right-1 top-1 gap-0.5 opacity-0 transition group-hover:opacity-100"
+                ):
+                    if i > 0:
+                        ui.button(
+                            icon="arrow_back",
+                            on_click=lambda h=photo.pixel_hash: _move(h, -1, ids),
+                        ).props("flat dense round size=xs color=white").classes(
+                            "bg-black/55"
+                        ).tooltip("move earlier")
+                    if i < len(ids) - 1:
+                        ui.button(
+                            icon="arrow_forward",
+                            on_click=lambda h=photo.pixel_hash: _move(h, 1, ids),
+                        ).props("flat dense round size=xs color=white").classes(
+                            "bg-black/55"
+                        ).tooltip("move later")
+                    ui.button(
+                        icon="close",
+                        on_click=lambda h=photo.pixel_hash: _remove([h]),
+                    ).props("flat dense round size=xs color=white").classes("bg-black/55").tooltip(
+                        "remove from collection"
+                    )
+
+        def _render_grid() -> None:
+            grid_wrap.clear()
+            present, gone = _members()
+            meta.set_text(
+                f"{len(present)} photo(s)" + (f" · {len(gone)} unavailable" if gone else "")
+            )
+            with grid_wrap:
+                if gone:
+                    with ui.row().classes("items-center gap-2 px-4 text-xs text-amber-600"):
+                        ui.label(f"{len(gone)} photo(s) missing or deleted")
+                        ui.button("Remove them", on_click=lambda g=gone: _remove(g)).props(
+                            "flat dense size=sm"
+                        )
+                if not present:
+                    with ui.column().classes("m-4 items-start gap-2 text-gray-500"):
+                        ui.label("Empty — no photos in this collection yet.")
+                        ui.button(
+                            "Add photos", icon="add_photo_alternate", on_click=_add_photos_dialog
+                        ).props("color=primary flat")
+                    return
+                ids = [p.pixel_hash for p in present]
+                with _photo_grid():
+                    for i, photo in enumerate(present):
+                        _member_tile(photo, i, ids)
+
+        _render_grid()
+
+        # Notes live at the bottom -- below the photos.
+        with ui.column().classes("w-full gap-1 px-4 pt-4 pb-8"):
+            ui.label("Notes").classes("text-sm font-bold")
+            ui.label("Reserved for the caption / post copy this collection feeds.").classes(
+                "text-xs text-gray-400"
+            )
+            notes_box = (
+                ui.textarea(value=coll.notes).props("outlined autogrow").classes("w-full max-w-2xl")
+            )
+
+            def _save_notes() -> None:
+                set_collection_notes(settings.paths, coll_id, notes_box.value or "")
+                ui.notify("notes saved")
+
+            notes_box.on("blur", _save_notes)
+            ui.button("Save notes", icon="save", on_click=_save_notes).props("flat dense")
+
+        if add:
+            ui.timer(0.4, _add_photos_dialog, once=True)
 
     @ui.page("/search")
     async def search(
@@ -1958,6 +2505,73 @@ class _GridSelection:
             if selected
             else "bg-black/30 opacity-0 group-hover:opacity-100"
         )
+
+
+def _collection_add_button(
+    settings: Settings,
+    get_hashes: Callable[[], list[str]],
+    *,
+    label: str | None = "Add to collection",
+    on_added: Callable[[], None] | None = None,
+) -> None:
+    """A button whose menu lists every collection (plus "New collection…").
+    Picking one appends ``get_hashes()`` to that collection in order, skipping
+    hashes already in it. ``label=None`` renders an icon-only round button (for
+    the bulk toolbar). Collections live in ``sync/collections.json`` and are not
+    lock-guarded -- like saved searches, they can be edited in read-only mode."""
+
+    def _pick(coll: Collection) -> None:
+        hashes = get_hashes()
+        if not hashes:
+            ui.notify("Nothing selected.", type="warning")
+            return
+        added = add_to_collection(settings.paths, coll.id, hashes)
+        skipped = len(hashes) - added
+        msg = f'added {added} to "{coll.name}"'
+        if skipped:
+            msg += f" · {skipped} already in it"
+        ui.notify(msg)
+        if on_added is not None:
+            on_added()
+
+    def _new() -> None:
+        with ui.dialog() as dialog, ui.card().classes("gap-2"):
+            ui.label("New collection").classes("font-medium")
+            name_in = ui.input(placeholder="name").props("dense autofocus").classes("w-64")
+
+            def _go() -> None:
+                name = (name_in.value or "").strip()
+                if not name:
+                    return
+                coll = create_collection(settings.paths, name)
+                dialog.close()
+                _pick(coll)
+
+            name_in.on("keydown.enter", _go)
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Create", on_click=_go).props("color=primary")
+        dialog.open()
+
+    if label is None:
+        btn = ui.button(icon="library_add").props("flat dense round").tooltip("Add to collection")
+    else:
+        btn = ui.button(label, icon="library_add").props("flat dense no-caps")
+    with btn:
+        menu = ui.menu()
+
+    def _rebuild() -> None:
+        menu.clear()
+        with menu:
+            colls = load_collections(settings.paths)
+            for coll in colls:
+                ui.menu_item(f"{coll.name}  ·  {coll.count}", on_click=lambda c=coll: _pick(c))
+            if colls:
+                ui.separator()
+            ui.menu_item("New collection…", on_click=_new)
+
+    btn.on("click", _rebuild)
+    _rebuild()
 
 
 def _thumb_cell(

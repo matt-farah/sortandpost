@@ -1,7 +1,102 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (Features.md: `/rate` triage page — uncommitted; saved searches merged via PR #6 `main`)._
+_Last updated: 2026-09-10 (Features.md: Collections — committed on `scaffold`, PR to `main`)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 🗂️ 2026-09-10 — Features.md: Collections
+
+**Committed on `scaffold` (PR `scaffold → main`).** `276 tests pass` (+24);
+ruff + ruff format + mypy (gated paths + `collections.py`/`app.py`) clean;
+alembic autogenerate empty (collections are JSON, no schema change). Verified
+across many headless-Chromium runs against `browser_test_data` (create + notes +
+add via photo pages + detail reorder/remove + rename + delete + bulk-toolbar
+add + the picker's checkbox model + keyboard nav + scrolling + the square
+mosaic) — zero JS/server errors.
+
+**Decisions** (asked): storage = **`sync/collections.json`** (rides along like
+`tags.yaml`, not conflict-merged — a two-machine simultaneous edit yields a
+sync-tool conflict copy); photo order = **manual / insertion order**; surface =
+**dedicated `/collections` index + `/collections/{id}` detail pages + nav
+entry**. Collections editing is **not** write-lock-gated (same as saved
+searches).
+
+**New module** `src/sortandpost/collections.py` (mirrors `searches.py`):
+
+- `Collection` dataclass — `name`, `id` (`secrets.token_hex(8)`), `notes`,
+  ordered de-duplicated `photos` (pixel_hash list), `created_at`/`updated_at`.
+  `__post_init__` de-dupes + `clean_name`s + stamps timestamps.
+- `clean_name(raw)` — strips C0/C1/DEL control chars, collapses whitespace runs,
+  trims, caps `NAME_MAX_LEN = 120`. Applied on create / rename / load. (A
+  semicolon etc. is fine — `json.dumps` escapes everything; the point is control
+  chars + length.)
+- `load_collections` — tolerant (bad JSON → **moves the file to
+  `collections.json.corrupt-<ts>`** and returns `[]`, never silently
+  overwrites; bare-list JSON, nameless/unknown-key rows all handled).
+  `save_collections` = atomic `.json.tmp` → replace, `sort_keys`, `indent=2`.
+- CRUD: `get_collection` / `collections_containing` / `create_collection` /
+  `rename_collection` / `set_collection_notes` / `delete_collection` /
+  `add_to_collection` (append, skip dupes, keep order, returns #added) /
+  `remove_from_collection` / `reorder_collection` (permutation; unknowns
+  ignored, leftovers kept in old relative order). All name-sort the list.
+- `paths.collections_file` → `sync/collections.json`.
+
+**`app.py`**
+
+- Nav: `("/collections", "Collections")` (2nd, after Library).
+- `/collections` — `_card` per collection: a **clickable `<div>`** (NOT
+  `ui.link` — NiceGUI's `<a>` collapses to ~2 px around a block child, which was
+  clipping the preview), a **square 2×2 mosaic** of the first up-to-4 members
+  built from plain `aspect-square` divs with CSS `background-image` (q-img
+  ignores an outer `aspect-ratio`; muted filler for empty slots; icon
+  placeholder at 0), then the **name + count underneath** in a white footer.
+  Hover-delete button uses `.on("click.stop", …)` so it opens the confirm
+  dialog instead of navigating. "New collection" dialog → **Create** /
+  **Create & add photos** (the latter → `/collections/{id}?add=1`).
+- `/collections/{coll_id}` (optional `add: int = 0`) — back link, title + meta,
+  **[Add photos · Rename · Delete]**, then the **photo grid at the top**
+  (`_member_tile`: order badge + hover remove / move-earlier / move-later,
+  re-renders in place), then a "N missing or deleted — Remove them" row, then
+  the **Notes section at the bottom** (`ui.textarea`, save on blur + button).
+  `?add=1` auto-opens the picker via `ui.timer(0.4, …, once=True)`.
+- **Add-photos picker** (`_add_photos_dialog`) — maximized dialog, card
+  `flex h-full flex-col`, grid inside a plain **`overflow-y-auto` div**
+  (`min-height:0` so the flex child can scroll — NOT `ui.scroll_area`, which
+  moves content with a transform and defeats native `scrollIntoView`).
+  Candidates = `list_photo_ids` minus current members, capped `_PICKER_CAP =
+  500`. Reuses the library's `_GridSelection` (hover checkbox, click /
+  shift-click ranges) + a live "N selected" + a primary ring on selected cells.
+  Keyboard: `_key` on a `ui.keyboard(ignore=["input","select","textarea"])`
+  (dropping `"button"` from the default — otherwise a button keeping focus after
+  the click kills every shortcut), arrows move a gold `.kb-focus` ring
+  (`_GRID_KB_CSS` extended to `.sp-pick.kb-focus::after`, same `#fbbf24` border
+  as the library), `↑/↓` jump a row via `_cols()` **measured once and cached**
+  (per-press JS roundtrips timed out under fast presses → fell back to 1),
+  `scrollIntoView` targets the **raw DOM node**
+  (`document.querySelectorAll('.q-dialog .sp-pick')[idx]` — `getElement(id).$el`
+  isn't the `<div>` for a plain `ui.element`), Space/Shift+Space select,
+  Enter adds, Esc cancels. After `dialog.open()` a JS snippet blurs the trigger
+  `<button>` so focus lands on the dialog.
+- Bulk toolbar: icon-only **Add to collection** button (`_collection_add_button`,
+  `label=None`) → menu of collections + "New collection…"; adds the selected
+  representatives (no stack fan-out — collections are hand-curated), clears the
+  selection. Shown in read-only mode too.
+- Photo page: a **Collections** panel — chips for every collection containing
+  the photo (click → detail, ✕ → `remove_from_collection`) + the same
+  `_collection_add_button` (labelled).
+
+**Tests** — `tests/test_collections.py` (+24): CRUD round-trips, order
+preservation, dedupe, reorder-permutation-with-leftovers, `collections_containing`,
+name-sort, `clean_name` (control chars / whitespace / length / keeps `;`),
+create+rename sanitize, semicolon/quotes/backslash round-trip through the file,
+corrupt-file backup + recovery, bare-list JSON, coerce drops nameless / non-str
+photos, add-to-missing is a noop.
+
+**Not done / follow-ups**: drag-to-reorder on the detail page (buttons only for
+now); a picker filter box for very large libraries (capped at 500, falls back to
+the bulk toolbar); Collections is the intended base for the **robopost.app
+social composer** (next).
 
 ---
 
@@ -618,28 +713,33 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 Remaining `Features.md` items (unchecked, roughly in priority order):
 
-1. **Design pass** — scaffold → production looks (includes tidying the dark
+1. Other pages — **robopost.app social composer** (group images into a post with
+   text, upload + schedule via the robopost.app API; API key → `.env`,
+   per-machine, never synced). **Build on Collections** — a collection is
+   already an ordered photo group + a notes field. _(swipe-triage `/rate` page,
+   Collections — done.)_
+2. **Library group-by mode** — Google-Photos-style headers dividing the grid by
+   date (and folder, and any other sensible facet). Touches the fragile
+   infinite-scroll / scroll-restore grid code — tread carefully.
+3. **Design pass** — scaffold → production looks (includes tidying the dark
    theme: the `ui.toggle` white buttons, `bg-gray-*` placeholders, dim
    `text-gray-400`).
-2. Other pages — **robopost.app social composer** (group images into a post with
-   text, upload + schedule via the robopost.app API; API key → `.env`,
-   per-machine, never synced). _(swipe-triage `/rate` page — done.)_
-3. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
+4. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
    delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
    view of the local trash folder; a live two-container check of the
    cross-machine lazy-trash path (unit-tested only so far).
 
 Older still-open verification work (from before this session):
 
-4. **Browser smoke** of the non-feature surface at `http://localhost:8080`:
+5. **Browser smoke** of the non-feature surface at `http://localhost:8080`:
    `/review` bulk approve/reject, `/settings` "run indexer pass now", the
    status-bar footer, read-only banner. Confirm the `_header` banner (not just
    the footer) reflects a live read-only→writable promotion — it currently only
    re-renders on page load.
-5. **RAW + HEIC** end-to-end with real `.CR2`/`.NEF`/`.HEIC` files — decode via
+6. **RAW + HEIC** end-to-end with real `.CR2`/`.NEF`/`.HEIC` files — decode via
    embedded preview, RAW **never** written (check mtimes / logs). (The `.venv`
    now has `rawpy` + `pillow-heif`, so this can be done natively.)
-6. **Dockerfile caching** (optional): a deps-only pre-layer to cache the ~150 MB
+7. **Dockerfile caching** (optional): a deps-only pre-layer to cache the ~150 MB
    torch wheel across code changes.
 
 Full caveat list is in **"Open threads / not blocking"** near the bottom.

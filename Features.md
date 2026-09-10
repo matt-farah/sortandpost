@@ -53,6 +53,33 @@
       suppressed over the grid), `1`–`5`/`0` rate, `f` flag, `Enter` open, `Esc`
       clears ring + selection. Additive over infinite scroll (moving the ring
       loads more batches); one `ui.keyboard` per page (two don't both fire).
+- [ ] Add a mode to library to group by with a header for each item dividing the library
+    - I would liike to be able to divide by date and folder and if there are any other categories that you think of, add those
+    - I'm imagining something similar to how Google Photos website works where each day has its own photos divided
+- [x] Collections
+    - I would like a feature separate from tagging where users could create custom collections separate from tagging.
+    - Collections should live in json files like the saved searches
+    - I think this would be a good base for the social media composer
+    - I would want the collection to display the photos in the collection
+    - Users should be able to bulk add to the collection from the bulk add screen or add to a collection from a specific photo's page
+    - I would also like there to be notes field for each collection that will be used in the future for the social media post content
+    - Done: new `src/sortandpost/collections.py` (`sync/collections.json`, synced
+      like `tags.yaml`, not conflict-merged; tolerant loader that backs up a
+      corrupt file to `collections.json.corrupt-<ts>` instead of losing it).
+      `Collection` = id / name / notes / ordered de-duped `photos` (pixel_hash).
+      `clean_name()` strips control chars, collapses whitespace, caps 120.
+      New nav entry + `/collections` (big square 2×2 preview-mosaic cards, name
+      + count underneath, hover-delete) and `/collections/{id}` (photos in
+      membership order at the top with per-tile remove / move-earlier /
+      move-later; editable notes at the bottom; rename / delete). "Add to
+      collection" menu on the bulk toolbar and the photo page (+ member chips on
+      the photo page). "Add photos" picker = maximized dialog reusing the
+      library's `_GridSelection` checkbox model (hover checkbox, click /
+      shift-click ranges) **plus** keyboard nav: arrows move a gold focus ring
+      (native `scrollIntoView` inside an `overflow-y-auto` container), Space /
+      Shift+Space select, Enter adds, Esc cancels. "Create & add photos" opens
+      that picker straight away (`?add=1`). Collections editing works in
+      read-only mode (like saved searches). `paths.collections_file`. +24 tests.
 ## Search features
 - [x] Ability to save searches for future review
     - Done: `/search` bookmark button saves the full state (query + every filter)
