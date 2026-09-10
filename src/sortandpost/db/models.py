@@ -149,6 +149,23 @@ class Change(SQLModel, table=True):
     new_value: str | None = None
 
 
+class Tombstone(SQLModel, table=True):
+    """A photo the user explicitly deleted. Written by the "Delete photos" action
+    and by ``unindex`` merge replay. Travels in the DB so every machine learns of
+    the delete; the scanner refuses to re-index a tombstoned ``pixel_hash``.
+
+    ``applied`` = this machine has purged its derived rows (thumbnails, embedding
+    row, ``scan_state``) *and* moved its own local copy of the file to trash.
+    """
+
+    __tablename__ = "tombstones"
+
+    pixel_hash: str = Field(primary_key=True)
+    deleted_at: datetime
+    deleted_by_device: str
+    applied: bool = False
+
+
 class EmbeddingRow(SQLModel, table=True):
     __tablename__ = "embedding_rows"
 

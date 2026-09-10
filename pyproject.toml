@@ -22,6 +22,7 @@ dependencies = [
     "torch>=2.2",
     "watchdog>=4.0",
     "zstandard>=0.22",
+    "Send2Trash>=1.8",
 ]
 
 [project.scripts]
@@ -59,7 +60,7 @@ strict = true
 plugins = []
 # SQLModel/NiceGUI ship partial stubs; don't fail the build on their internals.
 [[tool.mypy.overrides]]
-module = ["nicegui.*", "watchdog.*"]
+module = ["nicegui.*", "watchdog.*", "send2trash.*"]
 ignore_missing_imports = true
 
 # These ship no stubs at all. `follow_imports = skip` makes them `Any` whether or

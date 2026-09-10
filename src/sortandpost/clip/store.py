@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
@@ -169,6 +170,30 @@ class EmbeddingStore:
 
     def upsert_many(self, items: list[tuple[str, np.ndarray]]) -> list[int]:
         return [self.upsert(h, v) for h, v in items]
+
+    def remove_many(self, pixel_hashes: Iterable[str]) -> dict[str, int]:
+        """Drop rows for *pixel_hashes*, compacting the matrix so the surviving
+        rows stay contiguous and ordered. Returns the new
+        ``pixel_hash -> row_index`` map for **all surviving rows** so the caller
+        can rewrite ``embedding_rows``. Hashes not present are ignored. The file
+        keeps its allocated capacity; ``matrix()`` slices to ``len(self)``.
+        """
+        drop = {h for h in pixel_hashes if h in self._index}
+        if not drop:
+            return dict(self._index)
+
+        keep = [h for h in self._rows if h not in drop]
+        if self._mm is not None:
+            for new_idx, h in enumerate(keep):
+                old_idx = self._index[h]
+                if old_idx != new_idx:
+                    self._mm[new_idx] = self._mm[old_idx]
+        self._rows = keep
+        self._index = {h: i for i, h in enumerate(keep)}
+        self._dirty_rowmap = True
+        if self._mm is not None:
+            self._mm.flush()
+        return dict(self._index)
 
     def _grow(self, min_rows: int) -> None:
         new_cap = max(min_rows, self._capacity + _GROWTH_ROWS)

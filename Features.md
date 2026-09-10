@@ -12,9 +12,9 @@
 - [x] Bulk rating/tagging
     - Selection: checkbox on tile hover + shift-click range (decided)
     - Done: hover checkbox per tile, shift-click ranges, floating toolbar (★1-5 / clear / tag input); writes fan to stack members; new db/tags.py (add/remove manual tag + changes row + EXIF keywords)
-- [ ] Bulk delete files
+- [x] Bulk delete files
     - Confirm dialog stating files will be deleted from the actual folder
-    - CONFLICTS with hard constraint #1 (never delete user files). Needs CLAUDE.md decision: trash vs permanent. NOT started.
+    - Done: CLAUDE.md constraint #1 gained a 2nd exception (explicit user delete). Files are *moved* — OS Trash on macOS/Windows (`send2trash`), else a recoverable `APP_DATA/local/trash/<ts>/` folder + `manifest.json` (never a `.Trash-*` under a library root). Bulk-toolbar Delete + photo-page "Delete photo", both behind a confirm dialog + read-only aware; tiles drop from the grid in place (no reload). Purges every derived row + thumbnails, compacts the CLIP matrix, logs `ChangeOp.unindex` + a `tombstones` row. Cross-machine: `unindex` merge replay writes the tombstone on every machine; each purges its rows and lazily trashes its own copy on the next scan; the scanner refuses to re-index a tombstoned hash. `deletion.stack_scope` on /settings ("selected" default vs "whole_stack"). New `src/sortandpost/{trash.py,db/deletion.py}`, +26 tests.
 - [x] "Marked for editing" tag
     - A quick flag/tag to compile a list of images to edit; bulk toolbar button + a way to view the list
     - Done: reserved `to-edit` manual tag (rides the changes log + conflict merge, never embedded into files); new src/sortandpost/db/flags.py; bulk toolbar flag/unflag buttons (repaint the visible tiles live, no refresh); clickable ⚑ in each grid tile's top-right corner (solid amber + always visible when set, dim + hover-only when not); "Mark for editing" switch on the photo page (stack-level, like ratings); live "⚑ N marked for editing" quick link on the library header → /search?mark=true, with a "clear all" button (confirm dialog) that appears whenever ≥1 is flagged; "⚑ to edit" checkbox on /search
@@ -34,13 +34,15 @@
     - Done: Copy path always; Reveal in file manager + Open in default app on native runs
 - [x] Move from paginated version to infinite scroll that loads images as needed
     - Done: 80/batch, appends near bottom, header counter, no more ?page= URLs
-- [ ] Keyboard navigation & shortcuts on the photo page
-    - Arrow keys (← →) or `j` / `k` to move to the previous/next photo in the
-      current library order, without going back to the grid
-    - `1`–`5` sets the star rating, `0` clears it
-    - `f` toggles the "marked for editing" flag
-    - Should also work from the grid: arrows move the focused tile, number keys
-      rate it, `f` flags it
+- [~] Keyboard navigation & shortcuts
+    - Photo page — DONE: ←/`k` prev, →/`j` next (representative order, clamped at
+      ends; maps a filmstrip member back to its stack rep), `1`–`5` rate, `0`
+      clear, `f` toggle the edit flag. Rating/flag keys drive the same widgets as
+      a click (one write path); read-only aware; ignores Ctrl/Alt/Meta chords and
+      key-repeat. Hint line on the page.
+    - Grid — TODO: arrows move a focused tile, number keys rate it, `f` flags it,
+      Enter opens it. Needs a focus system that touches the infinite-scroll /
+      scroll-restore code — deferred to its own change.
 ## Search features
 - [ ] Ability to save searches for future review
 ## Design

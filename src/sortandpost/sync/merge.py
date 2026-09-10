@@ -37,6 +37,7 @@ from sortandpost.db.models import (
     PredictionState,
     Rating,
     Tag,
+    Tombstone,
 )
 from sortandpost.sync.changelog import change_key, sort_key
 
@@ -263,6 +264,19 @@ def _replay_state_changes(target: Session, source: Session) -> None:
             ).all():
                 pred.state = state
         elif c.op is ChangeOp.unindex:
+            # An explicit user delete. Record the tombstone so this machine
+            # purges its derived rows and lazily trashes its own local copy on
+            # its next scan (see sortandpost.db.deletion.apply_pending_tombstones).
+            # Mark the photo missing in the meantime so it drops out of views.
+            if target.get(Tombstone, c.pixel_hash) is None:
+                target.add(
+                    Tombstone(
+                        pixel_hash=c.pixel_hash,
+                        deleted_at=c.ts,
+                        deleted_by_device=c.device_id,
+                        applied=False,
+                    )
+                )
             for photo in target.exec(select(Photo).where(Photo.pixel_hash == c.pixel_hash)).all():
                 if photo.missing_since is None:
                     photo.missing_since = c.ts

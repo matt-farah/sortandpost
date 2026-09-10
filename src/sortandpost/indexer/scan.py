@@ -29,6 +29,7 @@ from sortandpost.clip.tagging import pick_terms, upsert_prediction
 from sortandpost.clip.vocab import Vocab, ensure_text_matrix, load_vocab
 from sortandpost.config import Settings, TaggingConfig
 from sortandpost.db import init_db, make_engine
+from sortandpost.db.deletion import apply_pending_tombstones
 from sortandpost.db.models import (
     EmbeddingRow,
     EmbeddingsMeta,
@@ -62,6 +63,8 @@ class ScanStats:
     seen: int = 0
     indexed: int = 0
     skipped: int = 0
+    tombstoned: int = 0  # files skipped because the user deleted that pixel_hash
+    tombstones_applied: int = 0  # tombstones this pass purged + trashed
     new_photos: int = 0
     thumbnails: int = 0
     errors: int = 0
@@ -78,12 +81,18 @@ class ScanStats:
                 f"; reconciled {self.ratings_imported} ratings in / "
                 f"{self.ratings_written} out, {self.keywords_imported} keywords in"
             )
+        tomb = ""
+        if self.tombstoned or self.tombstones_applied:
+            tomb = (
+                f"; {self.tombstoned} skipped as deleted, "
+                f"{self.tombstones_applied} tombstone(s) applied"
+            )
         return (
             f"{self.seen} files seen, {self.indexed} indexed "
             f"({self.new_photos} new, {self.thumbnails} thumbnails), "
             f"{self.skipped} unchanged, {self.errors} errors; "
             f"{self.marked_absent} paths now absent, {self.marked_missing} photos now missing"
-            f"{reconciled}"
+            f"{reconciled}{tomb}"
         )
 
 
@@ -175,6 +184,20 @@ def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
         session.commit()
         stats.marked_absent = result.marked_absent
         stats.marked_missing = result.marked_missing
+
+        # Apply any not-yet-applied tombstones (from a user delete on this
+        # machine, or one that arrived via merge): purge the derived rows and
+        # move this machine's still-present copy of the file to trash.
+        tomb = apply_pending_tombstones(
+            session,
+            paths=paths,
+            clip_model=settings.config.clip.model,
+            thumb_sizes=tuple(tcfg.sizes),
+            now=_utcnow(),
+            trash_local_files=True,
+        )
+        session.commit()
+        stats.tombstones_applied = len(tomb.purged)
 
     log.info("scan complete: %s", stats)
     return stats
@@ -269,6 +292,8 @@ def _worker_crash(key: str, exc: BaseException) -> DecodedFile:
 def _tally(stats: ScanStats, outcome: IndexOutcome) -> None:
     if outcome.error is not None:
         stats.errors += 1
+    elif outcome.tombstoned:
+        stats.tombstoned += 1
     elif outcome.skipped:
         stats.skipped += 1
     else:

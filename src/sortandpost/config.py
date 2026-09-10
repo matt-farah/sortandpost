@@ -18,6 +18,7 @@ import socket
 import uuid
 from importlib import resources
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -106,6 +107,14 @@ class StackingConfig(BaseModel):
     similar_names: bool = True  # group "img.jpg" / "img copy.jpg" / "img (1).jpg" / "copy img.jpg"
 
 
+class DeletionConfig(BaseModel):
+    """The explicit "Delete photos" action (CLAUDE.md constraint #1, exception 2)."""
+
+    # "selected"    -> delete only the photo(s) the user clicked
+    # "whole_stack" -> delete every member of a selected photo's stack (like ratings fan out)
+    stack_scope: Literal["selected", "whole_stack"] = "selected"
+
+
 class AppConfig(BaseModel):
     """Mirror of ``APP_DATA/sync/config.yaml``."""
 
@@ -118,6 +127,7 @@ class AppConfig(BaseModel):
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     rating: RatingConfig = Field(default_factory=RatingConfig)
     stacking: StackingConfig = Field(default_factory=StackingConfig)
+    deletion: DeletionConfig = Field(default_factory=DeletionConfig)
 
     @classmethod
     def load(cls, path: Path) -> AppConfig:

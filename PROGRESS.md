@@ -1,7 +1,118 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (Features.md rounds 1–3 — library UX + bulk editing + marked-for-editing flag; all uncommitted)._
-_Working branch: `scaffold` (pushed to `origin/scaffold`). PR: `scaffold → main` = #2._
+_Last updated: 2026-09-09 (Features.md: bulk delete + photo-page keyboard shortcuts — uncommitted)._
+_Working branch: `scaffold`. Features.md rounds 1–3 landed via PR #3 (merge `10b9462`)._
+
+---
+
+## ⌨️ 2026-09-09 — Features.md: photo-page keyboard shortcuts
+
+**Uncommitted** (same working tree as the bulk-delete change below). `231 tests
+pass` (no new tests — pure UI glue, verified in a real browser: ←→/`j``k` change
+the photo URL, `3` lights `★★★` + fires the write, `0` → "rating cleared", `f`
+toggles the flag switch; no JS/server errors). `ruff` + `ruff format` + `mypy`
+clean — and `app.py` is now **mypy-clean too** (added `if result is None:`
+guards for `run.io_bound`'s `R | None`, which also cleared the delete-feature
+warnings).
+
+`/photo/{hash}` only (grid keyboard nav is deferred — it needs a focus system
+that touches the fragile infinite-scroll / scroll-restore code):
+
+- `←` / `k` → previous, `→` / `j` → next, in the **grid's representative order**
+  (`list_photo_ids` minus hidden stack members); clamped at both ends; a
+  filmstrip member maps back to its stack rep first. `ui.navigate.to` (Back
+  retraces).
+- `1`–`5` set the rating, `0` clears — via `star_widget.set_value(...)`, so it
+  runs the exact same `_apply_rating` path as a click.
+- `f` toggles the edit flag via `flag_switch.set_value(...)`.
+- Ignores key-repeat and Ctrl/Alt/Meta chords; read-only mode leaves the
+  rating/flag keys inert (the widgets are `None`). A `← → move · 1-5 rate · 0
+  clear · f flag` hint sits under the star widget.
+
+Implementation: `_star_widget` / `_edit_flag_button` now **return** their
+`ui.rating` / `ui.switch` (or `None` in read-only) so the page's
+`ui.keyboard(on_key=...)` handler can drive them. `KeyEventArguments` /
+`KeyboardKey` from `nicegui.events`; `key.number` covers the digits (0 included).
+
+---
+
+## 🗑️ 2026-09-09 — Features.md: bulk delete (move-to-trash + cross-machine tombstones)
+
+**Uncommitted.** `231 tests pass` (+14); `ruff` + `ruff format` + `mypy` clean;
+`alembic --autogenerate` still empty (the new `tombstones` table is absorbed by
+the `0001` baseline `create_all`, per the pre-release schema policy). Verified in
+a real browser (headless Chromium against a throwaway 6-photo library + fresh
+`APP_DATA`): bulk-toolbar Delete removes 2 tiles **in place** (no reload, no
+scroll jump), files land in `local/trash/<ts>/` with a `manifest.json`, the
+photo-page "Delete photo" navigates home; **0 server errors** after the
+slot-context fix below.
+
+**Decision — CLAUDE.md hard constraint #1 gained a second exception**: an
+explicit, user-invoked "Delete photos" *moves* files to a recoverable location.
+Never an `unlink`, never under a library root, never automatic. Also added a
+"Deletion" subsection to the Sync model + a `tombstones` row to the schema list +
+a `deletion:` block to the `config.yaml` template.
+
+**New modules**
+
+- `sortandpost.trash` — `move_to_trash(paths, *, local_dir, now) -> TrashResult`.
+  OS Trash via `send2trash` on macOS/Windows; a managed
+  `<APP_DATA>/local/trash/<ts>/` folder + `manifest.json` everywhere else (Linux
+  desktop / headless / Docker — where `send2trash` would drop a `.Trash-<uid>`
+  on the *library* filesystem). `restore_managed()` reverses it. `send2trash` is
+  a new dep, guarded (not in the lightweight venv; managed backend is used in
+  tests + on this Mac).
+- `sortandpost.db.deletion` —
+  - `delete_photos(session, *, pixel_hashes, paths, clip_model, thumb_sizes,
+    device_id, now, trash_files=True, emit_change=True) -> DeleteResult`: trash
+    present files → purge `photos/photo_paths/ratings/photo_tags/predictions/
+    embedding_rows/scan_state` → delete content-addressed thumbnails → compact
+    the CLIP matrix (`EmbeddingStore.remove_many`, new) + re-point
+    `embedding_rows` → `record_change(unindex)` → upsert a `Tombstone`.
+  - `apply_pending_tombstones(...)`: the lazy / cross-machine path — for every
+    `Tombstone.applied == False`, purge this machine's derived rows and (if
+    asked) move this machine's still-present copy of the file to trash. Called
+    at the end of every `scan_once`.
+
+**Schema**: `Tombstone(pixel_hash pk, deleted_at, deleted_by_device, applied)`.
+No migration (baseline `create_all`).
+
+**Wiring**
+
+- `sync/merge.py`: `unindex` replay now writes a `Tombstone(applied=False)` on
+  every machine (still sets `missing_since` for interim visibility).
+- `indexer/pipeline.persist_decoded`: a tombstoned `pixel_hash` is **not**
+  re-indexed (`IndexOutcome.tombstoned`); the post-scan sweep trashes the file.
+- `indexer/scan.scan_once`: runs `apply_pending_tombstones(trash_local_files=
+  True)` after the presence sweep; `ScanStats` gained `tombstoned` /
+  `tombstones_applied`.
+- `app.py`: bulk-toolbar **Delete** (confirm dialog: count + trash destination +
+  stack-scope note) and photo-page **Delete photo**; both read-only-aware.
+  Deleted tiles are dropped from the grid via a new `cell_registry` on
+  `_thumb_cell` (no reload → the tombstoned tiles are always above the
+  infinite-scroll load cursor, so no re-render/dupe). `/settings` →
+  `_deletion_editor` (stack-scope select). Config `DeletionConfig.stack_scope`
+  (`"selected"` default | `"whole_stack"`).
+
+**Bug found + fixed — NiceGUI "parent slot deleted" on the delete handler.**
+After `await run.io_bound(...)` + `element.delete()` of the tiles, the ambient
+slot context is stale, so `ui.notify` / `ui.navigate` inside the dialog handler
+threw `RuntimeError: The parent element this slot belongs to has been deleted.`
+Fix: capture `client = ui.context.client` at page build and wrap the post-await
+UI work in `with client:`. Also reorder the dialog `_go` to `await work; then
+dialog.close()`.
+
+**Tests** (+14 files / cases): `test_trash.py` (managed move + manifest + missing
+file + same-second append + restore), `test_deletion.py` (full purge, `unindex`
++ tombstone, embedding compaction + re-point, delete-of-missing, lazy
+`apply_pending_tombstones` + idempotency, scanner resurrection guard, managed
+trash is recoverable), `test_clip_store.py::remove_many` (compact + rowmap +
+noop), `test_sync_merge.py` (`unindex` replay writes the tombstone).
+
+**Not done / follow-ups**: an in-app "undo last delete" affordance (the managed
+manifest already supports it; OS-Trash restore is manual); a `/settings` view of
+the local trash folder; verifying the two-machine lazy-trash path in a live
+two-container run (unit-tested only).
 
 ---
 
@@ -392,29 +503,31 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-**First: this session's feature work (Features.md rounds 1–3) is entirely
-uncommitted.** `git status` shows working-tree edits (`app.py` +9 files) and
-untracked `Features.md`, `src/sortandpost/{stacks,reveal,db/ratings,db/tags,
-db/flags}.py`, and 5 new test files. `217 tests pass; ruff + format + mypy clean.`
-Decide how to land it: one squashed "Features round" commit, or split
-(backend modules → grid UX → bulk editing → marked-for-editing). It has **not**
-been reviewed or pushed; PR #2 (`scaffold → main`) does not include it.
+**First: the bulk-delete work (this session) is uncommitted.** `git status` shows
+working-tree edits to `CLAUDE.md`, `Features.md`, `pyproject.toml`, `app.py`,
+`config.py`, `resources/config.default.yaml`, `db/models.py`, `clip/store.py`,
+`sync/merge.py`, `indexer/{scan,pipeline}.py`, plus untracked
+`src/sortandpost/trash.py`, `src/sortandpost/db/deletion.py`,
+`tests/test_{trash,deletion}.py`. `231 tests pass; ruff + format + mypy clean;
+alembic autogenerate empty.` Not reviewed or pushed.
 
 Then, remaining `Features.md` items (unchecked, roughly in priority order):
 
-1. **Bulk delete files** — decisions already taken: move to system Trash
-   (`send2trash` dep), full cleanup now (drop `photos`/`photo_paths`/`ratings`/
-   `photo_tags`/`predictions`/`embedding_rows`/`scan_state`, delete thumbnails,
-   compact the embedding memmap per `clip/store.py`, log `ChangeOp.unindex`).
-   Needs a **`CLAUDE.md` hard-constraint-#1 carve-out** for an explicit
-   user-initiated delete, plus a bulk-toolbar button + confirm dialog.
-2. **Keyboard nav / shortcuts** on the photo page and grid — ← → / `j` `k` to
-   move, `1`–`5` rate, `0` clear, `f` toggle the edit flag.
-3. **Dark / light mode** with a `/settings` manual/system choice.
-4. **Saved searches** (Search features).
-5. **Design pass** — scaffold → production looks.
-6. Other pages — swipe-style triage of unrated photos; robopost.app social
+1. **Grid keyboard nav** — the deferred half (photo-page shortcuts are done): a
+   focused-tile ring that arrows move, number keys rate, `f` flags, Enter opens.
+   Needs a focus index into `rep_ids`, a ring toggled via the `cell_els`
+   registry, scroll-into-view, a runtime column count (JS) for up/down, loading
+   tiles past the scroll cursor, and a rating-setter registry like
+   `flag_setters`. Touches the fragile infinite-scroll / scroll-restore code.
+2. **Dark / light mode** with a `/settings` manual/system choice.
+3. **Saved searches** (Search features).
+4. **Design pass** — scaffold → production looks.
+5. Other pages — swipe-style triage of unrated photos; robopost.app social
    composer (API key → `.env`, per-machine, never synced).
+6. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
+   delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
+   view of the local trash folder; a live two-container check of the
+   cross-machine lazy-trash path (unit-tested only so far).
 
 Older still-open verification work (from before this session):
 

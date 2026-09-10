@@ -24,6 +24,7 @@ from urllib.parse import quote
 from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
+from nicegui.events import KeyEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
@@ -41,6 +42,7 @@ from sortandpost.db.browse import (
     list_photo_ids,
     photo_count,
 )
+from sortandpost.db.deletion import DeleteResult, delete_photos
 from sortandpost.db.flags import (
     EDIT_FLAG,
     clear_all_edit_flags,
@@ -58,6 +60,7 @@ from sortandpost.search import PhotoFilter, browse_photos, semantic_search
 from sortandpost.stacks import StackIndex, build_stacks
 from sortandpost.sync import SyncManager, WriteMode
 from sortandpost.sync.clock import utcnow
+from sortandpost.trash import trash_backend
 
 log = logging.getLogger(__name__)
 
@@ -228,6 +231,7 @@ def build_ui(settings: Settings) -> None:
     @ui.page("/")
     async def library() -> None:
         _header("/")
+        client = ui.context.client  # for a valid slot context after awaits / element deletes
         stack_cfg = settings.config.stacking
         with _session() as session:
             all_ids = list_photo_ids(session)
@@ -240,6 +244,9 @@ def build_ui(settings: Settings) -> None:
         # pixel_hash -> "set this tile's flag icon on/off", so bulk actions and
         # "clear all" can repaint the visible tiles without a page reload.
         flag_setters: dict[str, Callable[[bool], Any]] = {}
+        # pixel_hash -> the tile element, so a delete can drop it from the grid
+        # in place (no reload -> no scroll jump, no torn-down-slot races).
+        cell_els: dict[str, ui.element] = {}
         writable = State.write_mode == WriteMode.writable
 
         with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
@@ -360,6 +367,57 @@ def build_ui(settings: Settings) -> None:
             sel.clear()
             _recount_flags()
 
+        async def _do_bulk_delete() -> None:
+            nonlocal total
+            hashes = list(sel.selected)
+            result = await nicegui_run.io_bound(_apply_bulk_delete, settings, engine, hashes)
+            if result is None:  # io_bound cancelled / app shutting down
+                return
+            with client:  # the awaited gap + tile deletes can invalidate the ambient slot
+                sel.clear()
+                removed = 0
+                for h in hashes:
+                    el = cell_els.pop(h, None)
+                    if el is not None:
+                        el.delete()  # drop the tile in place -- it's above the load cursor
+                        removed += 1
+                    flag_setters.pop(h, None)
+                total = max(0, total - removed)
+                counter.set_text(
+                    f"{loaded} of {total} {noun}" if loaded < total else f"{total} {noun}"
+                )
+                _recount_flags()
+                ui.notify(_delete_summary(result))
+
+        def _confirm_bulk_delete() -> None:
+            count = len(sel.selected)
+            if not count:
+                return
+            with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                ui.label(f"Delete {count} selected photo(s)?").classes("font-medium")
+                ui.label(f"The photo files will be {_delete_where_note()}.").classes(
+                    "text-xs text-gray-500"
+                )
+                if settings.config.stacking.enabled:
+                    ui.label(
+                        "Whole stacks will be deleted."
+                        if settings.config.deletion.stack_scope == "whole_stack"
+                        else "Only the shown photo of each stack is deleted."
+                    ).classes("text-xs text-gray-500")
+                ui.label("Their ratings, tags and thumbnails are removed too.").classes(
+                    "text-xs text-gray-500"
+                )
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                    async def _go() -> None:
+                        # close after the work so ui.notify still has a live slot context
+                        await _do_bulk_delete()
+                        dialog.close()
+
+                    ui.button("Delete", on_click=_go).props("color=negative")
+            dialog.open()
+
         def _render_toolbar() -> None:
             count = len(sel.selected)
             toolbar.set_visibility(count > 0)
@@ -385,6 +443,10 @@ def build_ui(settings: Settings) -> None:
                     ui.button(icon="outlined_flag", on_click=lambda: _bulk_flag(False)).props(
                         "flat dense round"
                     ).tooltip("remove from edit list")
+                    ui.separator().props("vertical dark")
+                    ui.button(icon="delete", on_click=_confirm_bulk_delete).props(
+                        "flat dense round color=red-4"
+                    ).tooltip("delete — move files to trash")
                 else:
                     ui.label("read-only").classes("text-xs text-amber-300")
                 ui.button(icon="close", on_click=sel.clear).props("flat dense round").tooltip(
@@ -429,6 +491,7 @@ def build_ui(settings: Settings) -> None:
                                     flagged=h in flagged_ids,
                                     on_flag=_flag_one,
                                     flag_registry=flag_setters,
+                                    cell_registry=cell_els,
                                 )
                 loaded += len(slice_ids)
                 counter.set_text(
@@ -488,20 +551,36 @@ def build_ui(settings: Settings) -> None:
     @ui.page("/photo/{pixel_hash}")
     def photo_detail(pixel_hash: str) -> None:
         _header("/")
+        client = ui.context.client
+        stacking_on = settings.config.stacking.enabled
         with _session() as session:
             photo = get_photo(session, pixel_hash)
             paths = get_paths(session, pixel_hash) if photo else []
             stars = get_rating(session, pixel_hash) if photo else None
             flagged = bool(edit_flagged_hashes(session, [pixel_hash])) if photo else False
-            members = (
-                build_stacks(session, settings.config.stacking).members(pixel_hash)
-                if photo and settings.config.stacking.enabled
-                else [pixel_hash]
-            )
+            stacks = build_stacks(session, settings.config.stacking) if stacking_on else None
+            members = stacks.members(pixel_hash) if stacks else [pixel_hash]
+            all_ids = list_photo_ids(session) if photo else []
 
         if photo is None:
             ui.label(f"Unknown photo {pixel_hash}").classes("m-4 text-gray-500")
             return
+
+        # -- prev/next order: the grid's representative order --------------- #
+        if stacks is not None:
+            ordered = [h for h in all_ids if not stacks.is_hidden_member(h)]
+            anchor = stacks.representative(pixel_hash)
+        else:
+            ordered = all_ids
+            anchor = pixel_hash
+        try:
+            nav_idx: int | None = ordered.index(anchor)
+        except ValueError:
+            nav_idx = None
+        prev_hash = ordered[nav_idx - 1] if nav_idx is not None and nav_idx > 0 else None
+        next_hash = (
+            ordered[nav_idx + 1] if nav_idx is not None and nav_idx < len(ordered) - 1 else None
+        )
 
         ui.button("← Back", on_click=lambda: ui.navigate.back()).props("flat dense").classes(
             "mx-4 mt-2"
@@ -509,8 +588,11 @@ def build_ui(settings: Settings) -> None:
         with ui.row().classes("w-full no-wrap gap-6 p-4"):
             ui.image(_thumb_src(pixel_hash, thumb_large)).classes("max-w-2xl rounded shadow")
             with ui.column().classes("gap-1 text-sm"):
-                _star_widget(settings, engine, pixel_hash, stars or 0)
-                _edit_flag_button(settings, engine, pixel_hash, flagged)
+                star_widget = _star_widget(settings, engine, pixel_hash, stars or 0)
+                flag_switch = _edit_flag_button(settings, engine, pixel_hash, flagged)
+                ui.label("← → move · 1-5 rate · 0 clear · f flag").classes(
+                    "text-[11px] text-gray-400"
+                )
                 _facts(photo)
                 ui.separator()
                 ui.label("Paths").classes("font-bold mt-2")
@@ -521,9 +603,66 @@ def build_ui(settings: Settings) -> None:
         if len(members) > 1:
             _stack_filmstrip(pixel_hash, members, thumb_small)
 
-        ui.button("← Back to library", on_click=lambda: ui.navigate.back()).props("flat").classes(
-            "m-4"
-        )
+        with ui.row().classes("w-full items-center justify-between m-4"):
+            ui.button("← Back to library", on_click=lambda: ui.navigate.back()).props("flat")
+            if State.write_mode == WriteMode.writable:
+                whole_stack = (
+                    settings.config.stacking.enabled
+                    and len(members) > 1
+                    and settings.config.deletion.stack_scope == "whole_stack"
+                )
+
+                async def _do_delete() -> None:
+                    result = await nicegui_run.io_bound(
+                        _apply_bulk_delete, settings, engine, [pixel_hash]
+                    )
+                    if result is None:
+                        return
+                    with client:
+                        ui.notify(_delete_summary(result))
+                        ui.navigate.to("/")
+
+                def _confirm_delete() -> None:
+                    with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                        ui.label(
+                            f"Delete this stack ({len(members)} photos)?"
+                            if whole_stack
+                            else "Delete this photo?"
+                        ).classes("font-medium")
+                        ui.label(f"The file(s) will be {_delete_where_note()}.").classes(
+                            "text-xs text-gray-500"
+                        )
+                        with ui.row().classes("w-full justify-end gap-2"):
+                            ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                            async def _go() -> None:
+                                await _do_delete()
+                                dialog.close()
+
+                            ui.button("Delete", on_click=_go).props("color=negative")
+                    dialog.open()
+
+                ui.button("Delete photo", icon="delete", on_click=_confirm_delete).props(
+                    "flat color=negative"
+                )
+
+        # -- keyboard: arrows / j k move, digits rate, f flags ------------- #
+        def _on_key(e: KeyEventArguments) -> None:
+            if not e.action.keydown or e.action.repeat:
+                return
+            if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
+                return
+            key = e.key
+            if (key == "ArrowLeft" or key == "k") and prev_hash:
+                ui.navigate.to(f"/photo/{prev_hash}")
+            elif (key == "ArrowRight" or key == "j") and next_hash:
+                ui.navigate.to(f"/photo/{next_hash}")
+            elif star_widget is not None and key.number is not None and 0 <= key.number <= 5:
+                star_widget.set_value(key.number)  # fires the same write path as a click
+            elif flag_switch is not None and key == "f":
+                flag_switch.set_value(not flag_switch.value)
+
+        ui.keyboard(on_key=_on_key)
 
     @ui.page("/search")
     async def search(
@@ -734,6 +873,7 @@ def build_ui(settings: Settings) -> None:
                 ui.button("Run indexer pass now", on_click=_scan_now)
                 _exclude_editor(settings, engine)
                 _stacking_editor(settings)
+                _deletion_editor(settings)
             else:
                 ui.label("Read-only — indexer actions are disabled.").classes(
                     "text-amber-600 text-sm"
@@ -1043,6 +1183,50 @@ def _apply_clear_flags(settings: Settings, engine: Engine) -> int:
     return n
 
 
+def _delete_targets(session: Session, settings: Settings, hashes: list[str]) -> list[str]:
+    """Which pixel_hashes a delete of *hashes* should actually remove, per
+    ``config.deletion.stack_scope``: only the clicked photo(s), or every member
+    of each selected photo's stack."""
+    if settings.config.deletion.stack_scope == "whole_stack":
+        return _bulk_targets(session, settings, hashes)
+    return list(dict.fromkeys(hashes))
+
+
+def _apply_bulk_delete(settings: Settings, engine: Engine, hashes: list[str]) -> DeleteResult:
+    """Off the event loop: move the selected photos' files to trash and purge
+    their rows (CLAUDE.md constraint #1, exception 2)."""
+    with Session(engine) as session:
+        targets = _delete_targets(session, settings, hashes)
+        result = delete_photos(
+            session,
+            pixel_hashes=targets,
+            paths=settings.paths,
+            clip_model=settings.config.clip.model,
+            thumb_sizes=settings.config.thumbnails.sizes,
+            device_id=settings.device_id,
+            now=utcnow(),
+        )
+        session.commit()
+    return result
+
+
+def _delete_summary(result: DeleteResult) -> str:
+    n = len(result.purged)
+    where = "Trash" if result.trash and result.trash.backend == "os" else "the app trash folder"
+    msg = f"deleted {n} photo(s); {result.files_trashed} file(s) moved to {where}"
+    if result.files_failed:
+        msg += f"; {result.files_failed} file(s) could not be moved"
+    return msg
+
+
+def _delete_where_note() -> str:
+    return (
+        "moved to your system Trash"
+        if trash_backend() == "os"
+        else "moved to APP_DATA/local/trash — recoverable, with a manifest"
+    )
+
+
 def _stacking_editor(settings: Settings) -> None:
     """`/settings` toggles for image stacking. Read-time, so saving just persists
     to ``config.yaml`` + updates the live config -- no re-index; the next library
@@ -1067,6 +1251,39 @@ def _stacking_editor(settings: Settings) -> None:
         cfg.similar_names = bool(similar.value)
         settings.config.dump(settings.paths.config_file)
         ui.notify("saved — reload the library to see it")
+
+    ui.button("Save", on_click=_save).props("color=primary")
+
+
+def _deletion_editor(settings: Settings) -> None:
+    """`/settings` control for the "Delete photos" action (CLAUDE.md constraint
+    #1, exception 2). Only the stack scope is user-configurable; the trash
+    destination is chosen automatically per platform."""
+    cfg = settings.config.deletion
+    ui.label("Deleting photos").classes("font-bold mt-4")
+    ui.label(
+        f"The bulk toolbar's Delete and the photo page's “Delete photo” move the "
+        f"files ({_delete_where_note()}) and remove their ratings, tags, "
+        f"thumbnails and embeddings. When stacking is on, choose whether a delete "
+        f"takes only the shown photo or the whole stack."
+    ).classes("text-xs text-gray-400 max-w-xl")
+
+    scope = (
+        ui.select(
+            {
+                "selected": "Delete only the selected / shown photo",
+                "whole_stack": "Delete every photo in the stack",
+            },
+            value=cfg.stack_scope,
+        )
+        .props("dense options-dense")
+        .classes("w-96")
+    )
+
+    def _save() -> None:
+        cfg.stack_scope = "whole_stack" if scope.value == "whole_stack" else "selected"
+        settings.config.dump(settings.paths.config_file)
+        ui.notify("saved")
 
     ui.button("Save", on_click=_save).props("color=primary")
 
@@ -1132,10 +1349,15 @@ def _stars_caption(stars: int) -> str:
     return "★" * stars if stars else "unrated"
 
 
-def _star_widget(settings: Settings, engine: Engine, pixel_hash: str, stars: int) -> None:
+def _star_widget(
+    settings: Settings, engine: Engine, pixel_hash: str, stars: int
+) -> ui.rating | None:
     """Interactive 1-5 star rating on the photo page. Clicking the current value
     (or the clear button) sets 0 = unrated. Writes hop off the event loop; the
-    widget is read-only while another machine holds the write lock."""
+    widget is read-only while another machine holds the write lock.
+
+    Returns the ``ui.rating`` element so the photo page's keyboard handler can
+    drive it (``set_value`` fires the same write path); ``None`` in read-only."""
     writable = State.write_mode == WriteMode.writable
     with ui.row().classes("items-center gap-2"):
         rating = ui.rating(value=stars, max=5, size="lg").props("color=amber-6")
@@ -1148,7 +1370,7 @@ def _star_widget(settings: Settings, engine: Engine, pixel_hash: str, stars: int
         rating.props("readonly")
         clear.set_visibility(False)
         caption.set_text(f"read-only — {State.lock_holder} is writing")
-        return
+        return None
 
     async def _on_change() -> None:
         new = int(rating.value or 0)
@@ -1158,22 +1380,28 @@ def _star_widget(settings: Settings, engine: Engine, pixel_hash: str, stars: int
             ui.notify(f"rated {new}★" if new else "rating cleared")
 
     rating.on_value_change(_on_change)
+    return rating
 
 
-def _edit_flag_button(settings: Settings, engine: Engine, pixel_hash: str, flagged: bool) -> None:
+def _edit_flag_button(
+    settings: Settings, engine: Engine, pixel_hash: str, flagged: bool
+) -> ui.switch | None:
     """Toggle the "marked for editing" queue flag on the photo page. Writes hop
     off the event loop; in read-only mode it shows only if already set. With
-    stacking on the flag is stack-level, matching ratings."""
+    stacking on the flag is stack-level, matching ratings.
+
+    Returns the ``ui.switch`` so the keyboard handler can toggle it; ``None`` in
+    read-only."""
     if State.write_mode != WriteMode.writable:
         if flagged:
             ui.label("⚑ Marked for editing").classes("text-amber-600 text-xs")
-        return
+        return None
 
     async def _toggle(e: Any) -> None:
         await nicegui_run.io_bound(_apply_flag, settings, engine, pixel_hash, bool(e.value))
         ui.notify("added to edit list" if e.value else "removed from edit list")
 
-    ui.switch("Mark for editing", value=flagged, on_change=_toggle).props("color=amber")
+    return ui.switch("Mark for editing", value=flagged, on_change=_toggle).props("color=amber")
 
 
 def _photo_grid(min_px: int = 220) -> ui.grid:
@@ -1323,8 +1551,11 @@ def _thumb_cell(
     flagged: bool = False,
     on_flag: Callable[[str, bool], Any] | None = None,
     flag_registry: dict[str, Callable[[bool], Any]] | None = None,
+    cell_registry: dict[str, ui.element] | None = None,
 ) -> None:
-    with ui.link(target=f"/photo/{photo.pixel_hash}").classes("group relative block"):
+    with ui.link(target=f"/photo/{photo.pixel_hash}").classes("group relative block") as cell:
+        if cell_registry is not None:
+            cell_registry[photo.pixel_hash] = cell
         ui.image(_thumb_src(photo.pixel_hash, size)).classes(
             "w-full aspect-square object-cover bg-gray-100"
         ).props("loading=lazy")

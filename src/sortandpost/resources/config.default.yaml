@@ -51,3 +51,6 @@ stacking:
   enabled: false                  # group near-duplicate photos in the same folder into one grid entry
   raw_jpeg: true                  # pair a RAW with its same-named JPEG
   similar_names: true             # group "img.jpg" / "img copy.jpg" / "img (1).jpg" / "copy img.jpg"
+
+deletion:
+  stack_scope: selected           # "selected" = only the clicked photo; "whole_stack" = every stack member

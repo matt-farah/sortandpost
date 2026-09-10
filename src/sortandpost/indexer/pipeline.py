@@ -21,7 +21,7 @@ from pathlib import Path
 
 from sqlmodel import Session, col, select
 
-from sortandpost.db.models import Photo, PhotoPath, ScanState
+from sortandpost.db.models import Photo, PhotoPath, ScanState, Tombstone
 from sortandpost.indexer.reconcile import ReconcileOutcome, reconcile_metadata
 from sortandpost.indexer.thumbnails import ThumbPathFn
 from sortandpost.indexer.workers import DecodedFile, decode_local
@@ -50,6 +50,7 @@ class IndexOutcome:
     path: Path
     pixel_hash: str | None = None
     skipped: bool = False
+    tombstoned: bool = False  # pixel_hash was deleted by the user; not re-indexed
     new_photo: bool = False
     thumbnails_written: tuple[int, ...] = ()
     reconcile: ReconcileOutcome | None = None
@@ -139,6 +140,14 @@ def persist_decoded(
 
     assert decoded.pixel_hash is not None
     pixel_hash = decoded.pixel_hash
+
+    # -- deleted by the user: don't resurrect it -------------------------- #
+    # The still-present file is trashed by the post-scan tombstone sweep
+    # (sortandpost.db.deletion.apply_pending_tombstones).
+    if session.get(Tombstone, pixel_hash) is not None:
+        scan.pixel_hash = pixel_hash
+        scan.stages_done = int(Stage.STAT)
+        return IndexOutcome(path=path, pixel_hash=pixel_hash, tombstoned=True)
 
     # -- stage 3: identity -------------------------------------------------- #
     new_photo = _upsert_photo(
