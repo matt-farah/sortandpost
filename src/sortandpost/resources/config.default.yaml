@@ -1,8 +1,11 @@
 # Written to APP_DATA/sync/config.yaml on first boot if it does not exist.
 # This file syncs across machines. Edit it there, not here.
 
+# NOTE: library folders are now PER-DEVICE -- set them in the Settings page (or
+# sync/devices/<name>/library.json). This key is only a one-time seed for the
+# per-device file on first boot after upgrading.
 library_roots:
-  - /library                 # container paths of the mounted photo libraries
+  - /library                 # container path of the mounted photo library
 
 server:
   host: 0.0.0.0

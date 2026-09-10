@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from sortandpost.indexer.scanner import iter_image_files
@@ -71,4 +72,26 @@ def test_exclude_names_empty_and_blank_entries_are_noops(tmp_path: Path) -> None
     _touch_image(tmp_path / "sub" / "b.jpg")
 
     names = sorted(p.name for p in iter_image_files([tmp_path], exclude_names=["", "   "]))
+    assert names == ["a.jpg", "b.jpg"]
+
+
+def test_an_unstatable_entry_is_skipped_not_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An entry that raises on ``is_symlink`` / ``is_dir`` (a macOS data-vault
+    where even ``lstat`` is "Operation not permitted") must not abort the walk --
+    the sibling images still come back."""
+    _touch_image(tmp_path / "a.jpg")
+    _touch_image(tmp_path / "sub" / "b.jpg")
+    (tmp_path / "vault").mkdir()
+
+    real_is_symlink = Path.is_symlink
+
+    def guard(self: Path) -> bool:
+        if self.name == "vault":
+            raise PermissionError(1, "Operation not permitted")
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", guard)
+    names = sorted(p.name for p in iter_image_files([tmp_path]))
     assert names == ["a.jpg", "b.jpg"]

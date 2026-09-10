@@ -66,7 +66,7 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("APP_DATA", str(tmp_path / "appdata"))
     monkeypatch.delenv("PORT", raising=False)
     resolved = Settings.resolve()
-    resolved.config.library_roots = [library]
+    resolved.set_library_roots([library])
     return resolved
 
 

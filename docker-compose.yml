@@ -12,9 +12,15 @@ services:
       # Photo library: read-write so the metadata engine can write EXIF/XMP.
       # Nothing else in the app writes under this path.
       - "${PHOTO_LIBRARY:?set PHOTO_LIBRARY in .env}:/library:rw"
+      # More photo folders: add a line per folder, mounting to /library/1,
+      # /library/2, ... then register it in the app's Settings page, e.g.
+      #   - "/Users/you/CloudStorage/Scans:/library/1:rw"
       # App-data: local/ (machine-only) + sync/ (user points their sync tool here).
       - "${APP_DATA:?set APP_DATA in .env}:/data:rw"
     restart: unless-stopped
+    # File-manager "Reveal in Finder/Explorer" needs a small host agent that runs
+    # OUTSIDE Docker (the container has no host GUI). See tools/sortandpost_helper.py:
+    #   python3 tools/sortandpost_helper.py --app-data "${APP_DATA}"
 
   # One-shot indexer pass. Runs the same image with a different entrypoint.
   #   docker compose run --rm indexer --once

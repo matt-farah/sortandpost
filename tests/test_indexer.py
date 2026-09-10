@@ -24,12 +24,12 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("APP_DATA", str(tmp_path / "appdata"))
     monkeypatch.delenv("PORT", raising=False)
     resolved = Settings.resolve()
-    resolved.config.library_roots = [library]
+    resolved.set_library_roots([library])
     return resolved
 
 
 def _lib(settings: Settings) -> Path:
-    return Path(settings.config.library_roots[0])
+    return Path(settings.library_roots[0].container)
 
 
 def _jpeg(path: Path, color: tuple[int, int, int] = (120, 90, 200)) -> None:
