@@ -90,6 +90,11 @@ class Paths:
         return self.sync / "searches.json"
 
     @property
+    def collections_file(self) -> Path:
+        """User photo collections. Synced (like ``tags.yaml``), not merged."""
+        return self.sync / "collections.json"
+
+    @property
     def snapshots_dir(self) -> Path:
         return self.sync / "snapshots"
 
