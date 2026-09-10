@@ -1,7 +1,39 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (Features.md: saved searches — uncommitted; dark mode merged via PR #5 `main`)._
+_Last updated: 2026-09-09 (Features.md: `/rate` triage page — uncommitted; saved searches merged via PR #6 `main`)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 🎯 2026-09-09 — Features.md: `/rate` swipe-triage page (first of "Other pages")
+
+**Uncommitted.** `252 tests pass` (+2); ruff + format + mypy (gated paths) clean;
+alembic autogenerate empty (no model changes). Verified in a real browser
+(headless Chromium against `browser_test_data`): card renders the large preview +
+meta + star widget, `1`–`5` rates and auto-advances with the counter updating,
+`f` toggles the flag (on/off, "added/removed from edit list"), advancing shows
+the next photo's own flag state, no JS errors.
+
+**Decisions** (asked): interaction = **keyboard + big buttons** (no drag-swipe
+gesture); card source = **fresh random batch per visit** (skipped photos can
+resurface on a later visit; no persistent skip list).
+
+- New `db/browse.py` helpers: `unrated_count(session)` and
+  `unrated_photo_ids(session, *, limit=60, exclude=())` — present photos with no
+  `ratings` row or `stars == 0`, `ORDER BY random()`, `exclude` drops
+  hashes already pulled this page load.
+- `app.py`: `("/rate", "Rate")` in `_PAGES`; `@ui.page("/rate")` `rate_page()`.
+  In-memory `queue` / `seen` / `idx`, `_load_more()` pulls another batch on
+  demand (excluding `seen`), `_current()` skips hashes that went missing/deleted
+  since the pull. `_render()` rebuilds one card: `ui.image` needs a concrete
+  width (`w-full max-w-2xl` + `max-height: 78vh` + `fit=contain`) or Quasar's
+  `q-img` collapses to zero height. `1`–`5` → `_rate()` (`io_bound(_apply_rating)`
+  → `unrated_count` re-query → advance on `stars >= 1`), `→`/`S`/`Space` →
+  `_step(1)`, `←` → `_step(-1)` (disabled at idx 0), `f` → toggles the
+  `_edit_flag_button` switch held in `flag_holder[0]`. Space page-scroll
+  suppressed via the shared one-time capture-phase guard (same as the grid).
+- Read-only: banner, `rating` readonly, `_edit_flag_button` returns `None`;
+  skip/back still work.
 
 ---
 
@@ -584,21 +616,14 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-**First: the bulk-delete work (this session) is uncommitted.** `git status` shows
-working-tree edits to `CLAUDE.md`, `Features.md`, `pyproject.toml`, `app.py`,
-`config.py`, `resources/config.default.yaml`, `db/models.py`, `clip/store.py`,
-`sync/merge.py`, `indexer/{scan,pipeline}.py`, plus untracked
-`src/sortandpost/trash.py`, `src/sortandpost/db/deletion.py`,
-`tests/test_{trash,deletion}.py`. `231 tests pass; ruff + format + mypy clean;
-alembic autogenerate empty.` Not reviewed or pushed.
-
-Then, remaining `Features.md` items (unchecked, roughly in priority order):
+Remaining `Features.md` items (unchecked, roughly in priority order):
 
 1. **Design pass** — scaffold → production looks (includes tidying the dark
    theme: the `ui.toggle` white buttons, `bg-gray-*` placeholders, dim
    `text-gray-400`).
-2. Other pages — swipe-style triage of unrated photos; robopost.app social
-   composer (API key → `.env`, per-machine, never synced).
+2. Other pages — **robopost.app social composer** (group images into a post with
+   text, upload + schedule via the robopost.app API; API key → `.env`,
+   per-machine, never synced). _(swipe-triage `/rate` page — done.)_
 3. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
    delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
    view of the local trash folder; a live two-container check of the

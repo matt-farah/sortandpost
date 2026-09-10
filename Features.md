@@ -63,8 +63,17 @@
 ## Design
 - [ ] Flesh out website to move from scaffold to production looks
 ## Other pages
-- [ ] Tinder style swipe through of unrated images with star ratings 
+- [x] Tinder style swipe through of unrated images with star ratings 
     - I would like to have random images pulled and I can quickly rate them
+    - Done: new `/rate` page (nav "Rate"). A random batch of unrated photos (no
+      `ratings` row, or 0★), one big card at a time — `1`–`5` rates and
+      auto-advances, `→`/`S`/`Space` skip, `←` steps back, `f` toggles the
+      "marked for editing" flag beside the stars. Rating/flag reuse the shared
+      `_apply_rating` / `_apply_flag` paths (fan to stack members, EXIF mirror,
+      `changes` row). Fresh random batch per visit (skipped photos resurface
+      later); "N rated this session · ~M unrated left" counter; end state when
+      caught up. Read-only aware. New `browse.unrated_count` /
+      `unrated_photo_ids`. +2 tests.
 - [ ] Social media post composer
     - I would like to be able to group images into a social media post with some text
     - I want to be able to use the robopost.app api to upload these images and create future postings

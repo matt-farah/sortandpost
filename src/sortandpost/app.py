@@ -40,6 +40,8 @@ from sortandpost.db.browse import (
     get_rating,
     list_photo_ids,
     photo_count,
+    unrated_count,
+    unrated_photo_ids,
 )
 from sortandpost.db.deletion import DeleteResult, delete_photos
 from sortandpost.db.flags import (
@@ -67,6 +69,7 @@ log = logging.getLogger(__name__)
 
 _PAGES = [
     ("/", "Library"),
+    ("/rate", "Rate"),
     ("/search", "Search"),
     ("/review", "Review"),
     ("/settings", "Settings"),
@@ -822,6 +825,183 @@ def build_ui(settings: Settings) -> None:
                 flag_switch.set_value(not flag_switch.value)
 
         ui.keyboard(on_key=_on_key)
+
+    @ui.page("/rate")
+    async def rate_page() -> None:
+        """Swipe-style triage of unrated photos: a random batch, one big card at a
+        time. ``1``-``5`` rates (and auto-advances), ``→`` / ``S`` / ``Space``
+        skips, ``←`` steps back. Ratings run the same ``_apply_rating`` path as
+        every other page (fan out to stack members, EXIF mirror, ``changes`` row).
+        A fresh batch is pulled on every visit -- skipped photos resurface later.
+        """
+        _header("/rate")
+        client = ui.context.client
+        stacking_on = settings.config.stacking.enabled
+        writable = State.write_mode == WriteMode.writable
+        batch = 60
+
+        def _pull(session: Session, exclude: list[str]) -> list[str]:
+            ids = unrated_photo_ids(session, limit=batch, exclude=exclude)
+            if stacking_on:
+                stacks = build_stacks(session, settings.config.stacking)
+                ids = [h for h in ids if not stacks.is_hidden_member(h)]
+            return ids
+
+        with _session() as session:
+            remaining0 = unrated_count(session)
+            queue: list[str] = _pull(session, [])
+        seen: set[str] = set(queue)
+        idx = [0]
+        rated = [0]
+        remaining = [remaining0]
+        flag_holder: list[ui.switch | None] = [None]  # current card's flag switch, for the `f` key
+
+        if not writable:
+            ui.label(
+                f"Read-only — {State.lock_holder} holds the write lock. "
+                "You can look through unrated photos, but rating is disabled."
+            ).classes("m-4 text-amber-600")
+
+        progress = ui.label().classes("px-4 pt-2 text-sm text-gray-500")
+        card = ui.column().classes("w-full max-w-3xl mx-auto items-center gap-3 p-4")
+
+        def _load_more() -> None:
+            with _session() as session:
+                for h in _pull(session, list(seen)):
+                    if h not in seen:
+                        seen.add(h)
+                        queue.append(h)
+
+        def _current() -> str | None:
+            """The hash to show now, skipping any that vanished (deleted / went
+            missing) since the batch was pulled. Pulls another batch if we ran
+            off the end."""
+            while True:
+                if idx[0] >= len(queue):
+                    before = len(queue)
+                    _load_more()
+                    if len(queue) == before:
+                        return None
+                h = queue[idx[0]]
+                with _session() as session:
+                    photo = get_photo(session, h)
+                if photo is None or photo.missing_since is not None:
+                    idx[0] += 1
+                    continue
+                return h
+
+        def _render() -> None:
+            card.clear()
+            progress.set_text(f"{rated[0]} rated this session · ~{remaining[0]} unrated left")
+            h = _current()
+            with card:
+                if h is None:
+                    if rated[0] == 0:
+                        ui.icon("check_circle", size="4rem").classes("text-emerald-500")
+                        ui.label("Every photo already has a rating — nothing to triage.").classes(
+                            "text-lg"
+                        )
+                    else:
+                        ui.icon("done_all", size="4rem").classes("text-emerald-500")
+                        ui.label(f"All caught up — you rated {rated[0]} this session.").classes(
+                            "text-lg"
+                        )
+                    ui.button("Back to library", on_click=lambda: ui.navigate.to("/")).props("flat")
+                    return
+
+                with _session() as session:
+                    photo = get_photo(session, h)
+                    stars = get_rating(session, h) or 0
+                    flagged = bool(edit_flagged_hashes(session, [h]))
+                if photo is None:  # _current() confirmed it; narrow for the type checker
+                    return
+
+                # q-img needs a concrete width or it collapses to zero height;
+                # mirror the photo page (max-w-2xl) and cap the height so a tall
+                # portrait still fits one screen.
+                ui.image(_thumb_src(h, thumb_large)).classes(
+                    "w-full max-w-2xl rounded shadow bg-gray-100"
+                ).style("max-height: 78vh").props("fit=contain")
+                meta = [Path(photo.primary_path).name]
+                if photo.taken_at:
+                    meta.append(photo.taken_at.isoformat(sep=" ", timespec="minutes"))
+                cam = " ".join(filter(None, (photo.camera_make, photo.camera_model)))
+                if cam:
+                    meta.append(cam)
+                ui.label(" · ".join(meta)).classes("text-xs text-gray-500")
+
+                with ui.row().classes("items-center gap-5"):
+                    rating = ui.rating(value=stars, max=5, size="2.75rem").props("color=amber-6")
+                    if writable:
+                        rating.on_value_change(lambda h=h, r=rating: _rate(h, int(r.value or 0)))
+                    else:
+                        rating.props("readonly")
+                    flag_holder[0] = _edit_flag_button(settings, engine, h, flagged)
+
+                with ui.row().classes("items-center gap-2"):
+                    ui.button("← Back", on_click=lambda: _step(-1)).props("flat").set_enabled(
+                        idx[0] > 0
+                    )
+                    ui.button("Skip →", on_click=lambda: _step(1)).props("flat")
+                    ui.link("open photo page", f"/photo/{h}").classes(
+                        "text-xs text-gray-500 self-center"
+                    )
+                ui.label("1-5 rate · f flag for editing · → / S skip · ← back").classes(
+                    "text-[11px] text-gray-400"
+                )
+
+        def _step(delta: int) -> None:
+            if delta < 0 and idx[0] == 0:
+                return
+            idx[0] += delta
+            _render()
+
+        async def _rate(h: str, stars: int) -> None:
+            if not writable:
+                return
+            await nicegui_run.io_bound(_apply_rating, settings, engine, h, stars)
+            with client:  # the awaited gap can invalidate the ambient slot
+                with _session() as session:
+                    remaining[0] = unrated_count(session)
+                if stars >= 1:
+                    rated[0] += 1
+                    ui.notify(f"rated {stars}★")
+                    idx[0] += 1
+                else:
+                    ui.notify("rating cleared")
+                _render()
+
+        async def _on_key(e: KeyEventArguments) -> None:
+            if not e.action.keydown or e.action.repeat:
+                return
+            if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
+                return
+            key = e.key
+            if key == "ArrowLeft":
+                _step(-1)
+            elif key == "ArrowRight" or key == "s" or key == " ":
+                _step(1)
+            elif writable and key.number is not None and 1 <= key.number <= 5:
+                h = _current()
+                if h is not None:
+                    await _rate(h, key.number)
+            elif key == "f":
+                switch = flag_holder[0]
+                if switch is not None:
+                    switch.set_value(not switch.value)
+
+        ui.keyboard(on_key=_on_key)
+        # Space would otherwise scroll the page -- swallow its default (shared,
+        # one-time; the library grid installs the same guard).
+        ui.run_javascript(
+            "if(!window.__spNoSpaceScroll){window.__spNoSpaceScroll=1;"
+            "addEventListener('keydown',e=>{"
+            "if((e.key===' '||e.code==='Space')&&"
+            "!['INPUT','TEXTAREA','SELECT','BUTTON'].includes"
+            "(document.activeElement?.tagName))e.preventDefault();"
+            "},true);}"
+        )
+        _render()
 
     @ui.page("/search")
     async def search(
