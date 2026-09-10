@@ -8,7 +8,12 @@
     - Done: grid remembers loaded count + scroll position, restored on back/forward nav; photo page back buttons use history
 - [x] Have previews span the whole page rather than just one column and dynamically scale by browser window size
     - Done: full-bleed responsive grid (auto-fill, minmax 220px) on /, /search, /review
-- [ ] Dark/light mode with an option in the settings to choose manually or go based off system settings
+- [x] Dark/light mode with an option in the settings to choose manually or go based off system settings
+    - Done: `/settings` → Appearance → System / Light / Dark toggle. `ui.dark_mode`
+      set from `State.theme` in `_header` (every page). Persisted per-machine in
+      `local/ui_prefs.json` (never synced) via new `src/sortandpost/prefs.py`;
+      `paths.ui_prefs_file`. Applies to the current tab live, other tabs on reload.
+      +7 tests.
 - [x] Bulk rating/tagging
     - Selection: checkbox on tile hover + shift-click range (decided)
     - Done: hover checkbox per tile, shift-click ranges, floating toolbar (★1-5 / clear / tag input); writes fan to stack members; new db/tags.py (add/remove manual tag + changes row + EXIF keywords)

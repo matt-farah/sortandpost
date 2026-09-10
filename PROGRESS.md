@@ -1,7 +1,26 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (Features.md: grid keyboard nav — uncommitted; bulk delete + photo-page shortcuts committed, PR #4 open)._
-_Working branch: `scaffold`. PR #4 `scaffold → main` open (covers everything below)._
+_Last updated: 2026-09-09 (Features.md: dark/light mode — uncommitted; everything before it merged to `main` via PR #4 `3aa7612`)._
+_Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 🌗 2026-09-09 — Features.md: dark / light / system theme
+
+**Uncommitted.** `238 tests pass` (+7); ruff + format + mypy clean. Verified in a
+real browser: toggling Dark flips `<body>`, persists across navigation and a full
+reload, writes `local/ui_prefs.json`; System follows the OS.
+
+- `/settings` → **Appearance** → a `System / Light / Dark` `ui.toggle`
+  (`_theme_editor`, works in read-only too).
+- New `src/sortandpost/prefs.py` — `local/ui_prefs.json` (a small dict; never
+  synced, so a laptop and desktop each keep their own). `get_theme` /
+  `set_theme`, corrupt/unknown → `"system"`. `paths.ui_prefs_file`.
+- `State.theme` loaded once in `build_ui`; `_header` (called by every page) now
+  creates `ui.dark_mode(_THEME_TO_DARK[State.theme])` and **returns** it so
+  `settings_page` can drive it live. `None` = follow the OS.
+- Not a full dark-theme design audit (that's the "Design pass" item) -- the
+  Quasar `ui.toggle`'s unselected buttons render white, a bit stark on dark.
 
 ---
 
@@ -548,13 +567,15 @@ alembic autogenerate empty.` Not reviewed or pushed.
 
 Then, remaining `Features.md` items (unchecked, roughly in priority order):
 
-1. **Dark / light mode** with a `/settings` manual/system choice (persist
-   per-machine in `local/`, never synced).
-2. **Saved searches** (Search features).
-3. **Design pass** — scaffold → production looks.
-4. Other pages — swipe-style triage of unrated photos; robopost.app social
+1. **Saved searches** (Search features) — persist named query + filter combos,
+   list them on `/search`. Per-machine (`local/`) or in the synced DB? — decide
+   (leaning synced so they ride along like ratings).
+2. **Design pass** — scaffold → production looks (includes tidying the dark
+   theme: the `ui.toggle` white buttons, `bg-gray-*` placeholders, dim
+   `text-gray-400`).
+3. Other pages — swipe-style triage of unrated photos; robopost.app social
    composer (API key → `.env`, per-machine, never synced).
-5. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
+4. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
    delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
    view of the local trash folder; a live two-container check of the
    cross-machine lazy-trash path (unit-tested only so far).

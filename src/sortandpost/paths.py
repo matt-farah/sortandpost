@@ -51,6 +51,11 @@ class Paths:
         return self.local / "publish_state.json"
 
     @property
+    def ui_prefs_file(self) -> Path:
+        """Per-machine UI preferences (theme, ...). Never synced."""
+        return self.local / "ui_prefs.json"
+
+    @property
     def models_dir(self) -> Path:
         return self.local / "models"
 
