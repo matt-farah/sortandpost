@@ -55,6 +55,7 @@ from sortandpost.db.models import EmbeddingRow, Photo, Prediction, PredictionSta
 from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.service import run_indexer
 from sortandpost.metadata import ExiftoolClient
+from sortandpost.prefs import Theme, get_theme, set_theme
 from sortandpost.reveal import open_in_default_app, reveal_in_file_manager, reveal_supported
 from sortandpost.search import PhotoFilter, browse_photos, semantic_search
 from sortandpost.stacks import StackIndex, build_stacks
@@ -157,6 +158,7 @@ class State:
     engine: Engine | None = None
     settings: Settings | None = None
     indexer_started: bool = False
+    theme: Theme = "system"  # per-machine UI theme (local/ui_prefs.json)
 
     @classmethod
     def apply(cls, manager: SyncManager) -> None:
@@ -170,7 +172,11 @@ class State:
         return cls.clip_model
 
 
-def _header(active: str) -> None:
+_THEME_TO_DARK: dict[Theme, bool | None] = {"system": None, "light": False, "dark": True}
+
+
+def _header(active: str) -> ui.dark_mode:
+    dark = ui.dark_mode(_THEME_TO_DARK[State.theme])  # per-machine; None = follow the OS
     with ui.header().classes("items-center justify-between"):
         ui.label(f"sortandpost {__version__}").classes("text-lg font-bold")
         with ui.row():
@@ -181,6 +187,7 @@ def _header(active: str) -> None:
         else:
             ui.label(f"[read-only · {State.lock_holder} is writing]").classes("text-amber-300")
     _status_bar()
+    return dark
 
 
 def _status_bar() -> None:
@@ -231,6 +238,7 @@ def build_ui(settings: Settings) -> None:
     init_db(engine)  # ensure an empty DB still renders an empty grid
     State.engine = engine
     State.settings = settings
+    State.theme = get_theme(settings.paths)
 
     manager = SyncManager(settings, engine=engine)
     try:
@@ -958,7 +966,7 @@ def build_ui(settings: Settings) -> None:
 
     @ui.page("/settings")
     async def settings_page() -> None:
-        _header("/settings")
+        dark = _header("/settings")
         ccfg = settings.config.clip
         with _session() as session:
             gen = get_generation(session)
@@ -1012,6 +1020,9 @@ def build_ui(settings: Settings) -> None:
                 for key, value in rows:
                     ui.label(key).classes("text-gray-400")
                     ui.label(value)
+
+            ui.separator()
+            _theme_editor(settings, dark)
 
             ui.separator()
             if State.write_mode == WriteMode.writable:
@@ -1404,6 +1415,29 @@ def _stacking_editor(settings: Settings) -> None:
         ui.notify("saved — reload the library to see it")
 
     ui.button("Save", on_click=_save).props("color=primary")
+
+
+def _theme_editor(settings: Settings, dark: ui.dark_mode) -> None:
+    """Light / Dark / System theme. Per-machine (``local/ui_prefs.json``), never
+    synced -- each machine keeps its own. Applies to the current tab immediately;
+    other open tabs pick it up on their next load."""
+    ui.label("Appearance").classes("font-bold mt-4")
+    ui.label("Light, Dark, or follow the operating system. Saved on this machine only.").classes(
+        "text-xs text-gray-400 max-w-xl"
+    )
+
+    choice = ui.toggle(
+        {"system": "System", "light": "Light", "dark": "Dark"},
+        value=State.theme,
+    ).props("no-caps")
+
+    def _on_change() -> None:
+        value: Theme = choice.value if choice.value in ("system", "light", "dark") else "system"
+        State.theme = value
+        set_theme(settings.paths, value)
+        dark.set_value(_THEME_TO_DARK[value])
+
+    choice.on_value_change(_on_change)
 
 
 def _deletion_editor(settings: Settings) -> None:
