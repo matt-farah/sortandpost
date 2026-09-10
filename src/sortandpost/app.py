@@ -653,10 +653,14 @@ def build_ui(settings: Settings) -> None:
             if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
                 return
             key = e.key
+            # location.replace (not a push) so a run of arrow presses doesn't
+            # stack history -- Back, in-app or browser, returns to the library
+            # grid you started from, not through every photo you skimmed. Same
+            # rationale as the stack filmstrip.
             if (key == "ArrowLeft" or key == "k") and prev_hash:
-                ui.navigate.to(f"/photo/{prev_hash}")
+                ui.run_javascript(f"location.replace('/photo/{prev_hash}')")
             elif (key == "ArrowRight" or key == "j") and next_hash:
-                ui.navigate.to(f"/photo/{next_hash}")
+                ui.run_javascript(f"location.replace('/photo/{next_hash}')")
             elif star_widget is not None and key.number is not None and 0 <= key.number <= 5:
                 star_widget.set_value(key.number)  # fires the same write path as a click
             elif flag_switch is not None and key == "f":
