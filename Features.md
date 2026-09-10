@@ -54,7 +54,12 @@
       clears ring + selection. Additive over infinite scroll (moving the ring
       loads more batches); one `ui.keyboard` per page (two don't both fire).
 ## Search features
-- [ ] Ability to save searches for future review
+- [x] Ability to save searches for future review
+    - Done: `/search` bookmark button saves the full state (query + every filter)
+      under a name; a "Saved:" pill row (click to re-run, × to delete) always
+      visible. Stored in `sync/searches.json` — synced like `tags.yaml`, sorted by
+      name, re-save overwrites, not conflict-merged. New `src/sortandpost/searches.py`
+      + `paths.saved_searches_file`. +12 tests.
 ## Design
 - [ ] Flesh out website to move from scaffold to production looks
 ## Other pages
