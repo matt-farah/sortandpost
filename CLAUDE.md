@@ -123,6 +123,30 @@ applies — the native indexer and the container app must not both write.)
 
 ---
 
+## Development workflow
+
+**Every new feature gets a hands-on browser test by the user before it's considered done.**
+Automated tests + a headless smoke are necessary but not sufficient. After building a feature:
+
+1. Run the quality gate (ruff, ruff format, mypy on the gated paths, pytest, alembic
+   autogenerate-empty).
+2. **Boot the app so the user can click through it themselves** — native run against the
+   `browser_test_data` app-data tree on `http://localhost:8080`:
+
+   ```
+   APP_DATA=<repo>/browser_test_data PORT=8080 HF_HUB_OFFLINE=1 \
+     .venv/bin/python -m sortandpost
+   ```
+
+   (`library_roots` there points at `~/Downloads/sampleImages`; ~300 photos already indexed;
+   `.venv` has no torch, so CLIP features degrade gracefully.)
+3. Tell the user exactly which keys / buttons / flows to exercise, and what each should do.
+4. Wait for their sign-off. Only then update `PROGRESS.md` / `Features.md` and commit.
+
+Leave the app running until the user says they're done, then shut it down.
+
+---
+
 ## App-data layout
 
 `APP_DATA` has two subtrees. The user points their file-sync app at **`sync/` only**.
