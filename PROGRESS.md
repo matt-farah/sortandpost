@@ -1,7 +1,34 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-09 (Features.md: dark/light mode — uncommitted; everything before it merged to `main` via PR #4 `3aa7612`)._
+_Last updated: 2026-09-09 (Features.md: saved searches — uncommitted; dark mode merged via PR #5 `main`)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 🔖 2026-09-09 — Features.md: saved searches
+
+**Uncommitted.** `250 tests pass` (+12); ruff + format + mypy clean; alembic
+autogenerate empty. Verified in a real browser: save with filters → runs +
+persists across reload; pill re-runs; delete removes it in place + from the file;
+sorts by name.
+
+**Decisions** (asked): storage = **synced `sync/searches.json`** (rides along
+like `tags.yaml`, not conflict-merged — a simultaneous two-machine edit yields a
+sync-tool conflict copy, kept for manual recovery; deliberately lighter than the
+DB + `changes` log). Scope = **full `/search` state** (query + all filters).
+
+- New `src/sortandpost/searches.py` — `SavedSearch` dataclass (fields == the
+  `/search` query params) with `query_string()` / `summary()` / `is_empty()`;
+  `load_searches` / `save_searches` / `add_search` (replace-by-name,
+  case-insensitive; keeps the list name-sorted) / `remove_search`. Tolerant of a
+  corrupt file, a bare-list JSON, nameless/unknown-key rows.
+  `paths.saved_searches_file` → `sync/searches.json`.
+- `/search` (`app.py`): a `bookmark_add` button → name dialog → `add_search` →
+  navigate to the new query. A `saved_row` (always rendered, even on the empty
+  landing) of pill rows: a name button (`ui.navigate.to(query_string())`, tooltip
+  = `summary()`) + a `×` delete button; `_delete` re-renders in place. `_apply`
+  was refactored to build a `SavedSearch` and reuse `query_string()` (one
+  URL-builder). `_current(name)` snapshots the live widget values.
 
 ---
 
@@ -567,15 +594,12 @@ alembic autogenerate empty.` Not reviewed or pushed.
 
 Then, remaining `Features.md` items (unchecked, roughly in priority order):
 
-1. **Saved searches** (Search features) — persist named query + filter combos,
-   list them on `/search`. Per-machine (`local/`) or in the synced DB? — decide
-   (leaning synced so they ride along like ratings).
-2. **Design pass** — scaffold → production looks (includes tidying the dark
+1. **Design pass** — scaffold → production looks (includes tidying the dark
    theme: the `ui.toggle` white buttons, `bg-gray-*` placeholders, dim
    `text-gray-400`).
-3. Other pages — swipe-style triage of unrated photos; robopost.app social
+2. Other pages — swipe-style triage of unrated photos; robopost.app social
    composer (API key → `.env`, per-machine, never synced).
-4. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
+3. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
    delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
    view of the local trash folder; a live two-container check of the
    cross-machine lazy-trash path (unit-tested only so far).

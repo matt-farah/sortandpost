@@ -19,7 +19,6 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
@@ -58,6 +57,7 @@ from sortandpost.metadata import ExiftoolClient
 from sortandpost.prefs import Theme, get_theme, set_theme
 from sortandpost.reveal import open_in_default_app, reveal_in_file_manager, reveal_supported
 from sortandpost.search import PhotoFilter, browse_photos, semantic_search
+from sortandpost.searches import SavedSearch, add_search, load_searches, remove_search
 from sortandpost.stacks import StackIndex, build_stacks
 from sortandpost.sync import SyncManager, WriteMode
 from sortandpost.sync.clock import utcnow
@@ -844,6 +844,8 @@ def build_ui(settings: Settings) -> None:
             tags_all=[EDIT_FLAG] if mark else [],
         )
 
+        saved = load_searches(settings.paths)
+
         with ui.row().classes("w-full items-center gap-2 p-4 flex-wrap"):
             box = (
                 ui.input(placeholder="Describe a photo… (blank = browse by filters)", value=query)
@@ -859,26 +861,79 @@ def build_ui(settings: Settings) -> None:
             miss_cb = ui.checkbox("incl. missing", value=missing)
             mark_cb = ui.checkbox("⚑ to edit", value=mark)
 
+            def _current(name: str = "") -> SavedSearch:
+                return SavedSearch(
+                    name=name,
+                    q=(box.value or "").strip(),
+                    stars=int(stars_sel.value or 0),
+                    camera=(cam_in.value or "").strip(),
+                    gps=bool(gps_cb.value),
+                    dups=bool(dup_cb.value),
+                    missing=bool(miss_cb.value),
+                    mark=bool(mark_cb.value),
+                )
+
             def _apply() -> None:
-                parts: list[str] = []
-                if (box.value or "").strip():
-                    parts.append(f"q={quote(box.value.strip())}")
-                if stars_sel.value:
-                    parts.append(f"stars={stars_sel.value}")
-                if (cam_in.value or "").strip():
-                    parts.append(f"camera={quote(cam_in.value.strip())}")
-                if gps_cb.value:
-                    parts.append("gps=true")
-                if dup_cb.value:
-                    parts.append("dups=true")
-                if miss_cb.value:
-                    parts.append("missing=true")
-                if mark_cb.value:
-                    parts.append("mark=true")
-                ui.navigate.to("/search?" + "&".join(parts) if parts else "/search")
+                ui.navigate.to(_current().query_string())
 
             box.on("keydown.enter", lambda: _apply())
             ui.button("Apply", on_click=_apply)
+
+            def _confirm_save() -> None:
+                if _current().is_empty():
+                    ui.notify("Nothing to save — type a query or pick a filter.", type="warning")
+                    return
+                with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                    ui.label("Save this search").classes("font-medium")
+                    name_in = ui.input(placeholder="name").props("dense autofocus").classes("w-64")
+
+                    def _do() -> None:
+                        name = (name_in.value or "").strip()
+                        if not name:
+                            return
+                        add_search(settings.paths, _current(name))
+                        dialog.close()
+                        ui.navigate.to(_current(name).query_string())
+
+                    name_in.on("keydown.enter", _do)
+                    with ui.row().classes("w-full justify-end gap-2"):
+                        ui.button("Cancel", on_click=dialog.close).props("flat")
+                        ui.button("Save", on_click=_do).props("color=primary")
+                dialog.open()
+
+            ui.button(icon="bookmark_add", on_click=_confirm_save).props("flat dense").tooltip(
+                "save this search"
+            )
+
+        saved_row = ui.row().classes("w-full items-center gap-1 px-4 flex-wrap")
+
+        def _render_saved() -> None:
+            saved_row.clear()
+            with saved_row:
+                if not saved:
+                    ui.label("No saved searches yet.").classes("text-xs text-gray-500")
+                    return
+                ui.label("Saved:").classes("text-xs text-gray-500 mr-1")
+                for s in saved:
+                    with ui.row().classes(
+                        "items-center gap-0 rounded-full bg-gray-200 dark:bg-gray-700 pl-1"
+                    ):
+                        ui.button(
+                            s.name,
+                            icon="search",
+                            on_click=lambda s=s: ui.navigate.to(s.query_string()),
+                        ).props("flat dense no-caps size=sm").tooltip(s.summary())
+                        ui.button(icon="close", on_click=lambda s=s: _delete(s)).props(
+                            "flat dense round size=xs"
+                        ).tooltip(f'delete "{s.name}"')
+
+        def _delete(s: SavedSearch) -> None:
+            nonlocal saved
+            saved = remove_search(settings.paths, s.name)
+            _render_saved()
+            ui.notify(f'deleted "{s.name}"')
+
+        _render_saved()
 
         if not query and not flt.is_active() and not missing:
             ui.label("Enter a query or pick filters.").classes("m-4 text-gray-500")

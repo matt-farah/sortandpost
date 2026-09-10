@@ -85,6 +85,11 @@ class Paths:
         return self.sync / "tags.yaml"
 
     @property
+    def saved_searches_file(self) -> Path:
+        """Named `/search` states. Synced (like ``tags.yaml``), not merged."""
+        return self.sync / "searches.json"
+
+    @property
     def snapshots_dir(self) -> Path:
         return self.sync / "snapshots"
 
