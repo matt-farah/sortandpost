@@ -53,9 +53,23 @@
       suppressed over the grid), `1`–`5`/`0` rate, `f` flag, `Enter` open, `Esc`
       clears ring + selection. Additive over infinite scroll (moving the ring
       loads more batches); one `ui.keyboard` per page (two don't both fire).
-- [ ] Add a mode to library to group by with a header for each item dividing the library
+- [x] Add a mode to library to group by with a header for each item dividing the library
     - I would liike to be able to divide by date and folder and if there are any other categories that you think of, add those
     - I'm imagining something similar to how Google Photos website works where each day has its own photos divided
+    - Done: new `src/sortandpost/grouping.py` (pure logic, +19 tests) +
+      `list_group_rows` in `db/browse.py`; no schema change (read-only
+      projection). `/` takes `?group=day|month|folder|camera` (+
+      `?folder_sort=newest|oldest|az|za`) via a `Flat/Day/Month/Folder/Camera`
+      segmented control by the photo count. Day/Month keep the newest-first
+      order with Today/Yesterday labels and a trailing "No date" group;
+      Folder = leaf name + full-path sublabel, sorted by newest file mtime or
+      A-Z/Z-A; Camera = make+model (de-duped), newest-first, "Unknown camera"
+      last. Each section renders as a sticky clickable header + its own grid;
+      **collapse/expand** per section (chevron), Collapse-all / Expand-all
+      buttons, keyboard ring skips folded sections, collapsed set + scroll pos
+      persist in `history.state` for back/forward. URL-param only — the nav
+      link and a fresh visit start flat. Infinite scroll / scroll-restore /
+      bulk toolbar unchanged.
 - [x] Collections
     - I would like a feature separate from tagging where users could create custom collections separate from tagging.
     - Collections should live in json files like the saved searches

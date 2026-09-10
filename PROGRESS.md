@@ -1,7 +1,83 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-10 (Features.md: Collections — committed on `scaffold`, PR to `main`)._
+_Last updated: 2026-09-10 (Features.md: Library group-by mode — committed on `scaffold`, PR to `main`)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 🧭 2026-09-10 — Features.md: Library group-by mode
+
+**Committed on `scaffold` (PR `scaffold → main`).** `291 tests pass` (+19);
+ruff + ruff format + mypy (gated paths + `grouping.py` + `app.py`) clean;
+alembic autogenerate empty (read-only projection, no schema change). Verified
+across many headless-Chromium runs against a throwaway full index of the sample
+library (RAW + HEIC included, no dir excludes) so every mode has multiple
+sections — all four modes, all four folder sorts, per-section + all collapse /
+expand, keyboard skip-collapsed, sticky offset, back/forward persistence — zero
+JS/server errors.
+
+**Decisions** (asked): facets = **day / month / folder / camera**; folder
+sub-sort = **newest / oldest / A-Z / Z-A** (user-picked); persistence =
+**URL param only** (`?group=…&folder_sort=…`) — nav link + fresh visit start
+flat, back/forward keeps the grouped view. Collapse was added after review;
+its state rides in `history.state` (not the URL).
+
+**New module** `src/sortandpost/grouping.py` (pure logic, no DB/UI imports):
+
+- `GroupRow` NamedTuple (`pixel_hash`, `taken_at`, `primary_path`,
+  `camera_make/model`, `file_mtime_ns`) + `PhotoGroup` (`key`, `label`,
+  `sublabel`, `hashes`).
+- `parse_mode` / `parse_folder_sort` (tolerant query-param → enum).
+- `group_photos(rows, mode, *, folder_sort, today)` — assumes `rows` already in
+  the page's display order (newest-first); day/month insert headers in place
+  with Today/Yesterday labels + trailing "No date"; camera groups by make+model
+  (label de-dupes a repeated make) ordered by each group's newest photo,
+  "Unknown camera" last; folder keyed on the parent dir (handles `\` and `/`),
+  header = leaf name + full-path sublabel, ordered by max `file_mtime_ns`
+  (newest/oldest) or name (az/za).
+- `db/browse.list_group_rows(session)` — `GroupRow`s in `list_photos` order
+  (reuses it with a large limit; no multi-column `select()` typing pain).
+
+**`app.py` — `/` page (`library(group="", folder_sort="")`):**
+
+- `if mode`: `list_group_rows` → `group_photos` → `rep_ids` re-ordered into
+  section order; `group_bounds` / `key_hashes` / `_seg_starts`+`_seg_keys` +
+  `_key_for_index(i)` (bisect) map a flat index back to its section.
+- Scaffold: flat mode keeps the one `grid`; grouped mode builds, per section, a
+  **sticky clickable header** (`_group_header`, chevron via `_style_chevron`
+  using `.style(replace=…)` so the rotate clears on expand) + its own
+  `_photo_grid()` in `group_grids`.
+- `_render_tiles(container, hashes)` factored out of `append_batch`; the batch
+  loop splits its slice by section and skips folded ones (still advances
+  `loaded`, so scroll walks past them).
+- Collapse: `collapsed: set[str]`, `_toggle_group` / `_rebuild_section`
+  (drops the section's tiles + registry entries, redraws the already-reached
+  ones on expand) / `_repaint_header` / `_set_all_collapsed`. Collapse-all /
+  Expand-all buttons (`unfold_less` / `unfold_more`) by the group toggle.
+- `_move_focus` steps the keyboard ring over folded sections in the travel
+  direction (bails if nothing open that way).
+- `_GRID_SAVE_JS` / `_GRID_RESTORE_JS` carry `c` = sorted collapsed keys
+  (via `window.__spCollapsed`); the restore block re-folds them before the
+  catch-up loop so back/forward lands right.
+- `_GRID_COLS_JS` now reads the resolved `grid-template-columns` track count of
+  the fullest `.nicegui-grid` (was a first-row DOM walk — broke on full-width
+  headers / per-section grids).
+- New: `import bisect`, `import json`. `_GRID_KB_CSS` +
+  `scroll-margin-top: 4.5rem` on grid cells so a keyboard-focused tile isn't
+  parked under the app header / a sticky section header.
+
+**NiceGUI gotchas (new this round):**
+
+- `Element.style("…")` **merges** properties — a later call can't unset an
+  earlier `transform`. Use `.style(replace="…")` to fully swap.
+- `getComputedStyle(el).transform` is `matrix(1,0,0,1,0,0)` (not `"none"`) for
+  `rotate(0deg)` — test the matrix `a` term, not `!== 'none'`.
+- `ui.header` (Quasar `q-header`) renders **60 px** tall here → sticky section
+  headers use `top-16` (64 px), not `top-12`.
+
+**Not done / follow-ups:** the infinite-scroll "race to the end" when a big
+section is collapsed (see NEXT SESSION #4); a design pass on the white
+`ui.toggle` buttons in dark mode.
 
 ---
 
@@ -717,17 +793,18 @@ Remaining `Features.md` items (unchecked, roughly in priority order):
    text, upload + schedule via the robopost.app API; API key → `.env`,
    per-machine, never synced). **Build on Collections** — a collection is
    already an ordered photo group + a notes field. _(swipe-triage `/rate` page,
-   Collections — done.)_
-2. **Library group-by mode** — Google-Photos-style headers dividing the grid by
-   date (and folder, and any other sensible facet). Touches the fragile
-   infinite-scroll / scroll-restore grid code — tread carefully.
-3. **Design pass** — scaffold → production looks (includes tidying the dark
+   Collections, Library group-by — done.)_
+2. **Design pass** — scaffold → production looks (includes tidying the dark
    theme: the `ui.toggle` white buttons, `bg-gray-*` placeholders, dim
    `text-gray-400`).
-4. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
+3. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
    delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
    view of the local trash folder; a live two-container check of the
    cross-machine lazy-trash path (unit-tested only so far).
+4. **Group-by follow-up** (feature shipped): collapsing a large section lets
+   infinite-scroll race to the end (folded sections have ~no height), so a
+   later Expand-all can redraw many tiles at once. Fine at ≤25k; revisit if it
+   bites — e.g. pause auto-append after N all-collapsed batches.
 
 Older still-open verification work (from before this session):
 
@@ -738,7 +815,10 @@ Older still-open verification work (from before this session):
    re-renders on page load.
 6. **RAW + HEIC** end-to-end with real `.CR2`/`.NEF`/`.HEIC` files — decode via
    embedded preview, RAW **never** written (check mtimes / logs). (The `.venv`
-   now has `rawpy` + `pillow-heif`, so this can be done natively.)
+   now has `rawpy` + `pillow-heif`, so this can be done natively.) _(Partly
+   exercised while testing group-by: a full native index of the sample library
+   incl. `.CR2` + `.HEIC` ran clean, 0 errors — mtime/no-write not yet
+   audited.)_
 7. **Dockerfile caching** (optional): a deps-only pre-layer to cache the ~150 MB
    torch wheel across code changes.
 

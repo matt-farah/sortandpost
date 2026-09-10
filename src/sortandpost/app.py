@@ -12,6 +12,8 @@ CLIP stay off it -- the indexer process, or ``run.io_bound`` for query embedding
 
 from __future__ import annotations
 
+import bisect
+import json
 import logging
 import shutil
 import threading
@@ -52,6 +54,7 @@ from sortandpost.db.browse import (
     get_paths,
     get_photo,
     get_rating,
+    list_group_rows,
     list_photo_ids,
     photo_count,
     unrated_count,
@@ -67,6 +70,7 @@ from sortandpost.db.flags import (
 )
 from sortandpost.db.meta import get_generation
 from sortandpost.db.models import EmbeddingRow, Photo, Prediction, PredictionState, Rating
+from sortandpost.grouping import PhotoGroup, group_photos, parse_folder_sort, parse_mode
 from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.service import run_indexer
 from sortandpost.metadata import ExiftoolClient
@@ -103,27 +107,30 @@ _GRID_RESTORE_JS = """
 (() => {
   history.scrollRestoration = 'manual';
   const s = (history.state && history.state.spGrid) || null;
-  return s ? [Number(s.n) || 0, Number(s.y) || 0] : [0, 0];
+  return s ? [Number(s.n) || 0, Number(s.y) || 0, s.c || []] : [0, 0, []];
 })()
 """
 
 # Written every tick while browsing the grid; returns "near the bottom?".
+# `c` carries the collapsed group-by section keys (group-by mode only) so
+# back/forward returns to the same folded view.
 _GRID_SAVE_JS = (
     "history.replaceState(Object.assign({}, history.state,"
-    " {spGrid: {n: %d, y: Math.round(scrollY)}}), '');"
+    " {spGrid: {n: %d, y: Math.round(scrollY), c: (window.__spCollapsed || [])}}), '');"
     "window.innerHeight + window.scrollY >= document.body.offsetHeight - 1400"
 )
 
 # How many tiles are in the grid's first row -- the step for up/down keyboard
-# focus. Measured from the DOM so it tracks the responsive `auto-fill` reflow.
+# focus. Read from the resolved `grid-template-columns` track list so it tracks
+# the responsive `auto-fill` reflow and ignores full-width group headers (which
+# would break a first-row DOM walk).
 _GRID_COLS_JS = """
 (() => {
-  const g = document.querySelector('.nicegui-grid');
-  if (!g || !g.firstElementChild) return 1;
-  const top = g.firstElementChild.offsetTop;
-  let n = 0;
-  for (const c of g.children) { if (c.offsetTop === top) n++; else break; }
-  return n || 1;
+  const gs = [...document.querySelectorAll('.nicegui-grid')];
+  if (!gs.length) return 1;
+  const g = gs.reduce((a, b) => (b.children.length > a.children.length ? b : a), gs[0]);
+  const tracks = getComputedStyle(g).gridTemplateColumns.split(' ').filter(Boolean).length;
+  return tracks || 1;
 })()
 """
 
@@ -139,6 +146,10 @@ a.group.kb-focus::after,
 }
 a.group.kb-focus .kbreveal,
 .sp-pick.kb-focus .kbreveal { opacity: 1 !important; }
+
+/* keep keyboard scrollIntoView from parking a tile under the fixed app header
+   or a sticky group-by section header */
+.nicegui-grid > a.nicegui-link.group { scroll-margin-top: 4.5rem; }
 """
 
 
@@ -284,17 +295,48 @@ def build_ui(settings: Settings) -> None:
             yield session
 
     @ui.page("/")
-    async def library() -> None:
+    async def library(group: str = "", folder_sort: str = "") -> None:
         _header("/")
         client = ui.context.client  # for a valid slot context after awaits / element deletes
         stack_cfg = settings.config.stacking
+        mode = parse_mode(group)
+        fsort = parse_folder_sort(folder_sort)
         with _session() as session:
             all_ids = list_photo_ids(session)
             stacks = build_stacks(session, stack_cfg)
             flag_n = edit_flag_count(session)
+            group_rows = {r.pixel_hash: r for r in list_group_rows(session)} if mode else {}
         rep_ids = [h for h in all_ids if not stacks.is_hidden_member(h)]
         total = len(rep_ids)
         noun = "stacks" if stack_cfg.enabled and total != len(all_ids) else "photos"
+
+        # Group-by mode: reorder rep_ids into section order. Each section renders
+        # as a clickable header + its own grid (so a section can be folded away
+        # without disturbing the others). `rep_ids` stays the source of truth for
+        # the keyboard index / selection / infinite scroll -- just re-ordered.
+        groups: list[PhotoGroup] = []
+        key_hashes: dict[str, list[str]] = {}  # section key -> its pixel_hashes
+        group_bounds: dict[str, tuple[int, int]] = {}  # key -> [start, end) in rep_ids
+        _seg_starts: list[int] = []  # section start indices, ascending (for bisect)
+        _seg_keys: list[str] = []  # section key at the matching _seg_starts entry
+        collapsed: set[str] = set()  # section keys currently folded shut
+        if mode is not None:
+            ordered = [group_rows[h] for h in rep_ids if h in group_rows]
+            groups = group_photos(ordered, mode, folder_sort=fsort)
+            rep_ids = [h for g in groups for h in g.hashes]
+            at = 0
+            for g in groups:
+                key_hashes[g.key] = g.hashes
+                group_bounds[g.key] = (at, at + len(g.hashes))
+                _seg_starts.append(at)
+                _seg_keys.append(g.key)
+                at += len(g.hashes)
+
+        def _key_for_index(i: int) -> str:
+            """Which section rep_ids[i] belongs to ('' when not in group-by)."""
+            if not _seg_starts:
+                return ""
+            return _seg_keys[bisect.bisect_right(_seg_starts, i) - 1]
 
         # pixel_hash -> "set this tile's flag icon on/off", so bulk actions and
         # "clear all" can repaint the visible tiles without a page reload.
@@ -308,8 +350,55 @@ def build_ui(settings: Settings) -> None:
         flag_toggles: dict[str, Callable[[], Any]] = {}
         writable = State.write_mode == WriteMode.writable
 
+        def _group_url(m: str, fs: str) -> str:
+            if not m:
+                return "/"
+            return f"/?group={m}&folder_sort={fs}" if m == "folder" else f"/?group={m}"
+
         with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
-            counter = ui.label(f"{total} {noun}").classes("text-sm text-gray-500")
+            with ui.row().classes("items-center gap-3"):
+                counter = ui.label(f"{total} {noun}").classes("text-sm text-gray-500")
+                group_toggle = (
+                    ui.toggle(
+                        {
+                            "": "Flat",
+                            "day": "Day",
+                            "month": "Month",
+                            "folder": "Folder",
+                            "camera": "Camera",
+                        },
+                        value=mode or "",
+                    )
+                    .props("no-caps dense")
+                    .tooltip("Group the library into sections")
+                )
+                group_toggle.on_value_change(
+                    lambda e: ui.navigate.to(_group_url(e.value or "", fsort))
+                )
+                if mode == "folder":
+                    fsort_toggle = (
+                        ui.toggle(
+                            {
+                                "newest": "Newest",
+                                "oldest": "Oldest",
+                                "az": "A-Z",
+                                "za": "Z-A",
+                            },
+                            value=fsort,
+                        )
+                        .props("no-caps dense")
+                        .tooltip("Order the folder sections")
+                    )
+                    fsort_toggle.on_value_change(
+                        lambda e: ui.navigate.to(_group_url("folder", e.value or "newest"))
+                    )
+                if mode is not None:
+                    ui.button(icon="unfold_less", on_click=lambda: _set_all_collapsed(True)).props(
+                        "flat dense"
+                    ).tooltip("Collapse every section")
+                    ui.button(icon="unfold_more", on_click=lambda: _set_all_collapsed(False)).props(
+                        "flat dense"
+                    ).tooltip("Expand every section")
             flag_box = ui.row().classes("items-center gap-2")
 
         def _refresh_flag_link(n: int) -> None:
@@ -363,7 +452,48 @@ def build_ui(settings: Settings) -> None:
             )
             return
 
-        grid = _photo_grid()
+        # group-by mode: one clickable header + its own grid per section; flat
+        # mode: a single grid. Both dicts stay empty when not grouping.
+        header_chevrons: dict[str, ui.icon] = {}
+        group_grids: dict[str, ui.grid] = {}
+
+        def _style_chevron(chev: ui.icon, key: str) -> None:
+            # `replace=` (not the default merge) so the old transform is cleared
+            # when a section re-opens, not left stuck at -90deg.
+            deg = "-90deg" if key in collapsed else "0deg"
+            chev.style(replace=f"transition: transform .15s; transform: rotate({deg})")
+
+        def _group_header(g: PhotoGroup) -> None:
+            hdr = (
+                ui.element("div")
+                .classes(
+                    "sticky top-16 z-30 flex w-full items-baseline gap-2 border-b "
+                    "border-gray-200 bg-white/90 px-1 py-1.5 backdrop-blur cursor-pointer "
+                    "hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900/90 "
+                    "dark:hover:bg-gray-800"
+                )
+                .style("user-select: none")
+            )
+            with hdr:
+                chev = ui.icon("expand_more").classes("text-gray-500")
+                _style_chevron(chev, g.key)
+                ui.label(g.label).classes("text-sm font-semibold text-gray-800 dark:text-gray-100")
+                ui.label(f"({g.count})").classes("text-xs text-gray-400")
+                if g.sublabel and g.sublabel != g.label:
+                    ui.label(g.sublabel).classes("truncate text-xs text-gray-400").tooltip(
+                        g.sublabel
+                    )
+            hdr.on("click", lambda k=g.key: _toggle_group(k))
+            header_chevrons[g.key] = chev
+
+        grid: ui.grid | None = None
+        if mode is None:
+            grid = _photo_grid()
+        else:
+            with ui.column().classes("w-full gap-1 p-0"):
+                for g in groups:
+                    _group_header(g)
+                    group_grids[g.key] = _photo_grid()
         spinner = ui.spinner(size="lg").classes("mx-auto my-6")
         loaded = 0
         busy = False
@@ -519,6 +649,45 @@ def build_ui(settings: Settings) -> None:
                     "deselect all"
                 )
 
+        def _render_tiles(container: ui.element, hashes: list[str]) -> None:
+            """Draw the tiles for *hashes* into *container* (one grid). Shared by
+            the infinite-scroll batch and by re-expanding a folded section."""
+            if not hashes:
+                return
+            with _session() as session:
+                by_hash = {
+                    p.pixel_hash: p
+                    for p in session.exec(
+                        select(Photo).where(col(Photo.pixel_hash).in_(hashes))
+                    ).all()
+                }
+                stars_by_hash = {
+                    r.pixel_hash: r.stars
+                    for r in session.exec(
+                        select(Rating).where(col(Rating.pixel_hash).in_(hashes), Rating.stars > 0)
+                    ).all()
+                }
+                flagged_ids = edit_flagged_hashes(session, hashes)
+            with container:
+                for h in hashes:
+                    photo = by_hash.get(h)
+                    if photo is not None:
+                        _thumb_cell(
+                            photo,
+                            thumb_small,
+                            stack_size=stacks.size(h),
+                            selection=sel,
+                            stars=stars_by_hash.get(h, 0),
+                            on_rate=_rate_one,
+                            flagged=h in flagged_ids,
+                            on_flag=_flag_one,
+                            flag_registry=flag_setters,
+                            cell_registry=cell_els,
+                            rating_registry=rating_setters,
+                            flag_toggle_registry=flag_toggles,
+                            on_hover=_on_hover,
+                        )
+
         def append_batch() -> None:
             nonlocal loaded, busy, done
             if busy or done:
@@ -526,42 +695,18 @@ def build_ui(settings: Settings) -> None:
             busy = True
             try:
                 slice_ids = rep_ids[loaded : loaded + _GRID_BATCH]
-                if slice_ids:
-                    with _session() as session:
-                        by_hash = {
-                            p.pixel_hash: p
-                            for p in session.exec(
-                                select(Photo).where(col(Photo.pixel_hash).in_(slice_ids))
-                            ).all()
-                        }
-                        stars_by_hash = {
-                            r.pixel_hash: r.stars
-                            for r in session.exec(
-                                select(Rating).where(
-                                    col(Rating.pixel_hash).in_(slice_ids), Rating.stars > 0
-                                )
-                            ).all()
-                        }
-                        flagged_ids = edit_flagged_hashes(session, slice_ids)
-                    with grid:
-                        for h in slice_ids:
-                            photo = by_hash.get(h)
-                            if photo is not None:
-                                _thumb_cell(
-                                    photo,
-                                    thumb_small,
-                                    stack_size=stacks.size(h),
-                                    selection=sel,
-                                    stars=stars_by_hash.get(h, 0),
-                                    on_rate=_rate_one,
-                                    flagged=h in flagged_ids,
-                                    on_flag=_flag_one,
-                                    flag_registry=flag_setters,
-                                    cell_registry=cell_els,
-                                    rating_registry=rating_setters,
-                                    flag_toggle_registry=flag_toggles,
-                                    on_hover=_on_hover,
-                                )
+                if slice_ids and grid is not None:  # flat mode: one grid
+                    _render_tiles(grid, slice_ids)
+                elif slice_ids:  # group-by: split the slice by section, skip folded ones
+                    i = 0
+                    while i < len(slice_ids):
+                        key = _key_for_index(loaded + i)
+                        j = i
+                        while j < len(slice_ids) and _key_for_index(loaded + j) == key:
+                            j += 1
+                        if key not in collapsed and key in group_grids:
+                            _render_tiles(group_grids[key], slice_ids[i:j])
+                        i = j
                 loaded += len(slice_ids)
                 counter.set_text(
                     f"{loaded} of {total} {noun}" if loaded < total else f"{total} {noun}"
@@ -571,6 +716,54 @@ def build_ui(settings: Settings) -> None:
                     spinner.set_visibility(False)
             finally:
                 busy = False
+
+        def _repaint_header(key: str) -> None:
+            chev = header_chevrons.get(key)
+            if chev is not None:
+                _style_chevron(chev, key)
+
+        def _rebuild_section(key: str) -> None:
+            """Sync one section's grid to its collapsed state: drop its tiles, and
+            (when open) redraw the ones the scroll cursor has already reached."""
+            gg = group_grids.get(key)
+            if gg is None:
+                return
+            for h in key_hashes.get(key, ()):
+                cell_els.pop(h, None)
+                rating_setters.pop(h, None)
+                flag_setters.pop(h, None)
+                flag_toggles.pop(h, None)
+            gg.clear()
+            if key in collapsed:
+                return
+            start, end = group_bounds[key]
+            upto = min(end, loaded)
+            if upto > start:
+                _render_tiles(gg, key_hashes[key][: upto - start])
+
+        def _persist_collapsed() -> None:
+            ui.run_javascript(f"window.__spCollapsed = {json.dumps(sorted(collapsed))}")
+
+        def _toggle_group(key: str) -> None:
+            if key in collapsed:
+                collapsed.discard(key)
+            else:
+                collapsed.add(key)
+                if 0 <= focus[0] < len(rep_ids) and _key_for_index(focus[0]) == key:
+                    _clear_focus()
+            _repaint_header(key)
+            _rebuild_section(key)
+            _persist_collapsed()
+
+        def _set_all_collapsed(collapse: bool) -> None:
+            collapsed.clear()
+            if collapse:
+                collapsed.update(group_bounds)
+                _clear_focus()
+            for key in group_bounds:
+                _repaint_header(key)
+                _rebuild_section(key)
+            _persist_collapsed()
 
         async def _on_tick() -> None:
             nonlocal restoring
@@ -645,6 +838,12 @@ def build_ui(settings: Settings) -> None:
                 return
             delta = step * (await _columns()) if by_row else step
             target = max(0, min(len(rep_ids) - 1, focus[0] + delta))
+            if collapsed:  # step over any folded-away sections in the travel direction
+                direction = 1 if delta >= 0 else -1
+                while 0 <= target < len(rep_ids) and _key_for_index(target) in collapsed:
+                    target += direction
+                if not (0 <= target < len(rep_ids)):
+                    return  # nothing open that way -- leave the ring where it is
             while loaded <= target and not done:
                 append_batch()
             _paint_focus(target)
@@ -715,10 +914,19 @@ def build_ui(settings: Settings) -> None:
         # the saved position while the page is still growing.
         try:
             await ui.context.client.connected()
-            want_n, want_y = await ui.run_javascript(_GRID_RESTORE_JS, timeout=3.0)
+            want_n, want_y, want_c = await ui.run_javascript(_GRID_RESTORE_JS, timeout=3.0)
         except TimeoutError:
             _end_restore()
             return
+        if mode is not None and want_c:  # restore which sections were folded shut
+            reopen = {k for k in want_c if k in group_bounds}
+            if reopen:
+                collapsed.clear()
+                collapsed.update(reopen)
+                for key in reopen:
+                    _repaint_header(key)
+                    _rebuild_section(key)  # drop the first-screenful tiles now hidden
+                _persist_collapsed()
         while loaded < int(want_n) and not done:
             append_batch()
         if want_y:
