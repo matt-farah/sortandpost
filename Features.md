@@ -102,7 +102,24 @@
       name, re-save overwrites, not conflict-merged. New `src/sortandpost/searches.py`
       + `paths.saved_searches_file`. +12 tests.
 ## Design
-- [ ] Flesh out website to move from scaffold to production looks
+- [x] Flesh out website to move from scaffold to production looks
+    - Done (first pass — restyle, layouts unchanged): new `_THEME_CSS` design-token
+      layer in `app.py` (`--sp-bg/-surface/-surface-2/-border/-text/-text-dim/
+      -text-faint/-shadow`, flipped on Quasar's `body--dark`) — "warm editorial":
+      paper `#faf8f4` light / warm near-black `#1b1815` dark. `ui.colors()` sets an
+      **indigo** primary (`#4f46e5`) that flows into every `color=primary` button /
+      selection ring / active nav link / segmented-control active state; amber stays
+      reserved for the keyboard-focus ring + edit flag. `.sp-display` = a system
+      old-style serif stack (Iowan/Palatino → Georgia, no webfont fetch) on the
+      wordmark, group-by section headers, page titles, collection names. Reworked
+      `_header` (warm translucent blurred bar + hairline border, serif wordmark,
+      quiet pill nav links w/ indigo active, read-only/writable as an uppercase
+      chip) and the status-bar footer (warm dark). `.q-btn-toggle` restyled so the
+      dark-mode buttons aren't stark white (warm surface / dim text inactive, solid
+      indigo active, clean edges). `.sp-card` (collections), `.sp-section-header`
+      (group-by), and a shared `_empty_state(icon, title, hint)` helper replacing
+      the bare "No …" one-liners. No layout/structure changes, no schema change,
+      no new deps. More detailed polish deferred to a later pass.
 ## Other pages
 - [x] Tinder style swipe through of unrated images with star ratings 
     - I would like to have random images pulled and I can quickly rate them

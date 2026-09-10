@@ -1,7 +1,81 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-10 (Features.md: Library group-by mode — committed on `scaffold`, PR to `main`)._
+_Last updated: 2026-09-10 (Features.md: Design pass first cut — committed on `scaffold`, PR to `main`)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 🎨 2026-09-10 — Features.md: Design pass (first cut)
+
+**Committed on `scaffold` (PR `scaffold → main`).** `291 tests pass` (no new —
+CSS/UI strings only); ruff + ruff format + mypy (41 gated files incl. `app.py`)
+clean; alembic autogenerate empty (no schema change). Verified with headless
+Chromium against `browser_test_data` — `/`, `/?group=day|folder`, `/collections`
+(+ detail), `/search`, `/settings`, `/rate`, `/photo/{hash}` in **both** light
+and dark — zero JS/console errors.
+
+**Decisions** (asked): aesthetic = **warm editorial** (paper backgrounds, an
+old-style serif for display type); scope = **restyle, keep layouts** (no sidebar,
+no page restructure — lower risk to the fragile scroll-restore / keyboard code);
+accent = **indigo / violet** (`#4f46e5`), amber kept only for the keyboard-focus
+ring + edit flag. User signed off on the first cut ("looks good, ship it"),
+detailed feedback to come later.
+
+**`app.py` only:**
+
+- New module constant **`_THEME_CSS`**, added via
+  `ui.add_css(_THEME_CSS, shared=True)` next to `_GRID_KB_CSS`. Design tokens on
+  `:root` / `body.body--dark`: `--sp-bg` (`#faf8f4` / `#1b1815`), `--sp-surface`,
+  `--sp-surface-2`, `--sp-border`, `--sp-text` + `-dim` + `-faint`, `--sp-shadow`
+  + `-lg`. Component classes: `.sp-display` (serif stack — Iowan Old Style →
+  Palatino → Georgia; **system fonts only**, no webfont fetch), `.sp-muted` /
+  `.sp-faint`, `.sp-appbar`, `.sp-nav` / `.sp-nav-active`, `.sp-chip`,
+  `.sp-statusbar`, `.sp-card`, `.sp-section-header`, `.sp-empty`, plus a
+  `.q-btn-toggle` restyle (warm surface / dim text inactive, solid indigo active,
+  `border-radius: 0` on the inner buttons so the active one doesn't overflow the
+  rounded group — fixes the "stark white toggle in dark mode" note).
+- **`ui.colors(...)`** now called at the top of `_header` (page context): indigo
+  `primary` + matching `secondary`/`accent`/`positive`/`negative`. Flows into
+  every `color=primary` button, `ring-primary`, `bg-primary`, `.sp-nav-active`.
+  Quasar's `.q-layout__section--marginal` (which paints header + footer
+  `bg-primary`) is overridden by `.sp-appbar` / `.sp-statusbar` (specificity
+  `(0,2,0)` + `!important`).
+- **`_header`** rebuilt: warm translucent blurred bar + hairline bottom border
+  (was solid `bg-primary` blue), serif wordmark that links to `/`, tiny dim
+  version, nav as quiet `.sp-nav` pill links with an indigo active state,
+  read-only/writable rendered as an uppercase `.sp-chip`.
+- **`_status_bar`** footer: `.sp-statusbar` (warm dark `#201b15`) replacing
+  `bg-gray-800 text-gray-200`.
+- **`_empty_state(icon, title, hint="")`** helper (centred icon + serif title +
+  hint) replaces the bare `ui.label("No …").classes("m-4 text-gray-500")` at:
+  library `total == 0`, `/collections` empty, `photo_detail` not-found,
+  `collection_detail` not-found.
+- Targeted class swaps (no structure change): group-by `_group_header` →
+  `.sp-section-header` + serif label; collections `_card` → `.sp-card`, `_mosaic`
+  placeholders → `var(--sp-surface-2)`; bulk toolbar pill → warm `rgba(32,27,21,.96)`;
+  `collection_detail` title + `settings_page` ("Settings" h2 added) → `.sp-display`;
+  a handful of `text-gray-400/500` counters → `.sp-muted` / `.sp-faint`.
+
+**NiceGUI notes (this round):**
+
+- `ui.header` / `ui.footer` get their default colour from Quasar's
+  `.q-layout__section--marginal { background: var(--q-primary); color:#fff }` (in
+  `quasar.unimportant.css`, specificity `(0,1,0)`) — **not** from a class NiceGUI
+  adds. Override with a `(0,2,0)` selector like `.sp-appbar.q-header`.
+- `ui.colors()` needs a page/slot context — call it inside a per-page function
+  (`_header`), not in `build_ui` (which runs once at startup, no context).
+  `ui.add_css(..., shared=True)` is the opposite — fine in `build_ui`, global.
+- NiceGUI 3.16 dark mode = Quasar's `body.body--dark` class (also drives the
+  UnoCSS `dark:` variant). Token overrides key off `body.body--dark`.
+- The deep-in-the-grid `bg-gray-100/200` tile placeholders were left alone
+  (behind photos, near-invisible) — `_THEME_CSS` does **not** retint Tailwind/
+  UnoCSS utility classes wholesale (specificity war, fragile); it swaps at call
+  sites and adds semantic `.sp-*` classes instead.
+
+**Not done / follow-ups:** the user will send detailed feedback later — likely
+card definition strength, how far the serif leans, header density, accent
+weight, input/field styling, `/search` + `/review` + `/photo` fit. Photo-page
+layout + `/review` grid density untouched this pass.
 
 ---
 
@@ -793,10 +867,15 @@ Remaining `Features.md` items (unchecked, roughly in priority order):
    text, upload + schedule via the robopost.app API; API key → `.env`,
    per-machine, never synced). **Build on Collections** — a collection is
    already an ordered photo group + a notes field. _(swipe-triage `/rate` page,
-   Collections, Library group-by — done.)_
-2. **Design pass** — scaffold → production looks (includes tidying the dark
-   theme: the `ui.toggle` white buttons, `bg-gray-*` placeholders, dim
-   `text-gray-400`).
+   Collections, Library group-by — done.)_ **This is the last unchecked
+   `Features.md` item.**
+
+Follow-ups on shipped features:
+
+2. **Design pass — round 2** (first cut shipped 2026-09-10, `[x]` in
+   `Features.md`; user sending detailed feedback later). Likely: card-definition
+   strength, how far the serif leans, header density, accent weight, `ui.input`
+   / `q-field` styling, `/search` + `/review` + `/photo` fit, photo-page layout.
 3. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
    delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
    view of the local trash folder; a live two-container check of the
