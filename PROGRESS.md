@@ -1,7 +1,39 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-10 (online-only / cloud placeholder file handling — committed on `scaffold`, PR to `main`)._
+_Last updated: 2026-09-10 (native-first runtime + real CLIP on MPS validated; v2 split — merged to `main`)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 🚀 2026-09-10 — Native-first runtime + real CLIP validated (PR #13)
+
+**Merged to `main`.** `338 tests pass`; ruff/format/mypy clean; alembic empty.
+
+**Decision.** Docker was the assumed runtime but never actually run in this
+project — every test session has been a native `.venv` run. For a personal
+desktop tool it's the wrong default: Docker Desktop is a heavy dependency,
+bind-mount scans are slow on mac/Windows, CLIP can't use MPS in the container,
+and "Reveal in Finder" needs the out-of-container helper. **Native is now the
+primary runtime; Docker is reframed as the server / NAS / headless option**
+(both still supported — the codebase already runs both). Full v2 backlog in
+`V2.md` (repo root), including "flesh out Docker for NAS/server".
+
+**CLIP device auto-detect.** `clip/model.py` `_resolve_device()`: `device:
+"auto"` → `cuda` / Apple `mps` / `cpu`. Default flipped `cpu` → `auto` in
+`ClipConfig` + `config.default.yaml` + `CLAUDE.md`. Docker still lands on cpu
+(no passthrough). Encoders use the resolved `self.device`.
+
+**First real CLIP run, ever.** Installed `torch` 2.14 + `open-clip-torch` +
+`watchdog` into `.venv`; indexed the ~300-photo sample library on **MPS**:
+model loads on `mps`, 0 errors, embeddings finite + L2-normalized, semantic
+search returns differentiated sensible hits, `/review` + photo-page suggestion
+chips populate. **Boots and serves fully offline** (`HF_HUB_OFFLINE=1`) from
+the cached weights in `<APP_DATA>/local/models/` (~577 MB, ViT-B-32
+laion2b_s34b_b79k). `watchdog.*` moved into the `follow_imports=skip` mypy
+group (no stubs).
+
+**Social media post composer → v2.** The one remaining `Features.md` item is
+deferred; v1 is the "organize" half.
 
 ---
 
@@ -1004,47 +1036,25 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-Remaining `Features.md` items (unchecked, roughly in priority order):
+**All `Features.md` items are done or deferred.** The social composer and the
+full backlog are in **`V2.md`** (repo root). What's left before calling v1
+"production":
 
-1. Other pages — **robopost.app social composer** (group images into a post with
-   text, upload + schedule via the robopost.app API; API key → `.env`,
-   per-machine, never synced). **Build on Collections** — a collection is
-   already an ordered photo group + a notes field. _(swipe-triage `/rate` page,
-   Collections, Library group-by — done.)_ **This is the last unchecked
-   `Features.md` item.**
+1. **RAW + HEIC no-write audit** — index real `.CR2` / `.NEF` / `.HEIC`, then
+   rate one and confirm the RAW file's mtime / bytes are untouched (hard
+   constraint #2). `.venv` has `rawpy` + `pillow-heif` + `torch` now. A full
+   native index incl. `.CR2` + `.HEIC` has run clean (0 errors) — the no-write
+   property just isn't formally audited.
+2. **In-app indexer lock re-check** — a web session that starts read-only never
+   promotes itself to indexing until restart (`manager.refresh()` never called
+   in-app; the standalone `python -m sortandpost.indexer` does re-check).
+   Harmless single-machine; matters with two machines on one sync folder.
+3. **Browser smoke** of the non-feature surface: `/review` bulk approve/reject,
+   `/settings` "run indexer pass now", the status-bar footer, a live
+   read-only→writable header promotion.
 
-Follow-ups on shipped features:
-
-2. **Design pass — round 2** (first cut shipped 2026-09-10, `[x]` in
-   `Features.md`; user sending detailed feedback later). Likely: card-definition
-   strength, how far the serif leans, header density, accent weight, `ui.input`
-   / `q-field` styling, `/search` + `/review` + `/photo` fit, photo-page layout.
-3. **Bulk-delete follow-ups** (feature itself is done): an in-app "undo last
-   delete" using the managed `local/trash/<ts>/manifest.json`; a `/settings`
-   view of the local trash folder; a live two-container check of the
-   cross-machine lazy-trash path (unit-tested only so far).
-4. **Group-by follow-up** (feature shipped): collapsing a large section lets
-   infinite-scroll race to the end (folded sections have ~no height), so a
-   later Expand-all can redraw many tiles at once. Fine at ≤25k; revisit if it
-   bites — e.g. pause auto-append after N all-collapsed batches.
-
-Older still-open verification work (from before this session):
-
-5. **Browser smoke** of the non-feature surface at `http://localhost:8080`:
-   `/review` bulk approve/reject, `/settings` "run indexer pass now", the
-   status-bar footer, read-only banner. Confirm the `_header` banner (not just
-   the footer) reflects a live read-only→writable promotion — it currently only
-   re-renders on page load.
-6. **RAW + HEIC** end-to-end with real `.CR2`/`.NEF`/`.HEIC` files — decode via
-   embedded preview, RAW **never** written (check mtimes / logs). (The `.venv`
-   now has `rawpy` + `pillow-heif`, so this can be done natively.) _(Partly
-   exercised while testing group-by: a full native index of the sample library
-   incl. `.CR2` + `.HEIC` ran clean, 0 errors — mtime/no-write not yet
-   audited.)_
-7. **Dockerfile caching** (optional): a deps-only pre-layer to cache the ~150 MB
-   torch wheel across code changes.
-
-Full caveat list is in **"Open threads / not blocking"** near the bottom.
+Everything else (design pass 2, bulk-delete undo, group-by scroll race,
+Dockerfile caching, `/search` filter widgets, Docker/NAS hardening) → `V2.md`.
 
 ---
 
