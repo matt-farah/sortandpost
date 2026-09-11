@@ -12,7 +12,7 @@ from collections.abc import Collection
 from sqlalchemy import or_
 from sqlmodel import Session, col, func, select
 
-from sortandpost.db.models import Photo, PhotoPath, Rating
+from sortandpost.db.models import Photo, PhotoPath, Rating, ScanState
 from sortandpost.grouping import GroupRow
 
 _ALL_ROWS = 1 << 62  # "no limit" for SQLite, without widening list_photos' signature
@@ -113,6 +113,13 @@ def unrated_photo_ids(
         stmt = stmt.where(col(Photo.pixel_hash).not_in(list(exclude)))
     stmt = stmt.order_by(func.random()).limit(limit)
     return list(session.exec(stmt).all())
+
+
+def online_only_count(session: Session) -> int:
+    """How many library files are cloud placeholders the indexer skipped
+    (recorded but not downloaded -- see :mod:`sortandpost.indexer.placeholder`)."""
+    stmt = select(func.count()).select_from(ScanState).where(col(ScanState.online_only).is_(True))
+    return int(session.exec(stmt).one())
 
 
 def get_photo(session: Session, pixel_hash: str) -> Photo | None:

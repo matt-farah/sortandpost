@@ -10,11 +10,12 @@ from sortandpost.db.browse import (
     get_photo,
     get_rating,
     list_photos,
+    online_only_count,
     photo_count,
     unrated_count,
     unrated_photo_ids,
 )
-from sortandpost.db.models import Photo, PhotoPath, Rating
+from sortandpost.db.models import Photo, PhotoPath, Rating, ScanState
 
 _BASE = datetime(2020, 1, 1, tzinfo=UTC)
 
@@ -63,6 +64,17 @@ def test_count_and_list_exclude_missing_by_default(engine: Engine) -> None:
         assert photo_count(s, include_missing=True) == 2
         assert [p.primary_path for p in list_photos(s)] == ["/library/a.jpg"]
         assert len(list_photos(s, include_missing=True)) == 2
+
+
+def test_online_only_count(engine: Engine) -> None:
+    with Session(engine) as s:
+        s.add(ScanState(path="/library/a.jpg", online_only=True))
+        s.add(ScanState(path="/library/b.jpg", online_only=True))
+        s.add(ScanState(path="/library/c.jpg", online_only=False))
+        s.commit()
+
+    with Session(engine) as s:
+        assert online_only_count(s) == 2
 
 
 def test_pagination_offset_and_limit(engine: Engine) -> None:

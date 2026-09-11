@@ -231,6 +231,39 @@ def test_parallel_scan_falls_back_to_inline_when_pool_breaks(
         assert len(s.exec(select(Photo)).all()) == 10
 
 
+def test_online_only_file_is_recorded_not_indexed(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "stub.jpg")
+
+    monkeypatch.setattr("sortandpost.indexer.workers.is_online_only", lambda _st: True)
+    stats = scan_once(settings)
+    assert stats.online_only == 1
+    assert stats.indexed == 0
+
+    with _session(settings) as s:
+        assert s.exec(select(Photo)).all() == []
+        state = s.get(ScanState, str(lib / "stub.jpg"))
+        assert state is not None
+        assert state.online_only is True
+        assert state.attempts == 0
+
+    # A second pass re-checks it cheaply and still does not count it as an error.
+    again = scan_once(settings)
+    assert again.online_only == 1
+    with _session(settings) as s:
+        assert s.get(ScanState, str(lib / "stub.jpg")).attempts == 0
+
+    # Once the bytes are local (detector returns False) it indexes normally.
+    monkeypatch.setattr("sortandpost.indexer.workers.is_online_only", lambda _st: False)
+    final = scan_once(settings)
+    assert final.indexed == 1
+    with _session(settings) as s:
+        assert len(s.exec(select(Photo)).all()) == 1
+        assert s.get(ScanState, str(lib / "stub.jpg")).online_only is False
+
+
 @pytest.mark.skipif(not _HAS_EXIFTOOL, reason="exiftool not on PATH")
 def test_embedded_metadata_lands_on_photo_row(settings: Settings) -> None:
     lib = _lib(settings)

@@ -51,6 +51,7 @@ class IndexOutcome:
     pixel_hash: str | None = None
     skipped: bool = False
     tombstoned: bool = False  # pixel_hash was deleted by the user; not re-indexed
+    online_only: bool = False  # a cloud placeholder we recorded but did not download
     new_photo: bool = False
     thumbnails_written: tuple[int, ...] = ()
     reconcile: ReconcileOutcome | None = None
@@ -63,6 +64,7 @@ class PipelineConfig:
     thumbnail_format: str
     thumbnail_quality: int
     thumbnail_path: ThumbPathFn
+    online_only_mode: str = "skip"  # "skip" defers cloud placeholders; "download" decodes them
 
 
 # --------------------------------------------------------------------------- #
@@ -100,6 +102,7 @@ def index_file(
         sizes=config.thumbnail_sizes,
         fmt=config.thumbnail_format,
         quality=config.thumbnail_quality,
+        online_only_mode=config.online_only_mode,
     )
     return persist_decoded(session, decoded, exiftool=exiftool, device_id=device_id, now=now)
 
@@ -126,6 +129,15 @@ def persist_decoded(
     scan.size = decoded.size
     scan.mtime_ns = decoded.mtime_ns
     scan.error = None
+    scan.online_only = False
+
+    # -- cloud placeholder we chose not to download --------------------- #
+    # Not a failure: don't bump `attempts`. `needs_reindex` keeps returning
+    # True while the flag is set, so a later hydrate + rescan indexes it.
+    if decoded.online_only:
+        scan.online_only = True
+        scan.stages_done = int(Stage.STAT)
+        return IndexOutcome(path=path, online_only=True)
 
     if decoded.error is not None:
         scan.error = f"{decoded.failed_stage}: {decoded.error}"[:500]
@@ -213,6 +225,8 @@ def persist_decoded(
 def needs_reindex(scan: ScanState | None, size: int, mtime_ns: int) -> bool:
     if scan is None:
         return True
+    if scan.online_only:
+        return True  # cheap: the worker re-checks the stat and defers again if still a stub
     if scan.error is not None:
         return scan.attempts < _MAX_ATTEMPTS
     if scan.size != size or scan.mtime_ns != mtime_ns:

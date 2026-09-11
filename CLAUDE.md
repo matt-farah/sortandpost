@@ -229,6 +229,7 @@ indexer:
   full_scan_interval_min: 15
   workers: auto
   clip_deferred: true              # make photos browsable first, run CLIP after
+  online_only: skip                # cloud placeholder stubs: "skip" (record, don't fetch) | "download"
 rating: { write_windows_compat_tags: true }
 deletion:
   stack_scope: selected             # "selected" = only the clicked photo; "whole_stack" = every stack member
@@ -351,7 +352,13 @@ real path in `scan_state`, each stage idempotent and separately resumable:
 
 1. **stat + fast path** — `(size, mtime_ns)` unchanged and fully indexed ⇒ skip. (Our own EXIF
    writes bump mtime; that only triggers a metadata refresh, not re-thumbnail/re-embed, because
-   the pixel hash is unchanged.)
+   the pixel hash is unchanged.) A cloud **online-only placeholder** (OneDrive / Drive / Dropbox
+   / iCloud stub whose bytes aren't on disk) is detected here from the `stat` alone
+   (`sortandpost.indexer.placeholder.is_online_only`) and, when `indexer.online_only == "skip"`,
+   recorded as `scan_state.online_only` and left untouched — `attempts` is **not** bumped (it is
+   a deferral, not a failure). The `/` banner + `/settings` "Download & index" action
+   (`sortandpost.indexer.hydrate`) does a bounded read to force the download, then a normal scan
+   indexes it. `online_only: "download"` hydrates every stub the scan meets instead.
 2. **decode** — Pillow / pillow-heif / rawpy. RAW uses the largest embedded preview for
    determinism and speed (full demosaic only if no preview exists).
 3. **pixel hash** — `sha256(rgb_bytes)`. Upsert `photos` (unique on `pixel_hash`). Same hash at

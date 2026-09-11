@@ -56,6 +56,7 @@ from sortandpost.db.browse import (
     get_rating,
     list_group_rows,
     list_photo_ids,
+    online_only_count,
     photo_count,
     unrated_count,
     unrated_photo_ids,
@@ -73,6 +74,7 @@ from sortandpost.db.models import EmbeddingRow, Photo, Prediction, PredictionSta
 from sortandpost.grouping import PhotoGroup, group_photos, parse_folder_sort, parse_mode
 from sortandpost.helper import HelperInfo, read_helper_info
 from sortandpost.indexer import scan_clip_once, scan_once
+from sortandpost.indexer.hydrate import hydrate_online_only
 from sortandpost.indexer.service import run_indexer
 from sortandpost.library_roots import (
     LibraryRoot,
@@ -467,6 +469,7 @@ def build_ui(settings: Settings) -> None:
             all_ids = list_photo_ids(session)
             stacks = build_stacks(session, stack_cfg)
             flag_n = edit_flag_count(session)
+            cloud_n = online_only_count(session)
             group_rows = {r.pixel_hash: r for r in list_group_rows(session)} if mode else {}
         rep_ids = [h for h in all_ids if not stacks.is_hidden_member(h)]
         total = len(rep_ids)
@@ -607,6 +610,30 @@ def build_ui(settings: Settings) -> None:
                 )
 
         _refresh_flag_link(flag_n)
+
+        if cloud_n > 0:
+            cloud_banner = ui.row().classes(
+                "mx-4 mt-2 items-center gap-3 rounded-md border border-amber-300 "
+                "bg-amber-50 px-3 py-2 text-sm text-amber-800 "
+                "dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+            )
+            with cloud_banner:
+                _n_txt = "1 photo is" if cloud_n == 1 else f"{cloud_n} photos are"
+                ui.label(f"⛅ {_n_txt} online-only and weren't downloaded.").classes("flex-1")
+
+                async def _download_cloud() -> None:
+                    ui.notify("downloading online-only files…")
+                    result = await nicegui_run.io_bound(_run_hydrate_pass, settings, engine)
+                    ui.notify(result)
+                    ui.navigate.reload()
+
+                if writable:
+                    ui.button(
+                        "Download & index", icon="cloud_download", on_click=_download_cloud
+                    ).props("flat dense size=sm color=amber-9")
+                ui.button(icon="close", on_click=lambda: cloud_banner.set_visibility(False)).props(
+                    "flat dense round size=sm"
+                ).tooltip("dismiss")
 
         if total == 0:
             _empty_state(
@@ -2150,6 +2177,7 @@ def build_ui(settings: Settings) -> None:
             )
             total = photo_count(session, include_missing=True)
             present = photo_count(session)
+            cloud_n = online_only_count(session)
         snaps = sorted(settings.paths.snapshots_dir.glob("*.db.zst"))
         last_pub = getattr(manager, "_last_publish_at", None)
 
@@ -2172,6 +2200,7 @@ def build_ui(settings: Settings) -> None:
                 ", ".join(r.container for r in settings.library_roots) or "— none set —",
             ),
             ("Photos", f"{present} indexed · {total - present} missing"),
+            ("Online-only", f"{cloud_n} not downloaded" if cloud_n else "0"),
             ("CLIP model", f"{ccfg.model} / {ccfg.pretrained} on {ccfg.device}"),
             ("CLIP embeddings", str(embeddings)),
             ("Predictions", f"{pending} pending · {approved} approved"),
@@ -2204,6 +2233,7 @@ def build_ui(settings: Settings) -> None:
 
                 ui.button("Run indexer pass now", on_click=_scan_now)
                 _exclude_editor(settings, engine)
+                _online_only_editor(settings, engine, cloud_n)
                 _stacking_editor(settings)
                 _deletion_editor(settings)
             else:
@@ -2331,6 +2361,15 @@ def _run_index_pass(settings: Settings, engine: Engine) -> str:
     except ClipModelUnavailable:
         return f"{stats}  |  CLIP: skipped (torch / open-clip not installed)"
     return f"{stats}  |  {clip_stats}"
+
+
+def _run_hydrate_pass(settings: Settings, engine: Engine) -> str:
+    """Off the event loop (``run.io_bound``): download every recorded online-only
+    file, then run a normal index pass so they land in the library."""
+    hy = hydrate_online_only(settings)
+    if hy.hydrated == 0:
+        return str(hy)
+    return f"{hy}  |  {_run_index_pass(settings, engine)}"
 
 
 def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decision: str) -> int:
@@ -2899,6 +2938,48 @@ def _exclude_editor(settings: Settings, engine: Engine) -> None:
 
     ui.button("Save & rescan", on_click=_save).props("color=primary")
     render()
+
+
+def _online_only_editor(settings: Settings, engine: Engine, cloud_n: int) -> None:
+    """`/settings` editor for cloud "online-only" placeholder files. Toggles
+    ``indexer.online_only`` (``skip`` / ``download``) in ``config.yaml`` and
+    offers a one-shot "Download & index" for the files already recorded."""
+    icfg = settings.config.indexer
+
+    ui.label("Online-only files").classes("font-bold mt-4")
+    ui.label(
+        "Cloud sync tools (OneDrive, Google Drive, Dropbox, iCloud) can leave "
+        "placeholder stubs whose real bytes download only when opened. “Skip” "
+        "records them without downloading; “Download” hydrates every one the "
+        "scanner meets. Either way you can pull the recorded ones now."
+    ).classes("text-xs sp-faint max-w-xl")
+
+    mode = ui.toggle(
+        {"skip": "Skip (don't download)", "download": "Download while scanning"},
+        value=icfg.online_only if icfg.online_only in ("skip", "download") else "skip",
+    ).props("no-caps dense")
+
+    def _save_mode(e: Any) -> None:
+        icfg.online_only = e.value or "skip"
+        settings.config.dump(settings.paths.config_file)
+        ui.notify(f"online-only mode: {icfg.online_only}")
+
+    mode.on_value_change(_save_mode)
+
+    status = ui.label(
+        f"{cloud_n} file(s) currently recorded as online-only." if cloud_n else "None recorded."
+    ).classes("text-xs sp-faint")
+
+    async def _download_now() -> None:
+        ui.notify("downloading online-only files…")
+        result = await nicegui_run.io_bound(_run_hydrate_pass, settings, engine)
+        ui.notify(result)
+        status.set_text("Done — reload the library to see them.")
+
+    btn = ui.button(
+        "Download & index recorded files", icon="cloud_download", on_click=_download_now
+    )
+    btn.set_visibility(cloud_n > 0)
 
 
 def _empty_state(icon: str, title: str, hint: str = "") -> None:

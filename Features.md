@@ -58,6 +58,15 @@
       mutates compose or restarts itself). Pasted paths are de-quoted; the
       scanner now skips an unreadable dir (macOS data-vault / locked mount)
       instead of aborting the whole pass. +29 tests.
+    - Done (2026-09-10): cloud **online-only placeholder files** (OneDrive /
+      Drive / Dropbox / iCloud stubs whose bytes aren't on disk) are detected
+      from the `stat` alone (`indexer/placeholder.py`) and, by default
+      (`indexer.online_only: skip`), recorded as `scan_state.online_only` and
+      left alone rather than force-downloading a whole dehydrated library on the
+      first scan. A `/` banner + a `/settings` "Online-only files" editor
+      (skip / download toggle) surface the count and a "Download & index" action
+      (`indexer/hydrate.py`: bounded read to trigger the fetch, then a normal
+      scan). No schema migration (new column absorbed by the baseline). +10 tests.
 - [x] Move from paginated version to infinite scroll that loads images as needed
     - Done: 80/batch, appends near bottom, header counter, no more ?page= URLs
 - [x] Keyboard navigation & shortcuts

@@ -89,6 +89,10 @@ class IndexerConfig(BaseModel):
     run_in_app: bool = True  # run the continuous indexer inside the web app process
     watch: bool = True  # react to filesystem events (needs `watchdog`), not just the timer
     debounce_sec: float = 2.0  # quiet period after an FS event before a rescan
+    # What to do with cloud "online-only" placeholder files (OneDrive / Drive /
+    # Dropbox / iCloud stubs whose bytes aren't on disk). "skip" records them and
+    # leaves them alone; "download" hydrates every file it meets while scanning.
+    online_only: Literal["skip", "download"] = "skip"
     # Directory names to skip entirely while scanning (case-insensitive, matched
     # at any depth), e.g. ["RAW", "af", "Lightroom"]. Photos already indexed from
     # a newly-excluded folder fall out of the library on the next scan.

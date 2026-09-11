@@ -45,6 +45,7 @@ indexer:
   run_in_app: true                # run the continuous indexer inside the web app process
   watch: true                     # react to filesystem events (needs `watchdog`), not just the timer
   debounce_sec: 2.0               # quiet period after an FS event before a rescan
+  online_only: skip               # cloud placeholder stubs: "skip" (record, don't download) or "download"
   exclude_dir_names: []           # folder names to skip while scanning, e.g. ["RAW", "af"] (case-insensitive)
 
 rating:

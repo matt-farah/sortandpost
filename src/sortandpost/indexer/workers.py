@@ -22,6 +22,7 @@ from pathlib import Path
 from sortandpost.dedup import dhash
 from sortandpost.hashing import pixel_hash_of_image
 from sortandpost.indexer.decode import DecodeError, load_image
+from sortandpost.indexer.placeholder import is_online_only
 from sortandpost.indexer.thumbnails import ThumbPathFn, write_thumbnails
 from sortandpost.metadata import is_raw
 from sortandpost.paths import Paths
@@ -45,6 +46,7 @@ class DecodedFile:
     thumbnails_written: tuple[int, ...] = ()
     error: str | None = None
     failed_stage: str | None = None  # "decode" | "thumbnail"
+    online_only: bool = False  # a cloud placeholder we skipped (not an error)
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,7 @@ class DecodeJob:
     thumb_sizes: tuple[int, ...]
     thumb_fmt: str
     thumb_quality: int
+    online_only_mode: str = "skip"  # "skip" defers cloud placeholders; "download" decodes them
 
 
 def decode_local(
@@ -64,11 +67,17 @@ def decode_local(
     sizes: tuple[int, ...],
     fmt: str,
     quality: int,
+    online_only_mode: str = "skip",
 ) -> DecodedFile:
     """Run stages 2-4 (decode, pixel hash + dhash, thumbnails) for one file.
 
     Used directly on the main thread for the serial path and small scans; the
     parallel path calls :func:`decode_file` in a worker, which wraps this.
+
+    When ``online_only_mode == "skip"`` and *path* is a cloud placeholder whose
+    bytes are not local (:func:`sortandpost.indexer.placeholder.is_online_only`),
+    it returns early with ``online_only=True`` and no decode -- so a first scan
+    of a dehydrated library does not pull every file down.
     """
     key = str(path)
     try:
@@ -76,6 +85,15 @@ def decode_local(
     except OSError as exc:
         return DecodedFile(
             path=key, size=0, mtime_ns=0, error=f"stat: {exc}", failed_stage="decode"
+        )
+
+    if online_only_mode == "skip" and is_online_only(st):
+        return DecodedFile(
+            path=key,
+            size=st.st_size,
+            mtime_ns=st.st_mtime_ns,
+            is_raw=is_raw(path),
+            online_only=True,
         )
 
     out = DecodedFile(path=key, size=st.st_size, mtime_ns=st.st_mtime_ns, is_raw=is_raw(path))
@@ -118,4 +136,5 @@ def decode_file(job: DecodeJob, path_str: str) -> DecodedFile:
         sizes=job.thumb_sizes,
         fmt=job.thumb_fmt,
         quality=job.thumb_quality,
+        online_only_mode=job.online_only_mode,
     )
