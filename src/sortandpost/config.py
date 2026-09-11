@@ -65,7 +65,7 @@ class SyncConfig(BaseModel):
 class ClipConfig(BaseModel):
     model: str = "ViT-B-32"
     pretrained: str = "laion2b_s34b_b79k"
-    device: str = "cpu"
+    device: str = "auto"  # "auto" -> cuda / mps / cpu; or force "cpu" / "mps" / "cuda"
     batch_size: int = 16
 
 

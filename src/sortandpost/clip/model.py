@@ -7,8 +7,9 @@ Call :func:`clip_available` before constructing a :class:`ClipModel` where the
 caller must degrade gracefully (the web app), or catch
 :class:`ClipModelUnavailable` from :meth:`ClipModel.load`.
 
-The model runs on CPU by default (no MPS/CUDA inside Docker on macOS). Both
-encoders return an L2-normalized ``float32`` matrix, shape ``(n, dim)``.
+``clip.device`` defaults to ``"auto"`` -> CUDA / Apple MPS / CPU for whatever
+the host has (a Docker container gets CPU -- no MPS/CUDA passthrough on macOS).
+Both encoders return an L2-normalized ``float32`` matrix, shape ``(n, dim)``.
 """
 
 from __future__ import annotations
@@ -58,6 +59,23 @@ def known_dim(model: str) -> int | None:
     return KNOWN_DIMS.get(model)
 
 
+def _resolve_device(requested: str) -> str:
+    """Map ``"auto"`` to the best backend this host has; pass anything else
+    through. ``"auto"`` picks CUDA, then Apple MPS, then CPU -- so a native run
+    on Apple Silicon uses the GPU while a Docker container (no passthrough)
+    lands on CPU."""
+    want = (requested or "auto").strip().lower()
+    if want != "auto":
+        return want
+    if torch is None:  # pragma: no cover - guarded by load() before this runs
+        return "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 class ClipModel:
     """Lazily-loaded CLIP encoder pair. Safe to construct without ``torch``;
     :meth:`load` (called implicitly by the encoders) raises if it is missing."""
@@ -69,6 +87,9 @@ class ClipModel:
         self._preprocess: Any = None
         self._tokenizer: Any = None
         self._dim: int | None = KNOWN_DIMS.get(config.model)
+        # Resolved on load(): "auto" -> mps / cuda / cpu for whatever this host
+        # has. Stays "cpu" under Docker (no MPS/CUDA passthrough on macOS).
+        self.device: str = config.device
 
     @property
     def name(self) -> str:
@@ -95,13 +116,14 @@ class ClipModel:
                 "CLIP indexing or run the app in Docker"
             ) from _IMPORT_ERROR
 
+        self.device = _resolve_device(self.config.device)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         torch.set_num_threads(max(1, (os.cpu_count() or 2) - 1))
         model, _, preprocess = open_clip.create_model_and_transforms(
             self.config.model,
             pretrained=self.config.pretrained,
             cache_dir=str(self.cache_dir),
-            device=self.config.device,
+            device=self.device,
         )
         model.eval()
         self._model = model
@@ -111,7 +133,7 @@ class ClipModel:
             "loaded CLIP %s / %s on %s",
             self.config.model,
             self.config.pretrained,
-            self.config.device,
+            self.device,
         )
 
     # -- encoders ------------------------------------------------------- #
@@ -126,7 +148,7 @@ class ClipModel:
             for start in range(0, len(images), batch_size):
                 batch = images[start : start + batch_size]
                 tensor = torch.stack([self._preprocess(im.convert("RGB")) for im in batch])
-                tensor = tensor.to(self.config.device)
+                tensor = tensor.to(self.device)
                 feats = self._model.encode_image(tensor).float()
                 feats = feats / feats.norm(dim=-1, keepdim=True).clamp_min(1e-12)
                 chunks.append(feats.cpu().numpy().astype(np.float32))
@@ -139,7 +161,7 @@ class ClipModel:
         if not texts:
             return np.zeros((0, self._dim or 0), dtype=np.float32)
         assert self._model is not None and self._tokenizer is not None
-        tokens = self._tokenizer(texts).to(self.config.device)
+        tokens = self._tokenizer(texts).to(self.device)
         with torch.inference_mode():
             feats = self._model.encode_text(tokens).float()
             feats = feats / feats.norm(dim=-1, keepdim=True).clamp_min(1e-12)

@@ -22,7 +22,7 @@ sync:
 clip:
   model: ViT-B-32
   pretrained: laion2b_s34b_b79k
-  device: cpu
+  device: auto                    # auto -> cuda / Apple MPS / cpu (Docker gets cpu); or force cpu/mps/cuda
   batch_size: 16
 
 tagging:

@@ -60,14 +60,15 @@ strict = true
 plugins = []
 # SQLModel/NiceGUI ship partial stubs; don't fail the build on their internals.
 [[tool.mypy.overrides]]
-module = ["nicegui.*", "watchdog.*", "send2trash.*"]
+module = ["nicegui.*", "send2trash.*"]
 ignore_missing_imports = true
 
 # These ship no stubs at all. `follow_imports = skip` makes them `Any` whether or
 # not they happen to be importable, so the type check doesn't depend on which
-# optional heavy deps are installed in the current env.
+# optional heavy deps are installed in the current env (torch/open-clip/watchdog
+# are absent in the light dev venv, present in Docker and a full native setup).
 [[tool.mypy.overrides]]
-module = ["rawpy.*", "open_clip.*", "torch.*", "pillow_heif.*"]
+module = ["rawpy.*", "open_clip.*", "torch.*", "pillow_heif.*", "watchdog.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 

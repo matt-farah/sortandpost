@@ -70,7 +70,7 @@ updated as decisions are made or changed.
 | DB                 | SQLite via SQLModel/SQLAlchemy, migrations via Alembic |
 | Embedded metadata  | `exiftool` as a persistent `-stay_open` subprocess |
 | Image decode       | Pillow + pillow-heif (HEIC); `rawpy`/LibRaw for RAW (embedded preview) |
-| ML                 | `open_clip_torch`, default `ViT-B-32` / `laion2b_s34b_b79k`, CPU |
+| ML                 | `open_clip_torch`, default `ViT-B-32` / `laion2b_s34b_b79k`; `device: auto` (MPS/CUDA/CPU) |
 | Vector search      | NumPy brute-force cosine over a memory-mapped `float32` matrix (target ≤ ~25k photos) |
 | Compression        | `zstandard` for DB snapshots |
 | Filesystem watch   | `watchdog` |
@@ -217,7 +217,7 @@ sync:
 clip:
   model: ViT-B-32
   pretrained: laion2b_s34b_b79k
-  device: cpu
+  device: auto        # auto -> cuda / Apple MPS / cpu; Docker on macOS always lands on cpu
   batch_size: 16
 tagging:
   vocab_file: tags.yaml
