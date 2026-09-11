@@ -195,6 +195,10 @@ class ScanState(SQLModel, table=True):
     indexed_at: datetime | None = None
     error: str | None = None
     attempts: int = 0
+    # A cloud "online-only" placeholder we chose not to download (see
+    # sortandpost.indexer.placeholder). Not an error -- attempts stays put; the
+    # user hydrates it on demand (sortandpost.indexer.hydrate).
+    online_only: bool = Field(default=False, index=True)
 
 
 class Meta(SQLModel, table=True):

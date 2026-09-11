@@ -66,6 +66,7 @@ class ScanStats:
     skipped: int = 0
     tombstoned: int = 0  # files skipped because the user deleted that pixel_hash
     tombstones_applied: int = 0  # tombstones this pass purged + trashed
+    online_only: int = 0  # cloud placeholder files recorded but not downloaded
     new_photos: int = 0
     thumbnails: int = 0
     errors: int = 0
@@ -88,12 +89,13 @@ class ScanStats:
                 f"; {self.tombstoned} skipped as deleted, "
                 f"{self.tombstones_applied} tombstone(s) applied"
             )
+        online = f"; {self.online_only} online-only (skipped)" if self.online_only else ""
         return (
             f"{self.seen} files seen, {self.indexed} indexed "
             f"({self.new_photos} new, {self.thumbnails} thumbnails), "
             f"{self.skipped} unchanged, {self.errors} errors; "
             f"{self.marked_absent} paths now absent, {self.marked_missing} photos now missing"
-            f"{reconciled}{tomb}"
+            f"{reconciled}{tomb}{online}"
         )
 
 
@@ -122,6 +124,7 @@ def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
         thumbnail_format=tcfg.format,
         thumbnail_quality=tcfg.quality,
         thumbnail_path=paths.thumbnail_file,
+        online_only_mode=settings.config.indexer.online_only,
     )
     n_workers = settings.config.worker_count() if workers is None else max(1, workers)
 
@@ -225,6 +228,7 @@ def _decode_stream(
             sizes=pcfg.thumbnail_sizes,
             fmt=pcfg.thumbnail_format,
             quality=pcfg.thumbnail_quality,
+            online_only_mode=pcfg.online_only_mode,
         )
 
     if n_workers <= 1 or len(paths_to_do) < _MIN_FILES_FOR_POOL:
@@ -237,6 +241,7 @@ def _decode_stream(
         thumb_sizes=pcfg.thumbnail_sizes,
         thumb_fmt=pcfg.thumbnail_format,
         thumb_quality=pcfg.thumbnail_quality,
+        online_only_mode=pcfg.online_only_mode,
     )
     max_inflight = n_workers * 2
     ctx = multiprocessing.get_context("spawn")  # safe from the app's indexer thread
@@ -293,6 +298,8 @@ def _worker_crash(key: str, exc: BaseException) -> DecodedFile:
 def _tally(stats: ScanStats, outcome: IndexOutcome) -> None:
     if outcome.error is not None:
         stats.errors += 1
+    elif outcome.online_only:
+        stats.online_only += 1
     elif outcome.tombstoned:
         stats.tombstoned += 1
     elif outcome.skipped:

@@ -1,7 +1,62 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-10 (per-device library folders + Settings picker + host reveal helper — committed on `scaffold`, PR to `main`)._
+_Last updated: 2026-09-10 (online-only / cloud placeholder file handling — committed on `scaffold`, PR to `main`)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## ☁️ 2026-09-10 — Online-only (cloud placeholder) file handling (PR 2 of 2)
+
+**Committed on `scaffold` (PR `scaffold → main`).** `330 tests pass` (+10);
+ruff + ruff format + mypy clean; `alembic revision --autogenerate` empty on a
+fresh DB (new `scan_state.online_only` column absorbed by `0001_baseline`).
+Verified headless + a live native run against `browser_test_data` with a real
+8 MB sparse stub (`st_blocks == 0`) in `~/Downloads/sampleImages` — banner,
+`/settings` editor, skip↔download toggle, "Download & index", zero JS errors.
+Finishes the plan `~/.claude/plans/recursive-doodling-frost.md` (Part C).
+
+**Why.** The photo library lives in a cloud-sync folder; OneDrive / Drive /
+Dropbox / iCloud leave placeholder stubs whose bytes download only on open. The
+`decode` stage would silently hydrate every file on a first scan of a dehydrated
+library (hundreds of GB).
+
+- **`src/sortandpost/indexer/placeholder.py`** (new) — `is_online_only(st)`, a
+  no-open check on the `os.stat_result` the scanner already has: macOS
+  `st_flags & SF_DATALESS` (0x40000000); POSIX `st_blocks == 0 and st_size >
+  4096`; Windows `st_file_attributes & (OFFLINE | RECALL_ON_OPEN |
+  RECALL_ON_DATA_ACCESS)`. Any doubt → `False` (decode as before).
+- **`IndexerConfig.online_only: Literal["skip", "download"] = "skip"`** (+
+  `config.default.yaml`, CLAUDE.md). Threaded through `PipelineConfig` →
+  `DecodeJob` → `decode_local` (`online_only_mode`); `decode_local` returns early
+  with `DecodedFile(online_only=True)` and no decode when a stub is met in
+  `skip` mode.
+- **`pipeline.persist_decoded`** — new `IndexOutcome.online_only`; sets
+  `scan.online_only=True`, `stages_done=STAT`, **does not bump `attempts`** (it's
+  a deferral, not a failure). Success path clears the flag. `needs_reindex`
+  returns `True` while the flag is set (cheap re-check each pass).
+- **`ScanState.online_only: bool = Field(default=False, index=True)`** — no
+  migration (baseline `create_all`). `ScanStats.online_only` counter +
+  `__str__`.
+- **`src/sortandpost/indexer/hydrate.py`** (new) — `hydrate_online_only(settings)`:
+  bounded read (1 MiB chunks, 64 MiB cap) of every recorded stub under this
+  device's `container_roots` to trigger the sync client's fetch, then clears the
+  flag + stat fast-path; caller rescans. `HydrateStats(requested/hydrated/failed)`.
+- **`db/browse.online_only_count()`**.
+- **`app.py`** — dismissible `/` banner (count + "Download & index", writable
+  only) before the empty-state check; `_online_only_editor` in `/settings`
+  (skip/download `ui.toggle` → `config.yaml`, one-shot "Download & index recorded
+  files"); "Online-only" info row; `_run_hydrate_pass` helper (hydrate +
+  `_run_index_pass`).
+- **Tests** — `test_placeholder.py` (7), `test_hydrate.py` (2: flag-clear +
+  rescan indexes; `OSError` keeps the flag), `test_indexer.py`
+  (`is_online_only` monkeypatched: recorded not indexed, `attempts == 0`, 2nd
+  pass no `attempts++`, clearing the detector indexes it), `test_browse.py`
+  (`online_only_count`).
+
+**Known limits** (carried from the plan): the POSIX `st_blocks == 0` heuristic
+can false-negative (just hydrates, as before); `online_only` `ScanState` rows
+union across machines so the count can double-count (advisory only); a roots
+change isn't *watched* until an indexer restart (same as `exclude_dir_names`).
 
 ---
 
@@ -960,16 +1015,7 @@ Remaining `Features.md` items (unchecked, roughly in priority order):
 
 Follow-ups on shipped features:
 
-2. **PR 2 — online-only / placeholder file handling** (PR 1 = per-device roots +
-   helper shipped 2026-09-10). Plan: `~/.claude/plans/recursive-doodling-frost.md`
-   → "Part C". New `indexer/placeholder.py` (`is_online_only`: `st_blocks==0 &&
-   st_size>4096`, + Windows attrs), `IndexerConfig.online_only: skip|download`,
-   `decode_local` checks it pre-decode (mode via `DecodeJob`), new
-   `ScanState.online_only` col (absorbed by `0001` — no migration),
-   `persist_decoded` sets it *without* bumping `attempts`, `indexer/hydrate.py`
-   `hydrate_online_only()` behind a `/` banner + `/settings` action,
-   `browse.online_only_count()`.
-3. **Design pass — round 2** (first cut shipped 2026-09-10, `[x]` in
+2. **Design pass — round 2** (first cut shipped 2026-09-10, `[x]` in
    `Features.md`; user sending detailed feedback later). Likely: card-definition
    strength, how far the serif leans, header density, accent weight, `ui.input`
    / `q-field` styling, `/search` + `/review` + `/photo` fit, photo-page layout.
