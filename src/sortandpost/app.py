@@ -2225,11 +2225,13 @@ def build_ui(settings: Settings) -> None:
 
             ui.separator()
             if State.write_mode == WriteMode.writable:
+                client = ui.context.client  # a real scan outlasts the page; see _scan_now
 
                 async def _scan_now() -> None:
                     ui.notify("indexer pass started…")
                     result = await nicegui_run.io_bound(_run_index_pass, settings, engine)
-                    ui.notify(result)
+                    with client:  # the awaited gap can invalidate the ambient slot
+                        ui.notify(result)
 
                 ui.button("Run indexer pass now", on_click=_scan_now)
                 _exclude_editor(settings, engine)
@@ -2695,6 +2697,7 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
     helper = read_helper_info(settings.paths)
     writable = State.write_mode == WriteMode.writable
     in_docker = running_in_docker()
+    client = ui.context.client  # a real rescan outlasts the page; see _save_rescan
 
     ui.label("Library folders").classes("font-bold mt-4")
     ui.label(
@@ -2881,7 +2884,8 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
             _persist()
             ui.notify("saved — rescanning…")
             result = await nicegui_run.io_bound(_run_index_pass, settings, engine)
-            ui.notify(result)
+            with client:  # the awaited gap can invalidate the ambient slot
+                ui.notify(result)
 
         ui.button("Save & rescan", on_click=_save_rescan).props("color=primary")
 
@@ -2894,6 +2898,7 @@ def _exclude_editor(settings: Settings, engine: Engine) -> None:
     then drops photos from newly-excluded folders (and revives un-excluded ones,
     hard constraint #8: nothing is purged)."""
     names: list[str] = list(settings.config.indexer.exclude_dir_names)
+    client = ui.context.client  # a real rescan outlasts the page; see _save
 
     ui.label("Excluded folders").classes("font-bold mt-4")
     ui.label(
@@ -2934,7 +2939,8 @@ def _exclude_editor(settings: Settings, engine: Engine) -> None:
         settings.config.dump(settings.paths.config_file)
         ui.notify("saved — rescanning…")
         result = await nicegui_run.io_bound(_run_index_pass, settings, engine)
-        ui.notify(result)
+        with client:  # the awaited gap can invalidate the ambient slot
+            ui.notify(result)
 
     ui.button("Save & rescan", on_click=_save).props("color=primary")
     render()
@@ -2945,6 +2951,7 @@ def _online_only_editor(settings: Settings, engine: Engine, cloud_n: int) -> Non
     ``indexer.online_only`` (``skip`` / ``download``) in ``config.yaml`` and
     offers a one-shot "Download & index" for the files already recorded."""
     icfg = settings.config.indexer
+    client = ui.context.client  # a real hydrate+rescan outlasts the page; see _download_now
 
     ui.label("Online-only files").classes("font-bold mt-4")
     ui.label(
@@ -2973,8 +2980,9 @@ def _online_only_editor(settings: Settings, engine: Engine, cloud_n: int) -> Non
     async def _download_now() -> None:
         ui.notify("downloading online-only files…")
         result = await nicegui_run.io_bound(_run_hydrate_pass, settings, engine)
-        ui.notify(result)
-        status.set_text("Done — reload the library to see them.")
+        with client:  # the awaited gap can invalidate the ambient slot
+            ui.notify(result)
+            status.set_text("Done — reload the library to see them.")
 
     btn = ui.button(
         "Download & index recorded files", icon="cloud_download", on_click=_download_now

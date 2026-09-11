@@ -1,7 +1,50 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-10 (native-first runtime + real CLIP on MPS validated; v2 split — merged to `main`)._
+_Last updated: 2026-09-10 (indexer concurrency + retry fixes from a real-library test)._
 _Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+
+---
+
+## 🛠️ 2026-09-10 — Real-library test fixes: indexer concurrency, stuck-file retry, notify-after-navigate
+
+**Found during the user's first real-world run** (their own Synology-synced photo
+library, ~2,465 files, native `.venv` on a MacBook Air), not the sample library.
+`339 tests pass` (+1); ruff + ruff format + mypy clean.
+
+- **Concurrent `scan_once`/`scan_clip_once` corrupted nothing but spammed
+  `IntegrityError: UNIQUE constraint failed` on `scan_state.path` /
+  `embedding_rows.pixel_hash`.** The always-on background indexer thread and a
+  manual "Run indexer pass now" / "Save & rescan" / "Download & index" click
+  each open their own `Session` and do get-or-create writes; nothing serialized
+  them against each other. Added a process-wide `_INDEX_LOCK`
+  (`indexer/scan.py`) shared by both entry points — only one pass runs at a
+  time in this process now. The per-file error handling already recovered
+  gracefully, so no data was lost, just noisy logs.
+- **A file that failed to decode 3 times was abandoned forever, even after it
+  was fixed.** `needs_reindex` (`indexer/pipeline.py`) checked the
+  `attempts >= _MAX_ATTEMPTS` cap *before* checking whether the file's
+  size/mtime had changed, so a Synology-sync file caught mid-download (14 real
+  photos hit this) would never be retried once the download finished and the
+  bytes became valid. Reordered so a stat change always forces a retry
+  regardless of error history. New regression test
+  (`test_corrupt_file_recovers_once_content_changes_past_max_attempts`) fails
+  on the old ordering.
+- **`ui.notify(result)` after a multi-minute rescan threw `RuntimeError: The
+  parent element this slot belongs to has been deleted`** if the user
+  navigated away from `/settings` before the scan finished — the same
+  ambient-slot-context gotcha as bulk-delete (see PR history). Applied the
+  established fix (`client = ui.context.client` captured at page-build time,
+  post-await work wrapped in `with client:`) to the four long-running
+  handlers: "Run indexer pass now", the two "Save & rescan" buttons, and
+  "Download & index recorded files".
+- Verified live: killed and cold-started the real-instance process twice
+  (once per fix batch) against the same real-library `APP_DATA` — lock
+  reacquired cleanly both times, reconcile scan matched exactly where it left
+  off (`0 new, 0 errors`), CLIP embeddings intact (`0 newly embedded`, row
+  count unchanged), web UI back on `:8080` within seconds.
+- Added `V2.md` #20: live scan/CLIP progress counters for `/settings` (today's
+  status bar only shows DB totals, not "X of Y scanned right now") — requested
+  by the user off the back of this test.
 
 ---
 

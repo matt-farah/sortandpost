@@ -227,10 +227,15 @@ def needs_reindex(scan: ScanState | None, size: int, mtime_ns: int) -> bool:
         return True
     if scan.online_only:
         return True  # cheap: the worker re-checks the stat and defers again if still a stub
+    if scan.size != size or scan.mtime_ns != mtime_ns:
+        # The file changed since the last (possibly failed) attempt -- e.g. a
+        # sync client finishing a partial download that earlier decoded as
+        # truncated/corrupt. Always worth a fresh try regardless of the error
+        # history below, or a real fix would never be picked back up once
+        # `attempts` hit the cap.
+        return True
     if scan.error is not None:
         return scan.attempts < _MAX_ATTEMPTS
-    if scan.size != size or scan.mtime_ns != mtime_ns:
-        return True
     return (scan.stages_done & Stage.BROWSABLE) != Stage.BROWSABLE
 
 
