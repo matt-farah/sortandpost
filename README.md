@@ -57,3 +57,7 @@ uv run ruff check . && uv run mypy src
 ```
 
 Build order and status are tracked in CLAUDE.md → "Suggested build order".
+
+# How to run locally for testing
+
+.venv/bin/python -m sortandpost

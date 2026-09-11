@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import shutil
+import threading
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
@@ -57,6 +58,14 @@ log = logging.getLogger(__name__)
 # Below this many files needing work, the spawn cost of a process pool is not
 # worth it -- decode them inline on the calling thread instead.
 _MIN_FILES_FOR_POOL = 8
+
+# Serializes scan_once/scan_clip_once against each other and themselves within
+# this process. The background indexer loop, a manual "Run indexer pass now"
+# click, and the online-only hydrate pass each open their own Session against
+# the same working DB; without this, two of them running at once can each
+# get-or-create the same ScanState/EmbeddingRow (neither sees the other's
+# uncommitted insert) and collide with a UNIQUE constraint on commit.
+_INDEX_LOCK = threading.RLock()
 
 
 @dataclass
@@ -112,7 +121,19 @@ def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
     ``workers`` overrides ``config.indexer.workers`` (``1`` forces the inline
     path -- used by the tests and as an escape hatch). A pool is only spun up
     when enough files actually need work to amortise the ``spawn`` cost.
+
+    Serialized process-wide by :data:`_INDEX_LOCK`: the background loop and a
+    user-triggered "Run indexer pass now" both call this with their own
+    ``Session``, and two such sessions racing on the same working DB produce
+    ``UNIQUE constraint failed`` errors (get-or-create checks in one session
+    can't see the other's uncommitted inserts). The cross-machine write lock
+    (hard constraint #9) doesn't cover this -- it's intra-process.
     """
+    with _INDEX_LOCK:
+        return _scan_once_locked(settings, workers=workers)
+
+
+def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> ScanStats:
     paths = settings.paths
     engine = make_engine(paths.working_db)
     init_db(engine)  # no-op once Alembic has run; safety net for native --once
@@ -358,7 +379,20 @@ def scan_clip_once(
     freshly cleared) is the unit of work, committed per batch. Raises
     :class:`~sortandpost.clip.store.ModelMismatch` if ``embeddings_meta`` was
     written by a different model and ``reembed`` is not set.
+
+    Shares :data:`_INDEX_LOCK` with :func:`scan_once` (see its docstring): both
+    do get-or-create DB writes that aren't safe from two concurrent sessions.
     """
+    with _INDEX_LOCK:
+        return _scan_clip_once_locked(settings, reembed=reembed, model=model)
+
+
+def _scan_clip_once_locked(
+    settings: Settings,
+    *,
+    reembed: bool = False,
+    model: ClipModel | None = None,
+) -> ClipStats:
     paths = settings.paths
     ccfg = settings.config.clip
     tcfg = settings.config.tagging

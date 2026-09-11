@@ -145,6 +145,39 @@ def test_corrupt_file_records_error_and_no_photo(settings: Settings) -> None:
         assert bad.pixel_hash is None
 
 
+def test_corrupt_file_recovers_once_content_changes_past_max_attempts(
+    settings: Settings,
+) -> None:
+    """Regression: a file that fails to decode repeatedly (e.g. a sync client's
+    partial download) must not be abandoned forever once ``attempts`` hits the
+    cap -- a later stat change (the download finishing) has to force a retry
+    regardless of the error history. See ``needs_reindex``."""
+    lib = _lib(settings)
+    bad = lib / "syncing.jpg"
+    bad.write_bytes(b"\xff\xd8\xff\xe0 not a real jpeg")
+
+    for _ in range(5):  # comfortably past _MAX_ATTEMPTS
+        scan_once(settings)
+
+    with _session(settings) as s:
+        state = s.get(ScanState, str(bad))
+        assert state is not None
+        assert state.error is not None
+        assert state.attempts >= 3
+
+    _jpeg(bad, (42, 42, 42))  # the "download" finishes with real image bytes
+    stats = scan_once(settings)
+    assert stats.indexed == 1
+    assert stats.errors == 0
+
+    with _session(settings) as s:
+        state = s.get(ScanState, str(bad))
+        assert state is not None
+        assert state.error is None
+        assert state.pixel_hash is not None
+        assert len(s.exec(select(Photo)).all()) == 1
+
+
 def test_parallel_scan_matches_serial(settings: Settings, caplog: pytest.LogCaptureFixture) -> None:
     """The process-pool path (workers>=2, >= _MIN_FILES_FOR_POOL files) must
     produce exactly what the inline path does: same photos, same hashes, same
