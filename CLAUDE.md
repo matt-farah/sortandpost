@@ -151,14 +151,20 @@ Leave the app running until the user says they're done, then shut it down.
 
 `APP_DATA` has two subtrees. The user points their file-sync app at **`sync/` only**.
 
-**Which folder is `APP_DATA`?** In order: the `APP_DATA` env var / `.env` (per-launch,
-never remembered); else the folder last saved from **Settings → App-data folder**,
-recorded outside any `APP_DATA` tree in `~/.sortandpost/app_data_path.json` (see
-`sortandpost.launcher_pref`) so it survives regardless of the launch command's cwd; else
-a bare `./appdata` next to wherever the launch happened to run from. `Env.resolved_app_data()`
-/ `Env.app_data_source()` implement this (`sortandpost.config`). Saving a new folder from
-Settings takes effect on the next restart, not live — the running process already has an
-engine open on the old one.
+**Which folder is `APP_DATA`?** In order: a genuine process/shell `APP_DATA` env var
+(Docker's fixed container mount, or `APP_DATA=... command`) — a real instruction from
+whoever launched the process, always wins and can't be overridden from the UI; else the
+folder last saved from **Settings → App-data folder**, recorded outside any `APP_DATA`
+tree in `~/.sortandpost/app_data_path.json` (see `sortandpost.launcher_pref`) so it
+survives regardless of the launch command's cwd — this is how an end user sets it up
+with no environment variables at all; else a bare value left in a `.env` file (a soft
+default, e.g. a previous setup's leftover — deliberately ranked *below* a saved folder);
+else a bare `./appdata` next to wherever the launch happened to run from.
+`Env.resolved_app_data()` / `Env.app_data_source()` implement this (`sortandpost.config`);
+telling a real env var from a `.env`-file value apart means checking `os.environ` directly
+rather than trusting pydantic-settings' own (order-collapsing) env/dotenv merge. Saving a
+new folder from Settings takes effect on the next restart, not live — the running process
+already has an engine open on the old one.
 
 ```
 <APP_DATA>/

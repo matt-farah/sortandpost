@@ -14,6 +14,7 @@ Two layers:
 from __future__ import annotations
 
 import json
+import os
 import socket
 import uuid
 from importlib import resources
@@ -36,30 +37,47 @@ class Env(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # ``None`` (not set) is distinct from any concrete path -- it means "fall
-    # back to whatever folder the user last saved from /settings, or, failing
-    # that, ./appdata". See :func:`resolved_app_data` and :mod:`launcher_pref`.
+    # ``None`` (not set by either a real env var or `.env`) means "fall back to
+    # whatever folder the user last saved from /settings, or, failing that,
+    # ./appdata". See :func:`resolved_app_data` and :mod:`launcher_pref`.
+    #
+    # Precedence is deliberately *not* just "whichever source pydantic-settings
+    # would normally prefer": a genuine process/shell environment variable
+    # (Docker's `environment: APP_DATA: /data`, or `APP_DATA=... command`) is
+    # a firm instruction from whoever launched the process and always wins.
+    # But a bare value sitting in a `.env` file is a soft default -- often a
+    # leftover from a previous setup -- so it must rank *below* a folder the
+    # user has explicitly saved from the Settings page (`os.environ` is
+    # checked directly to tell the two apart; `self.app_data` alone can't,
+    # since pydantic-settings merges both sources into it).
     app_data: Path | None = Field(default=None, alias="APP_DATA")
     port: int = Field(default=8080, alias="PORT")
     host: str = Field(default="0.0.0.0", alias="HOST")
     clip_model_override: str | None = Field(default=None, alias="CLIP_MODEL")
 
     def resolved_app_data(self) -> Path:
-        if self.app_data is not None:
+        if os.environ.get("APP_DATA"):
+            assert self.app_data is not None
             return self.app_data.resolve()
         remembered = read_remembered_app_data()
         if remembered is not None:
             return remembered.resolve()
+        if self.app_data is not None:  # from a .env file only
+            return self.app_data.resolve()
         return _DEFAULT_APP_DATA
 
     def app_data_source(self) -> str:
-        """``"env"`` (``APP_DATA`` set), ``"remembered"`` (saved from
-        ``/settings`` on a previous run), or ``"default"`` (bare ``./appdata``,
-        relative to wherever this launch's cwd happens to be)."""
-        if self.app_data is not None:
+        """``"env"`` (a real process/shell ``APP_DATA``, e.g. Docker or
+        ``APP_DATA=... command`` -- always wins), ``"remembered"`` (saved from
+        ``/settings`` on a previous run), ``"dotenv"`` (only a `.env` file has
+        it -- a saved folder would override this), or ``"default"`` (bare
+        ``./appdata``, relative to wherever this launch's cwd happens to be)."""
+        if os.environ.get("APP_DATA"):
             return "env"
         if read_remembered_app_data() is not None:
             return "remembered"
+        if self.app_data is not None:
+            return "dotenv"
         return "default"
 
     @property

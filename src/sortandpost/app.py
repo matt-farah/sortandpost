@@ -2705,16 +2705,19 @@ def _app_data_editor(settings: Settings) -> None:
     """`/settings` control for where sortandpost keeps its database,
     thumbnails, and CLIP embeddings (CLAUDE.md "App-data layout").
 
-    ``APP_DATA``/``.env`` only take effect if the launch command remembers to
-    set them and runs from the right working directory -- without either, the
-    app falls back to a bare ``./appdata`` resolved against wherever it
-    happened to be launched from, which is a different folder every time and
-    looks like nothing persists between sessions. Saving here writes a small
-    pointer file in the user's home directory (:mod:`sortandpost.launcher_pref`)
-    that every future launch checks first, unless ``APP_DATA`` is explicitly
-    set. This process is already running against the folder it started with,
-    so the change takes effect on the next restart, not immediately -- move or
-    copy the old folder's contents to the new location first to keep the data.
+    An end user setting this up from scratch (a new computer, say) should
+    never have to touch an environment variable or a ``.env`` file -- saving
+    a folder here writes a small pointer file in the user's home directory
+    (:mod:`sortandpost.launcher_pref`) that every future launch checks and
+    uses. It ranks below only a genuine process/shell ``APP_DATA`` (Docker's
+    fixed container mount, or ``APP_DATA=... command`` on the command line) --
+    a real instruction from whoever launched the process, which this UI can't
+    see or override. A bare value left in a ``.env`` file is *not* that: it
+    ranks below a saved folder, so a leftover ``.env`` from a previous setup
+    can no longer silently keep overriding a choice made here. This process
+    is already running against the folder it started with, so the change
+    takes effect on the next restart, not immediately -- move or copy the old
+    folder's contents to the new location first to keep the data.
     """
     source = settings.env.app_data_source()
     current = settings.paths.app_data
@@ -2734,8 +2737,14 @@ def _app_data_editor(settings: Settings) -> None:
         ).classes("text-xs text-amber-600 dark:text-amber-400 max-w-xl")
     elif source == "env":
         ui.label(
-            "Set for this launch by the APP_DATA environment variable, which "
-            "takes priority over any folder saved below."
+            "⚠ set for this launch by a process environment variable (Docker, or "
+            "APP_DATA=... on the command line) — that overrides anything saved "
+            "below until it's unset."
+        ).classes("text-xs text-amber-600 dark:text-amber-400 max-w-xl")
+    elif source == "dotenv":
+        ui.label(
+            "Currently read from this computer's .env file. Saving a folder "
+            "below will take priority over it from now on."
         ).classes("text-xs sp-faint max-w-xl")
 
     with ui.row().classes("w-full items-end gap-2 no-wrap"):
