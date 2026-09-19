@@ -55,6 +55,60 @@ def clip_available() -> bool:
     return _IMPORT_ERROR is None
 
 
+def _try_load(config: ClipConfig, cache_dir: Path, *, offline: bool) -> tuple[bool, str]:
+    """Attempt to construct the configured model/tokenizer from ``cache_dir``.
+
+    ``offline=True`` forces ``HF_HUB_OFFLINE=1`` for the call, so it succeeds
+    only if every required file is already cached -- a "is it downloaded?"
+    check with no network access. ``offline=False`` clears any process-wide
+    ``HF_HUB_OFFLINE`` for the call (even if the app itself was launched with
+    it set, as the documented offline dev run does), so missing files are
+    fetched -- an explicit "make sure it's downloaded" action. Always used on
+    the CPU device and never touches :class:`ClipModel` / ``State.clip_model``
+    -- this is a cheap existence probe, not the model the indexer will use.
+    """
+    if _IMPORT_ERROR is not None:
+        return False, "torch / open-clip-torch are not installed in this environment"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    prev_offline = os.environ.get("HF_HUB_OFFLINE")
+    if offline:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    else:
+        os.environ.pop("HF_HUB_OFFLINE", None)
+    try:
+        model, _, _preprocess = open_clip.create_model_and_transforms(
+            config.model,
+            pretrained=config.pretrained,
+            cache_dir=str(cache_dir),
+            device="cpu",
+        )
+        del model
+        open_clip.get_tokenizer(config.model)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if prev_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = prev_offline
+
+
+def check_cached(config: ClipConfig, cache_dir: Path) -> tuple[bool, str]:
+    """``(True, "")`` if ``config.model``/``config.pretrained`` are already
+    cached in ``cache_dir`` well enough to load with no network access;
+    otherwise ``(False, <reason>)``."""
+    return _try_load(config, cache_dir, offline=True)
+
+
+def ensure_downloaded(config: ClipConfig, cache_dir: Path) -> tuple[bool, str]:
+    """Force a (re)download of any weight/tokenizer files missing from
+    ``cache_dir``, ignoring any process-wide ``HF_HUB_OFFLINE``. A no-op
+    network-wise if everything is already cached. ``(True, "")`` on success,
+    ``(False, <reason>)`` on failure (e.g. offline with nothing cached yet)."""
+    return _try_load(config, cache_dir, offline=False)
+
+
 def known_dim(model: str) -> int | None:
     return KNOWN_DIMS.get(model)
 

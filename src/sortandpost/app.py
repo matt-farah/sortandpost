@@ -30,7 +30,17 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
 from sortandpost import __version__
-from sortandpost.clip.model import ClipModel, ClipModelUnavailable, clip_available
+from sortandpost.clip.model import (
+    ClipModel,
+    ClipModelUnavailable,
+    clip_available,
+)
+from sortandpost.clip.model import (
+    check_cached as clip_check_cached,
+)
+from sortandpost.clip.model import (
+    ensure_downloaded as clip_ensure_downloaded,
+)
 from sortandpost.clip.store import ModelMismatch
 from sortandpost.clip.tagging import approve, pending_groups, reject
 from sortandpost.clip.vocab import load_vocab
@@ -76,6 +86,7 @@ from sortandpost.helper import HelperInfo, read_helper_info
 from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.hydrate import hydrate_online_only
 from sortandpost.indexer.service import run_indexer
+from sortandpost.launcher_pref import remember_app_data
 from sortandpost.library_roots import (
     LibraryRoot,
     clean_path,
@@ -2224,6 +2235,12 @@ def build_ui(settings: Settings) -> None:
             _theme_editor(settings, dark)
 
             ui.separator()
+            _app_data_editor(settings)
+
+            ui.separator()
+            _clip_model_editor(settings)
+
+            ui.separator()
             if State.write_mode == WriteMode.writable:
                 client = ui.context.client  # a real scan outlasts the page; see _scan_now
 
@@ -2684,6 +2701,168 @@ def _deletion_editor(settings: Settings) -> None:
     ui.button("Save", on_click=_save).props("color=primary")
 
 
+def _app_data_editor(settings: Settings) -> None:
+    """`/settings` control for where sortandpost keeps its database,
+    thumbnails, and CLIP embeddings (CLAUDE.md "App-data layout").
+
+    ``APP_DATA``/``.env`` only take effect if the launch command remembers to
+    set them and runs from the right working directory -- without either, the
+    app falls back to a bare ``./appdata`` resolved against wherever it
+    happened to be launched from, which is a different folder every time and
+    looks like nothing persists between sessions. Saving here writes a small
+    pointer file in the user's home directory (:mod:`sortandpost.launcher_pref`)
+    that every future launch checks first, unless ``APP_DATA`` is explicitly
+    set. This process is already running against the folder it started with,
+    so the change takes effect on the next restart, not immediately -- move or
+    copy the old folder's contents to the new location first to keep the data.
+    """
+    source = settings.env.app_data_source()
+    current = settings.paths.app_data
+    helper = read_helper_info(settings.paths)
+
+    ui.label("App-data folder").classes("font-bold mt-4")
+    ui.label(
+        "Where the database, thumbnails, and CLIP embeddings live. Point your "
+        "file-sync tool (OneDrive, Google Drive, Synology Drive, Dropbox, …) at "
+        "this folder's sync/ subfolder to carry the index across machines."
+    ).classes("text-xs text-gray-400 max-w-xl")
+    if source == "default":
+        ui.label(
+            "⚠ not saved anywhere yet — using a bare ./appdata next to wherever "
+            "this launch's working directory happens to be, which is why it can "
+            "look different between sessions. Save a folder below to fix that."
+        ).classes("text-xs text-amber-600 dark:text-amber-400 max-w-xl")
+    elif source == "env":
+        ui.label(
+            "Set for this launch by the APP_DATA environment variable, which "
+            "takes priority over any folder saved below."
+        ).classes("text-xs sp-faint max-w-xl")
+
+    with ui.row().classes("w-full items-end gap-2 no-wrap"):
+        path_in = ui.input("App-data folder", value=str(current)).props("dense").classes("flex-1")
+        if helper is not None:
+            ui.button(
+                "Browse…", icon="folder_open", on_click=lambda: _browse_folder(path_in)
+            ).props("flat dense")
+
+    def _save() -> None:
+        value = clean_path(path_in.value or "")
+        if not value:
+            ui.notify("enter a folder path", type="warning")
+            return
+        remember_app_data(Path(value).expanduser())
+        ui.notify(
+            "saved — restart sortandpost to use this folder. To keep your "
+            "existing data, move or copy the old app-data folder there first.",
+            type="positive",
+            timeout=8000,
+        )
+
+    ui.button("Save app-data folder", on_click=_save).props("color=primary")
+
+
+def _clip_model_editor(settings: Settings) -> None:
+    """`/settings` control to check whether the configured CLIP weights are
+    fully cached under ``local/models/`` and, if not, force a download.
+
+    Separate from the always-on indexer's own lazy load so a user who ran the
+    app offline (or with ``HF_HUB_OFFLINE`` set, as the documented offline dev
+    run does) can tell whether the weights actually finished downloading, and
+    retry on demand rather than guessing from indexer error logs.
+    """
+    ccfg = settings.config.clip
+    client = ui.context.client  # a real download outlasts the page; see _download
+
+    ui.label("CLIP model files").classes("font-bold mt-4")
+    ui.label(
+        f"{ccfg.model} / {ccfg.pretrained} — cached under {settings.paths.models_dir}"
+    ).classes("text-xs text-gray-400 max-w-xl")
+
+    status = ui.label("not checked yet").classes("text-sm")
+
+    async def _check() -> None:
+        status.set_text("checking…")
+        result = await nicegui_run.io_bound(clip_check_cached, ccfg, settings.paths.models_dir)
+        ok, detail = result if result is not None else (False, "cancelled")
+        with client:  # the awaited gap can invalidate the ambient slot
+            status.set_text(
+                "✓ fully cached — ready to run offline" if ok else f"✗ not fully cached: {detail}"
+            )
+
+    async def _download() -> None:
+        status.set_text("downloading…")
+        ui.notify("downloading CLIP model files — this can take a few minutes…")
+        result = await nicegui_run.io_bound(clip_ensure_downloaded, ccfg, settings.paths.models_dir)
+        ok, detail = result if result is not None else (False, "cancelled")
+        with client:
+            if ok:
+                status.set_text("✓ fully cached — ready to run offline")
+                ui.notify("CLIP model files downloaded")
+            else:
+                status.set_text(f"✗ download failed: {detail}")
+                ui.notify(f"download failed: {detail}", type="negative")
+
+    with ui.row().classes("gap-2"):
+        ui.button("Check if downloaded", on_click=_check).props("flat dense")
+        ui.button("Download / verify CLIP model", on_click=_download).props("color=primary")
+
+
+async def _browse_folder(target: ui.input) -> None:
+    """Native folder picker backed by the host file-manager helper agent (see
+    :mod:`sortandpost.helper`) -- lets ``target`` be filled from a real
+    directory listing on this computer instead of typed by hand. Reads
+    ``window.__spHelper`` (injected by :func:`_inject_helper`) directly in the
+    browser; the server never talks to the helper itself. A no-op UI (empty
+    listing) if the helper isn't connected -- callers should only show the
+    "Browse…" button when :func:`read_helper_info` returns something."""
+    with (
+        ui.dialog() as dlg,
+        ui.card().classes("flex h-[70vh] w-[42rem] max-w-full flex-col gap-2"),
+    ):
+        crumb = ui.label("…").classes("truncate text-xs sp-faint")
+        listing = ui.column().classes("w-full flex-1 gap-0 overflow-y-auto")
+        state = {"path": (target.value or "").strip() or None}
+
+        async def _load(path: str | None) -> None:
+            js = (
+                "(async () => { const h = window.__spHelper; if (!h) return {entries: []};"
+                " const u = new URL('http://127.0.0.1:' + h.port + '/listdir');"
+                f" const p = {json.dumps(path)}; if (p) u.searchParams.set('path', p);"
+                " const r = await fetch(u, {headers: {'X-SP-Token': h.token}});"
+                " return await r.json(); })()"
+            )
+            try:
+                data = await ui.run_javascript(js, timeout=6.0)
+            except Exception:  # helper stopped mid-browse
+                data = {"entries": [], "parent": None}
+            state["path"] = path
+            crumb.text = path or "Pick a starting point"
+            listing.clear()
+            with listing:
+                if data.get("parent"):
+                    ui.button("⬆  parent", on_click=lambda p=data["parent"]: _load(p)).props(
+                        "flat dense align=left"
+                    ).classes("w-full justify-start")
+                for entry in data.get("entries", []):
+                    ui.button(
+                        entry["name"],
+                        icon="folder",
+                        on_click=lambda p=entry["path"]: _load(p),
+                    ).props("flat dense align=left").classes("w-full justify-start")
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dlg.close).props("flat")
+
+            def _use() -> None:
+                if state["path"]:
+                    target.value = state["path"]
+                dlg.close()
+
+            ui.button("Use this folder", on_click=_use).props("color=primary")
+        await _load(state["path"])
+    dlg.open()
+
+
 def _library_roots_editor(settings: Settings, engine: Engine) -> None:
     """`/settings` editor for this device's library folders
     (``sync/devices/<name>/library.json`` -- see :mod:`sortandpost.library_roots`).
@@ -2754,54 +2933,6 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
             i += 1
         return f"/library/{i}"
 
-    async def _browse(host_in: ui.input) -> None:
-        with (
-            ui.dialog() as dlg,
-            ui.card().classes("flex h-[70vh] w-[42rem] max-w-full flex-col gap-2"),
-        ):
-            crumb = ui.label("…").classes("truncate text-xs sp-faint")
-            listing = ui.column().classes("w-full flex-1 gap-0 overflow-y-auto")
-            state = {"path": (host_in.value or "").strip() or None}
-
-            async def _load(path: str | None) -> None:
-                js = (
-                    "(async () => { const h = window.__spHelper; if (!h) return {entries: []};"
-                    " const u = new URL('http://127.0.0.1:' + h.port + '/listdir');"
-                    f" const p = {json.dumps(path)}; if (p) u.searchParams.set('path', p);"
-                    " const r = await fetch(u, {headers: {'X-SP-Token': h.token}});"
-                    " return await r.json(); })()"
-                )
-                try:
-                    data = await ui.run_javascript(js, timeout=6.0)
-                except Exception:  # helper stopped mid-browse
-                    data = {"entries": [], "parent": None}
-                state["path"] = path
-                crumb.text = path or "Pick a starting point"
-                listing.clear()
-                with listing:
-                    if data.get("parent"):
-                        ui.button("⬆  parent", on_click=lambda p=data["parent"]: _load(p)).props(
-                            "flat dense align=left"
-                        ).classes("w-full justify-start")
-                    for entry in data.get("entries", []):
-                        ui.button(
-                            entry["name"],
-                            icon="folder",
-                            on_click=lambda p=entry["path"]: _load(p),
-                        ).props("flat dense align=left").classes("w-full justify-start")
-
-            with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dlg.close).props("flat")
-
-                def _use() -> None:
-                    if state["path"]:
-                        host_in.value = state["path"]
-                    dlg.close()
-
-                ui.button("Use this folder", on_click=_use).props("color=primary")
-            await _load(state["path"])
-        dlg.open()
-
     def _add_dialog() -> None:
         with ui.dialog() as dialog, ui.card().classes("w-[40rem] max-w-full gap-2"):
             ui.label("Add a library folder").classes("font-bold")
@@ -2811,7 +2942,7 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
                 )
                 if helper is not None:
                     ui.button(
-                        "Browse…", icon="folder_open", on_click=lambda: _browse(host_in)
+                        "Browse…", icon="folder_open", on_click=lambda: _browse_folder(host_in)
                     ).props("flat dense")
             ui.label(
                 "e.g.  ~/Library/CloudStorage/OneDrive-Personal/Photos  ·  "
