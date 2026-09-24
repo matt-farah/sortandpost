@@ -15,17 +15,19 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import Request
-from fastapi.responses import RedirectResponse
+from fastapi import HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
@@ -134,7 +136,14 @@ from sortandpost.searches import (
 from sortandpost.stacks import build_stacks
 from sortandpost.sync import SyncManager, WriteMode
 from sortandpost.sync.clock import utcnow
-from sortandpost.trash import trash_backend
+from sortandpost.trash import (
+    TrashBatch,
+    find_batch,
+    flush_to_system_trash,
+    list_batches,
+    system_trash_available,
+)
+from sortandpost.undelete import UndeleteResult, put_back_batch
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +158,8 @@ _REVIEW_PAGE = 48  # per-photo tiles loaded per /review "Show more" step
 _GRID_BATCH = 80  # thumbnails appended per infinite-scroll step
 _PICKER_CAP = 500  # photos offered at once in the "add photos to collection" picker
 _THUMB_URL = "/thumbs"
+_TRASH_THUMB_URL = "/trash-thumb"
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 # The grid's scroll position + loaded count live in this history entry's
 # ``history.state``. The browser keeps per-entry state across navigations and
@@ -368,6 +379,9 @@ class State:
     settings: Settings | None = None
     indexer_started: bool = False
     theme: Theme = "system"  # per-machine UI theme (local/ui_prefs.json)
+    # (trash batch id, photos deleted, time.monotonic()) of the most recent
+    # delete on this machine -- drives the status bar's "Undo delete" button.
+    last_delete: tuple[str, int, float] | None = None
 
     @classmethod
     def apply(cls, manager: SyncManager) -> None:
@@ -433,6 +447,7 @@ def _status_bar() -> None:
     every 5s; a transient DB lock just shows 'status unavailable' for one tick."""
     if State.engine is None:
         return
+    client = ui.context.client  # valid slot context after the undo's await
     with ui.footer().classes("sp-statusbar px-4 py-1 items-center justify-between"):
         with ui.row().classes("items-center gap-3"):
             summary = ui.label("…")
@@ -440,6 +455,20 @@ def _status_bar() -> None:
             live.set_visibility(False)
             bar = ui.linear_progress(value=0, show_value=False, size="6px").classes("w-32")
             bar.set_visibility(False)
+            undo = ui.button("Undo delete", icon="undo").props("dense no-caps color=amber-8")
+            undo.set_visibility(False)
+            undo.on_click(lambda: _undo_last_delete(client))
+
+        def _undo_tick() -> None:
+            last = State.last_delete
+            show = (
+                last is not None
+                and State.write_mode == WriteMode.writable
+                and time.monotonic() - last[2] < _UNDO_WINDOW_SEC
+            )
+            undo.set_visibility(show)
+            if show and last is not None:
+                undo.set_text(f"Undo delete ({last[1]})")
 
         def _live_tick() -> None:
             snap = PROGRESS.snapshot()
@@ -475,8 +504,36 @@ def _status_bar() -> None:
 
         _tick()
         _live_tick()
+        _undo_tick()
         ui.timer(5.0, _tick)
         ui.timer(1.0, _live_tick)
+        ui.timer(1.0, _undo_tick)
+
+
+_UNDO_WINDOW_SEC = 5 * 60
+
+
+async def _undo_last_delete(client: Any) -> None:
+    """Status-bar "Undo delete": put the most recent delete's batch back."""
+    last = State.last_delete
+    settings, engine = State.settings, State.engine
+    if last is None or settings is None or engine is None:
+        return
+    State.last_delete = None  # one click; a failed put-back stays on /settings
+    result = await nicegui_run.io_bound(put_back_batch, settings, engine, last[0])
+    if result is None:
+        return
+    with client:
+        ui.notify(_undelete_summary(result), type="warning" if result.failed else None)
+        if result.photos_restored:
+            ui.navigate.reload()
+
+
+def _undelete_summary(result: UndeleteResult) -> str:
+    msg = result.summary()
+    if result.failed:
+        msg += " — see Settings → Recently deleted"
+    return msg
 
 
 def _progress_text(snap: ProgressSnapshot) -> str:
@@ -557,6 +614,16 @@ def build_ui(settings: Settings) -> None:
 
     settings.paths.thumbnails_dir.mkdir(parents=True, exist_ok=True)
     nicegui_app.add_static_files(_THUMB_URL, str(settings.paths.thumbnails_dir))
+
+    @nicegui_app.get(_TRASH_THUMB_URL + "/{batch_id}/{pixel_hash}")
+    def _trash_thumb(batch_id: str, pixel_hash: str) -> FileResponse:
+        """Only a batch's saved ``thumbs/<pixel_hash>.webp`` -- never the
+        trashed photo files themselves."""
+        batch = find_batch(settings.paths.local, batch_id)
+        thumb = batch.thumb(pixel_hash) if batch and _HEX64.fullmatch(pixel_hash) else None
+        if thumb is None:
+            raise HTTPException(status_code=404)
+        return FileResponse(thumb, media_type="image/webp")
 
     thumb_small, thumb_large = _thumb_sizes(settings)
 
@@ -2314,6 +2381,7 @@ def build_ui(settings: Settings) -> None:
                 _cpu_speed_editor(settings)
                 _stacking_editor(settings)
                 _deletion_editor(settings)
+                _trash_panel(settings, engine)
             else:
                 ui.label("Read-only — indexer actions are disabled.").classes(
                     "text-amber-600 text-sm"
@@ -2694,23 +2762,26 @@ def _apply_bulk_delete(settings: Settings, engine: Engine, hashes: list[str]) ->
             now=utcnow(),
         )
         session.commit()
+    batch_id = result.trash.batch_id if result.trash else None
+    if batch_id is not None:
+        State.last_delete = (batch_id, len(result.purged), time.monotonic())
     return result
 
 
 def _delete_summary(result: DeleteResult) -> str:
     n = len(result.purged)
-    where = "Trash" if result.trash and result.trash.backend == "os" else "the app trash folder"
-    msg = f"deleted {n} photo(s); {result.files_trashed} file(s) moved to {where}"
+    msg = f"deleted {n} photo(s); {result.files_trashed} file(s) moved to the app trash"
     if result.files_failed:
         msg += f"; {result.files_failed} file(s) could not be moved"
+    if result.files_trashed:
+        msg += " — Undo is in the status bar"
     return msg
 
 
 def _delete_where_note() -> str:
     return (
-        "moved to your system Trash"
-        if trash_backend() == "os"
-        else "moved to APP_DATA/local/trash — recoverable, with a manifest"
+        "moved to the app's trash (APP_DATA/local/trash, never synced) — you can "
+        "put them back from Settings until you move them to the system Trash"
     )
 
 
@@ -2803,15 +2874,14 @@ def _cpu_speed_editor(settings: Settings) -> None:
 
 def _deletion_editor(settings: Settings) -> None:
     """`/settings` control for the "Delete photos" action (CLAUDE.md constraint
-    #1, exception 2). Only the stack scope is user-configurable; the trash
-    destination is chosen automatically per platform."""
+    #1, exception 2). Only the stack scope is user-configurable."""
     cfg = settings.config.deletion
     ui.label("Deleting photos").classes("font-bold mt-4")
     ui.label(
-        f"The bulk toolbar's Delete and the photo page's “Delete photo” move the "
-        f"files ({_delete_where_note()}) and remove their ratings, tags, "
-        f"thumbnails and embeddings. When stacking is on, choose whether a delete "
-        f"takes only the shown photo or the whole stack."
+        "The bulk toolbar's Delete and the photo page's “Delete photo” move the "
+        "files into the app's trash on this computer (see Recently deleted below) and "
+        "remove them from the library. When stacking is on, choose whether a delete "
+        "takes only the shown photo or the whole stack."
     ).classes("text-xs text-gray-400 max-w-xl")
 
     scope = (
@@ -2832,6 +2902,105 @@ def _deletion_editor(settings: Settings) -> None:
         ui.notify("saved")
 
     ui.button("Save", on_click=_save).props("color=primary")
+
+
+def _trash_panel(settings: Settings, engine: Engine) -> None:
+    """`/settings` "Recently deleted": the managed trash batches on this
+    machine, each with "Put back", plus "Move all to system Trash" (macOS /
+    Windows) -- after which only the OS Trash's own Put Back can recover them."""
+    client = ui.context.client
+    ui.label("Recently deleted").classes("font-bold mt-4")
+    ui.label(
+        f"Deleted photos wait here, on this computer only, until you move them to the "
+        f"system Trash. Put back returns the files to their original folders with their "
+        f"ratings and tags. Folder: {settings.paths.local / 'trash'}"
+    ).classes("text-xs sp-faint max-w-xl")
+    box = ui.column().classes("w-full gap-2")
+
+    def _render() -> None:
+        box.clear()
+        batches = list_batches(settings.paths.local)
+        with box:
+            if not batches:
+                ui.label("Nothing here.").classes("text-sm sp-faint")
+                return
+            for b in batches:
+                _trash_batch_row(b)
+            if system_trash_available():
+                ui.button(
+                    "Move all to system Trash", icon="delete_sweep", on_click=_confirm_flush
+                ).props("flat color=negative no-caps")
+
+    def _trash_batch_row(b: TrashBatch) -> None:
+        hashes = b.hashes
+        when = _fmt_trash_time(b.created_at)
+        with ui.card().classes("w-full max-w-3xl p-2 gap-1"):
+            with ui.row().classes("w-full items-center justify-between"):
+                label = f"{when} · {len(hashes)} photo(s), {len(b.items)} file(s)"
+                if b.reason == "tombstone":
+                    label += " · deleted on another computer"
+                ui.label(label).classes("text-sm")
+                ui.button(
+                    "Put back", icon="restore_from_trash", on_click=lambda b=b: _put_back(b)
+                ).props("dense flat no-caps color=primary")
+            with ui.row().classes("gap-1"):
+                for h in hashes[:12]:
+                    if b.thumb(h) is not None:
+                        ui.image(f"{_TRASH_THUMB_URL}/{b.id}/{h}").classes(
+                            "w-16 h-16 rounded"
+                        ).props("fit=cover")
+                if len(hashes) > 12:
+                    ui.label(f"+{len(hashes) - 12}").classes("text-xs sp-faint self-center")
+            names = ", ".join(Path(str(i["original"])).name for i in b.items[:4])
+            more = f" +{len(b.items) - 4}" if len(b.items) > 4 else ""
+            ui.label(names + more).classes("text-xs sp-faint")
+
+    async def _put_back(b: TrashBatch) -> None:
+        result = await nicegui_run.io_bound(put_back_batch, settings, engine, b.id)
+        if result is None:
+            return
+        if State.last_delete and State.last_delete[0] == b.id:
+            State.last_delete = None
+        with client:
+            ui.notify(result.summary(), type="warning" if result.failed else None)
+            _render()
+
+    def _confirm_flush() -> None:
+        with ui.dialog() as dialog, ui.card().classes("gap-2"):
+            ui.label("Move everything here to the system Trash?").classes("font-medium")
+            ui.label(
+                "The app can no longer put these photos back afterwards — use the "
+                "system Trash's own Put Back instead. Nothing is permanently deleted."
+            ).classes("text-xs sp-faint max-w-sm")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                async def _go() -> None:
+                    res = await nicegui_run.io_bound(flush_to_system_trash, settings.paths.local)
+                    State.last_delete = None
+                    with client:
+                        if res is not None:
+                            msg = f"moved {res.moved} file(s) to the system Trash"
+                            if res.failed:
+                                msg += f"; {len(res.failed)} could not be moved"
+                            ui.notify(msg)
+                        _render()
+                        dialog.close()
+
+                ui.button("Move to Trash", on_click=_go).props("color=negative")
+        dialog.open()
+
+    _render()
+
+
+def _fmt_trash_time(iso: str) -> str:
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()  # local time for display
+    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 def _app_data_editor(settings: Settings) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -158,6 +158,71 @@ def test_unindex_replay_writes_a_tombstone_and_marks_missing(tmp_path: Path) -> 
         assert s.get(Photo, hash_for("a")).missing_since is not None
         assert s.get(Photo, hash_for("b")).missing_since is None
         assert s.get(Tombstone, hash_for("b")) is None
+
+
+def _log(db: Path, *changes: tuple[datetime, str, ChangeOp, str]) -> None:
+    engine = make_engine(db)
+    with Session(engine) as s:
+        for ts_, dev, op, tag in changes:
+            s.add(
+                Change(
+                    ts=ts_,
+                    device_id=dev,
+                    op=op,
+                    pixel_hash=hash_for(tag),
+                    field="delete",
+                    new_value="1",
+                )
+            )
+        s.commit()
+    engine.dispose()
+
+
+def test_restore_after_unindex_lifts_the_tombstone(tmp_path: Path) -> None:
+    target = tmp_path / "t.db"
+    source = tmp_path / "s.db"
+    make_db(target, photos=["a"], generation=1)
+    make_db(source, photos=["a"], generation=2)
+    later = NOW + timedelta(minutes=1)
+    _log(source, (NOW, "dev-src", ChangeOp.unindex, "a"), (later, "dev-src", ChangeOp.restore, "a"))
+
+    _merge(target, source, target_gen=1, source_gen=2)
+
+    with Session(make_engine(target)) as s:
+        assert s.get(Tombstone, hash_for("a")) is None
+        assert s.get(Photo, hash_for("a")).missing_since is None
+
+
+def test_older_unindex_cannot_rebury_a_put_back_photo(tmp_path: Path) -> None:
+    # base deleted then put back "a"; a conflict copy only saw the delete
+    target = tmp_path / "t.db"
+    source = tmp_path / "s.db"
+    make_db(target, photos=["a"], generation=3)
+    make_db(source, photos=["a"], generation=2)
+    later = NOW + timedelta(minutes=1)
+    _log(target, (NOW, "dev-t", ChangeOp.unindex, "a"), (later, "dev-t", ChangeOp.restore, "a"))
+    _log(source, (NOW, "dev-t", ChangeOp.unindex, "a"))
+
+    _merge(target, source, target_gen=3, source_gen=2)
+
+    with Session(make_engine(target)) as s:
+        assert s.get(Tombstone, hash_for("a")) is None
+
+
+def test_newer_unindex_beats_an_older_restore(tmp_path: Path) -> None:
+    target = tmp_path / "t.db"
+    source = tmp_path / "s.db"
+    make_db(target, photos=["a"], generation=1)
+    make_db(source, photos=["a"], generation=2)
+    t1, t2 = NOW + timedelta(minutes=1), NOW + timedelta(minutes=2)
+    _log(target, (NOW, "dev-t", ChangeOp.unindex, "a"), (t1, "dev-t", ChangeOp.restore, "a"))
+    _log(source, (t2, "dev-src", ChangeOp.unindex, "a"))
+
+    _merge(target, source, target_gen=1, source_gen=2)
+
+    with Session(make_engine(target)) as s:
+        tomb = s.get(Tombstone, hash_for("a"))
+        assert tomb is not None and tomb.deleted_by_device == "dev-src"
 
 
 def test_merge_bumps_generation_past_every_input(tmp_path: Path) -> None:

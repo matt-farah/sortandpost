@@ -1,7 +1,34 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-24 (V1 P4: per-photo /review + facets + shared exiftool)._
-_Working branch: `v1-p4-review`._
+_Last updated: 2026-09-24 (V1 P5: undo last delete + Recently deleted)._
+_Working branch: `v1-p5-undo-delete`._
+
+---
+
+## 📈 2026-09-24 — V1 P5: undo last delete + "Recently deleted"
+
+All tests pass (new: `test_undelete.py`, rewritten `test_trash.py`, 3 merge tests); ruff /
+format / mypy clean; alembic check empty (no schema change). User browser-tested + signed off.
+
+- **Decision (user):** managed trash on **every** OS — `<APP_DATA>/local/trash/<batch>/`
+  (never synced), a short-lived "oops" buffer, not a history. macOS blocks reading `~/.Trash`
+  without Full Disk Access, so OS-Trash undo was impossible.
+- **`trash.py` rewritten:** one batch per delete — `files/<seq>/<original name>`,
+  `thumbs/<hash>.webp`, `manifest.json` (v2: items with `pixel_hash`, `reason`
+  `delete|tombstone`, saved per-photo user state). `list_batches`, `find_batch`, `put_back`
+  (refuses an occupied path or a missing folder; never mkdirs under a library root), and
+  `flush_to_system_trash` (macOS/Windows; kept standalone for a future on-quit cleanup).
+- **`db/deletion.py`:** `capture_photo_state` before purge (rating, tags, prediction states),
+  `restore_photo_state`, `lift_tombstone` (+ `changes` **`op=restore`**, new `ChangeOp`).
+- **`undelete.py` (new):** `put_back_batch` — files back → lift tombstones → re-index those
+  paths immediately (under `_INDEX_LOCK`) → re-insert saved state. CLIP re-embeds next pass.
+- **`sync/merge.py`:** `_replay_deletes` settles `unindex` vs `restore` LWW by `sort_key` over
+  the unioned log (an older conflict-copy `unindex` can't re-bury a put-back photo).
+- **UI:** status-bar "Undo delete (N)" for 5 min after a delete (any page); `/settings` →
+  "Recently deleted" (batches with thumbs via `/trash-thumb/{batch}/{hash}`, Put back, Move all
+  to system Trash). CLAUDE.md constraint #1 + Deletion section updated.
+- **Known gap:** after a flush to the system Trash, the app can't restore it and a file moved
+  back by hand stays tombstoned (no un-tombstone UI). Linux/Docker has no flush.
 
 ---
 

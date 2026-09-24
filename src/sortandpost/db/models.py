@@ -49,6 +49,7 @@ class ChangeOp(StrEnum):
     clip_approve = "clip_approve"
     clip_reject = "clip_reject"
     unindex = "unindex"
+    restore = "restore"  # undoes an unindex (put back from the trash); LWW vs unindex by ts
 
 
 # --------------------------------------------------------------------------- #
