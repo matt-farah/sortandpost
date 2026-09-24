@@ -1,7 +1,32 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-24 (V1 scoped: see `V1Plan.md`)._
+_Last updated: 2026-09-24 (V1 P1: search merged into the library + filter bar)._
 _Working branch: `v1-plan`._
+
+---
+
+## 🔎 2026-09-24 — V1 P1: search merged into the library, filter bar
+
+`/search` is gone as a page (it redirects); `/` is library + search. 403 tests pass
+(+48); ruff / format / mypy clean; no schema change. User browser-tested + signed off.
+
+- **`library_view.py` (new)**: `LibraryQuery` = every filter + view param, round-trips
+  through the URL (`stars=u,4,5`, repeated `camera=` / `tag=`, `dates=`, `folder=`,
+  `tagmode`, flags, `group`). `resolve_view()` → ordered representative hashes; used
+  by both the grid and `/photo` prev/next (fixes the `Issues.md` arrow-key bug).
+  `parse_date_range` accepts `2025`, `2025-2026`, `20260103-20260210`, `2025-06`, open
+  ends. Choices helpers for camera / folder (root-relative labels) / tags by facet.
+- **`PhotoFilter`** gained `stars_in` (0 = unrated), exact `cameras`, `folder` (prefix
+  on present `photo_paths`, subfolders included), `tag_suggestions` (tags also match
+  pending/approved predictions). `grouping._camera_label` → public `camera_label`.
+- **Saved searches** now store `{name, query}`; legacy `/search` fields are converted on
+  load (`stars` minimum → set). Dropdown in the filter bar.
+- **UI**: selects apply on every pick; dates are a Quasar range calendar (applies once
+  the range is complete). The photo page's order is a 30-min snapshot of what the grid
+  showed (`_VIEW_CACHE` in `app.py`), so rating a photo out of an "unrated" filter
+  doesn't break ←/→.
+- **Gotcha:** restart the dev server by port (`lsof -ti :8080 | xargs kill`) — `pkill -f
+  "python -m sortandpost"` misses the `Python` process and the new server dies on bind.
 
 ---
 

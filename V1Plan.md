@@ -6,7 +6,7 @@ deferred. Tick phases off here as they merge._
 
 ## Status
 - [x] P0 Housekeeping: this file, split V1Features / V2 (Haiku)
-- [ ] P1 Search merged into the library + filter bar + photo-nav follows filter (Opus)
+- [x] P1 Search merged into the library + filter bar + photo-nav follows filter (Opus)
 - [ ] P2 CLIP CPU control: slow/fast (Sonnet)
 - [ ] P3 Live scan/CLIP progress (Sonnet)
 - [ ] P4 `/review` per-photo + facets + shared exiftool (Sonnet)

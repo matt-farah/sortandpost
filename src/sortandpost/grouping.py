@@ -98,7 +98,7 @@ def _day_label(d: date, today: date) -> str:
     return f"{d:%B} {d.day}, {d.year}"
 
 
-def _camera_label(make: str | None, model: str | None) -> str:
+def camera_label(make: str | None, model: str | None) -> str:
     make = (make or "").strip()
     model = (model or "").strip()
     if model and make and not model.lower().startswith(make.lower()):
@@ -136,7 +136,7 @@ def _group_by_camera(rows: Iterable[GroupRow]) -> list[PhotoGroup]:
     groups: dict[str, PhotoGroup] = {}
     newest: dict[str, datetime] = {}
     for r in rows:
-        label = _camera_label(r.camera_make, r.camera_model)
+        label = camera_label(r.camera_make, r.camera_model)
         key = label.casefold() if label else _UNKNOWN_CAMERA_KEY
         g = groups.get(key)
         if g is None:

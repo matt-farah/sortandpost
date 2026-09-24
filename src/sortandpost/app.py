@@ -1,8 +1,8 @@
 """NiceGUI web app.
 
-Step 3 delivers thumbnail-grid browsing + a photo-detail page; step 5a adds
-``/search`` (semantic text search over the CLIP matrix). ``/review`` (step 5b)
-and ``/settings`` (step 7) are still placeholders.
+``/`` is the library *and* search: a filter bar + text query drive the grid via
+URL params (:mod:`sortandpost.library_view`); ``/search`` just redirects there.
+Plus ``/photo``, ``/rate``, ``/collections``, ``/review`` and ``/settings``.
 See CLAUDE.md -> "Frontend (NiceGUI pages)".
 
 Only cheap keyed SELECTs run on the event loop here; image decode / exiftool /
@@ -17,11 +17,16 @@ import json
 import logging
 import shutil
 import threading
+import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from fastapi import Request
+from fastapi.responses import RedirectResponse
 from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
@@ -64,7 +69,6 @@ from sortandpost.db.browse import (
     get_paths,
     get_photo,
     get_rating,
-    list_group_rows,
     list_photo_ids,
     online_only_count,
     photo_count,
@@ -73,7 +77,6 @@ from sortandpost.db.browse import (
 )
 from sortandpost.db.deletion import DeleteResult, delete_photos
 from sortandpost.db.flags import (
-    EDIT_FLAG,
     clear_all_edit_flags,
     edit_flag_count,
     edit_flagged_hashes,
@@ -81,7 +84,7 @@ from sortandpost.db.flags import (
 )
 from sortandpost.db.meta import get_generation
 from sortandpost.db.models import EmbeddingRow, Photo, Prediction, PredictionState, Rating
-from sortandpost.grouping import PhotoGroup, group_photos, parse_folder_sort, parse_mode
+from sortandpost.grouping import PhotoGroup, parse_folder_sort
 from sortandpost.helper import HelperInfo, read_helper_info
 from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.hydrate import hydrate_online_only
@@ -95,12 +98,30 @@ from sortandpost.library_roots import (
     save_roots,
     to_host_path,
 )
+from sortandpost.library_view import (
+    UNRATED,
+    LibraryQuery,
+    LibraryView,
+    camera_choices,
+    dates_label,
+    dates_to_picker,
+    folder_choices,
+    neighbors,
+    picker_to_dates,
+    resolve_view,
+    tag_choices,
+)
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.prefs import Theme, get_theme, set_theme
 from sortandpost.reveal import open_in_default_app, reveal_in_file_manager, reveal_supported
-from sortandpost.search import PhotoFilter, browse_photos, semantic_search
-from sortandpost.searches import SavedSearch, add_search, load_searches, remove_search
-from sortandpost.stacks import StackIndex, build_stacks
+from sortandpost.searches import (
+    SavedSearch,
+    add_search,
+    legacy_query,
+    load_searches,
+    remove_search,
+)
+from sortandpost.stacks import build_stacks
 from sortandpost.sync import SyncManager, WriteMode
 from sortandpost.sync.clock import utcnow
 from sortandpost.trash import trash_backend
@@ -111,11 +132,9 @@ _PAGES = [
     ("/", "Library"),
     ("/collections", "Collections"),
     ("/rate", "Rate"),
-    ("/search", "Search"),
     ("/review", "Review"),
     ("/settings", "Settings"),
 ]
-_PAGE_SIZE = 120  # search result cap
 _GRID_BATCH = 80  # thumbnails appended per infinite-scroll step
 _PICKER_CAP = 500  # photos offered at once in the "add photos to collection" picker
 _THUMB_URL = "/thumbs"
@@ -438,6 +457,12 @@ def _thumb_src(pixel_hash: str, size: int) -> str:
     return f"{_THUMB_URL}/{pixel_hash[:2]}/{pixel_hash}_{size}.webp"
 
 
+def _photo_url(pixel_hash: str, link_query: str = "") -> str:
+    """A photo page link carrying the library view it was opened from (the
+    grid's query string), so its prev/next follow that filtered order."""
+    return f"/photo/{pixel_hash}?{link_query}" if link_query else f"/photo/{pixel_hash}"
+
+
 def build_ui(settings: Settings) -> None:
     ui.add_css(_GRID_KB_CSS, shared=True)  # grid keyboard-focus styling, all pages
     ui.add_css(_THEME_CSS, shared=True)  # design tokens + component polish, all pages
@@ -470,36 +495,36 @@ def build_ui(settings: Settings) -> None:
             yield session
 
     @ui.page("/")
-    async def library(group: str = "", folder_sort: str = "") -> None:
+    async def library(request: Request) -> None:
         _header("/")
         client = ui.context.client  # for a valid slot context after awaits / element deletes
         stack_cfg = settings.config.stacking
-        mode = parse_mode(group)
-        fsort = parse_folder_sort(folder_sort)
-        with _session() as session:
-            all_ids = list_photo_ids(session)
-            stacks = build_stacks(session, stack_cfg)
-            flag_n = edit_flag_count(session)
-            cloud_n = online_only_count(session)
-            group_rows = {r.pixel_hash: r for r in list_group_rows(session)} if mode else {}
-        rep_ids = [h for h in all_ids if not stacks.is_hidden_member(h)]
+        lq = LibraryQuery.from_pairs(request.query_params.multi_items())
+        mode = lq.mode
+        fsort = parse_folder_sort(lq.folder_sort)
+        data = await nicegui_run.io_bound(_load_library, settings, engine, lq)
+        if data is None:  # io_bound cancelled / app shutting down
+            return
+        view = data.view
+        stacks = view.stacks
+        flag_n, cloud_n = data.flag_n, data.cloud_n
+        rep_ids = view.ids
         total = len(rep_ids)
-        noun = "stacks" if stack_cfg.enabled and total != len(all_ids) else "photos"
+        noun = "stacks" if stack_cfg.enabled else "photos"
+        # carried onto every photo link so /photo's arrows page through this view
+        link_query = lq.query_string()
 
-        # Group-by mode: reorder rep_ids into section order. Each section renders
-        # as a clickable header + its own grid (so a section can be folded away
-        # without disturbing the others). `rep_ids` stays the source of truth for
-        # the keyboard index / selection / infinite scroll -- just re-ordered.
-        groups: list[PhotoGroup] = []
+        # Group-by mode: `view` already put rep_ids in section order. Each section
+        # renders as a clickable header + its own grid (so a section can be folded
+        # away without disturbing the others). `rep_ids` stays the source of truth
+        # for the keyboard index / selection / infinite scroll.
+        groups: list[PhotoGroup] = view.groups
         key_hashes: dict[str, list[str]] = {}  # section key -> its pixel_hashes
         group_bounds: dict[str, tuple[int, int]] = {}  # key -> [start, end) in rep_ids
         _seg_starts: list[int] = []  # section start indices, ascending (for bisect)
         _seg_keys: list[str] = []  # section key at the matching _seg_starts entry
         collapsed: set[str] = set()  # section keys currently folded shut
         if mode is not None:
-            ordered = [group_rows[h] for h in rep_ids if h in group_rows]
-            groups = group_photos(ordered, mode, folder_sort=fsort)
-            rep_ids = [h for g in groups for h in g.hashes]
             at = 0
             for g in groups:
                 key_hashes[g.key] = g.hashes
@@ -526,31 +551,35 @@ def build_ui(settings: Settings) -> None:
         flag_toggles: dict[str, Callable[[], Any]] = {}
         writable = State.write_mode == WriteMode.writable
 
-        def _group_url(m: str, fs: str) -> str:
-            if not m:
-                return "/"
-            return f"/?group={m}&folder_sort={fs}" if m == "folder" else f"/?group={m}"
+        search_box = _filter_bar(settings, lq, data)
 
         with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
             with ui.row().classes("items-center gap-3"):
                 counter = ui.label(f"{total} {noun}").classes("text-sm sp-muted")
-                group_toggle = (
-                    ui.toggle(
-                        {
-                            "": "Flat",
-                            "day": "Day",
-                            "month": "Month",
-                            "folder": "Folder",
-                            "camera": "Camera",
-                        },
-                        value=mode or "",
+                if lq.has_filters():
+                    ui.label(f"matching · {view.total} in library").classes("text-xs sp-faint")
+                if lq.q:
+                    ui.label("best match first").classes("text-xs sp-faint").tooltip(
+                        "A text search is ordered by relevance, so grouping is off"
                     )
-                    .props("no-caps dense")
-                    .tooltip("Group the library into sections")
-                )
-                group_toggle.on_value_change(
-                    lambda e: ui.navigate.to(_group_url(e.value or "", fsort))
-                )
+                else:
+                    group_toggle = (
+                        ui.toggle(
+                            {
+                                "": "Flat",
+                                "day": "Day",
+                                "month": "Month",
+                                "folder": "Folder",
+                                "camera": "Camera",
+                            },
+                            value=mode or "",
+                        )
+                        .props("no-caps dense")
+                        .tooltip("Group the library into sections")
+                    )
+                    group_toggle.on_value_change(
+                        lambda e: ui.navigate.to(replace(lq, group=e.value or "").url())
+                    )
                 if mode == "folder":
                     fsort_toggle = (
                         ui.toggle(
@@ -566,7 +595,7 @@ def build_ui(settings: Settings) -> None:
                         .tooltip("Order the folder sections")
                     )
                     fsort_toggle.on_value_change(
-                        lambda e: ui.navigate.to(_group_url("folder", e.value or "newest"))
+                        lambda e: ui.navigate.to(replace(lq, folder_sort=e.value or "newest").url())
                     )
                 if mode is not None:
                     ui.button(icon="unfold_less", on_click=lambda: _set_all_collapsed(True)).props(
@@ -612,7 +641,7 @@ def build_ui(settings: Settings) -> None:
             dialog.open()
 
         with flag_box:
-            flag_link = ui.link("", "/search?mark=true").classes(
+            flag_link = ui.link("", LibraryQuery(mark=True).url()).classes(
                 "text-sm text-amber-600 no-underline hover:underline"
             )
             if writable:
@@ -646,12 +675,25 @@ def build_ui(settings: Settings) -> None:
                     "flat dense round size=sm"
                 ).tooltip("dismiss")
 
+        if view.notice:
+            ui.label(view.notice).classes("mx-4 mt-2 text-sm text-amber-600")
         if total == 0:
-            _empty_state(
-                "photo_library",
-                "No photos yet",
-                "Run  python -m sortandpost.indexer --once  to index your library.",
-            )
+            if lq.has_filters():
+                _empty_state("search_off", "No matching photos", "Try loosening the filters.")
+                with ui.row().classes("w-full justify-center"):
+                    ui.button(
+                        "Clear filters",
+                        icon="filter_alt_off",
+                        on_click=lambda: ui.navigate.to(
+                            LibraryQuery(group=lq.group, folder_sort=lq.folder_sort).url()
+                        ),
+                    ).props("flat")
+            else:
+                _empty_state(
+                    "photo_library",
+                    "No photos yet",
+                    "Run  python -m sortandpost.indexer --once  to index your library.",
+                )
             return
 
         # group-by mode: one clickable header + its own grid per section; flat
@@ -888,6 +930,7 @@ def build_ui(settings: Settings) -> None:
                             rating_registry=rating_setters,
                             flag_toggle_registry=flag_toggles,
                             on_hover=_on_hover,
+                            link_query=link_query,
                         )
 
         def append_batch() -> None:
@@ -1082,7 +1125,9 @@ def build_ui(settings: Settings) -> None:
             elif key == "Enter":
                 h = _target_hash()
                 if h is not None:
-                    ui.navigate.to(f"/photo/{h}")
+                    ui.navigate.to(_photo_url(h, link_query))
+            elif key == "/":
+                search_box.run_method("focus")
             elif key.number is not None and 0 <= key.number <= 5:
                 h = _target_hash()
                 setter = rating_setters.get(h) if h is not None else None
@@ -1138,10 +1183,14 @@ def build_ui(settings: Settings) -> None:
             _end_restore()
 
     @ui.page("/photo/{pixel_hash}")
-    def photo_detail(pixel_hash: str) -> None:
+    async def photo_detail(pixel_hash: str, request: Request) -> None:
         _header("/")
         client = ui.context.client
         stacking_on = settings.config.stacking.enabled
+        # the library view this photo was opened from (its query string rides on
+        # the link); empty = the whole library, newest first
+        lq = LibraryQuery.from_pairs(request.query_params.multi_items())
+        link_query = lq.query_string()
         with _session() as session:
             photo = get_photo(session, pixel_hash)
             paths = get_paths(session, pixel_hash) if photo else []
@@ -1149,27 +1198,18 @@ def build_ui(settings: Settings) -> None:
             flagged = bool(edit_flagged_hashes(session, [pixel_hash])) if photo else False
             stacks = build_stacks(session, settings.config.stacking) if stacking_on else None
             members = stacks.members(pixel_hash) if stacks else [pixel_hash]
-            all_ids = list_photo_ids(session) if photo else []
 
         if photo is None:
             _empty_state("image_not_supported", "Photo not found", pixel_hash)
             return
 
-        # -- prev/next order: the grid's representative order --------------- #
-        if stacks is not None:
-            ordered = [h for h in all_ids if not stacks.is_hidden_member(h)]
-            anchor = stacks.representative(pixel_hash)
-        else:
-            ordered = all_ids
-            anchor = pixel_hash
-        try:
-            nav_idx: int | None = ordered.index(anchor)
-        except ValueError:
-            nav_idx = None
-        prev_hash = ordered[nav_idx - 1] if nav_idx is not None and nav_idx > 0 else None
-        next_hash = (
-            ordered[nav_idx + 1] if nav_idx is not None and nav_idx < len(ordered) - 1 else None
-        )
+        # -- prev/next: the same order the grid showed ----------------------- #
+        ordered = _cached_view(link_query)
+        if ordered is None:
+            view = await nicegui_run.io_bound(_resolve, settings, engine, lq)
+            ordered = view.ids if view is not None else []
+        anchor = stacks.representative(pixel_hash) if stacks is not None else pixel_hash
+        prev_hash, next_hash = neighbors(ordered, anchor)
 
         ui.button("← Back", on_click=lambda: ui.navigate.back()).props("flat dense").classes(
             "mx-4 mt-2"
@@ -1231,7 +1271,7 @@ def build_ui(settings: Settings) -> None:
         _paint_collections()
 
         if len(members) > 1:
-            _stack_filmstrip(pixel_hash, members, thumb_small)
+            _stack_filmstrip(pixel_hash, members, thumb_small, link_query)
 
         with ui.row().classes("w-full items-center justify-between m-4"):
             ui.button("← Back to library", on_click=lambda: ui.navigate.back()).props("flat")
@@ -1250,7 +1290,7 @@ def build_ui(settings: Settings) -> None:
                         return
                     with client:
                         ui.notify(_delete_summary(result))
-                        ui.navigate.to("/")
+                        ui.navigate.to(lq.url())
 
                 def _confirm_delete() -> None:
                     with ui.dialog() as dialog, ui.card().classes("gap-2"):
@@ -1288,9 +1328,13 @@ def build_ui(settings: Settings) -> None:
             # grid you started from, not through every photo you skimmed. Same
             # rationale as the stack filmstrip.
             if (key == "ArrowLeft" or key == "k") and prev_hash:
-                ui.run_javascript(f"location.replace('/photo/{prev_hash}')")
+                ui.run_javascript(
+                    f"location.replace({json.dumps(_photo_url(prev_hash, link_query))})"
+                )
             elif (key == "ArrowRight" or key == "j") and next_hash:
-                ui.run_javascript(f"location.replace('/photo/{next_hash}')")
+                ui.run_javascript(
+                    f"location.replace({json.dumps(_photo_url(next_hash, link_query))})"
+                )
             elif star_widget is not None and key.number is not None and 0 <= key.number <= 5:
                 star_widget.set_value(key.number)  # fires the same write path as a click
             elif flag_switch is not None and key == "f":
@@ -1970,146 +2014,10 @@ def build_ui(settings: Settings) -> None:
             ui.timer(0.4, _add_photos_dialog, once=True)
 
     @ui.page("/search")
-    async def search(
-        q: str = "",
-        stars: int = 0,
-        camera: str = "",
-        gps: bool = False,
-        dups: bool = False,
-        missing: bool = False,
-        mark: bool = False,
-    ) -> None:
-        _header("/search")
-        query = q.strip()
-        flt = PhotoFilter(
-            min_stars=stars or None,
-            camera=camera.strip() or None,
-            has_gps=True if gps else None,
-            only_duplicates=dups,
-            include_missing=missing,
-            tags_all=[EDIT_FLAG] if mark else [],
-        )
-
-        saved = load_searches(settings.paths)
-
-        with ui.row().classes("w-full items-center gap-2 p-4 flex-wrap"):
-            box = (
-                ui.input(placeholder="Describe a photo… (blank = browse by filters)", value=query)
-                .props("clearable dense")
-                .classes("min-w-64 flex-1")
-            )
-            stars_sel = ui.select(
-                {0: "any ★", 1: "≥1★", 2: "≥2★", 3: "≥3★", 4: "≥4★", 5: "5★"}, value=stars
-            ).props("dense options-dense")
-            cam_in = ui.input(placeholder="camera", value=camera).props("dense").classes("w-36")
-            gps_cb = ui.checkbox("GPS", value=gps)
-            dup_cb = ui.checkbox("dupes", value=dups)
-            miss_cb = ui.checkbox("incl. missing", value=missing)
-            mark_cb = ui.checkbox("⚑ to edit", value=mark)
-
-            def _current(name: str = "") -> SavedSearch:
-                return SavedSearch(
-                    name=name,
-                    q=(box.value or "").strip(),
-                    stars=int(stars_sel.value or 0),
-                    camera=(cam_in.value or "").strip(),
-                    gps=bool(gps_cb.value),
-                    dups=bool(dup_cb.value),
-                    missing=bool(miss_cb.value),
-                    mark=bool(mark_cb.value),
-                )
-
-            def _apply() -> None:
-                ui.navigate.to(_current().query_string())
-
-            box.on("keydown.enter", lambda: _apply())
-            ui.button("Apply", on_click=_apply)
-
-            def _confirm_save() -> None:
-                if _current().is_empty():
-                    ui.notify("Nothing to save — type a query or pick a filter.", type="warning")
-                    return
-                with ui.dialog() as dialog, ui.card().classes("gap-2"):
-                    ui.label("Save this search").classes("font-medium")
-                    name_in = ui.input(placeholder="name").props("dense autofocus").classes("w-64")
-
-                    def _do() -> None:
-                        name = (name_in.value or "").strip()
-                        if not name:
-                            return
-                        add_search(settings.paths, _current(name))
-                        dialog.close()
-                        ui.navigate.to(_current(name).query_string())
-
-                    name_in.on("keydown.enter", _do)
-                    with ui.row().classes("w-full justify-end gap-2"):
-                        ui.button("Cancel", on_click=dialog.close).props("flat")
-                        ui.button("Save", on_click=_do).props("color=primary")
-                dialog.open()
-
-            ui.button(icon="bookmark_add", on_click=_confirm_save).props("flat dense").tooltip(
-                "save this search"
-            )
-
-        saved_row = ui.row().classes("w-full items-center gap-1 px-4 flex-wrap")
-
-        def _render_saved() -> None:
-            saved_row.clear()
-            with saved_row:
-                if not saved:
-                    ui.label("No saved searches yet.").classes("text-xs text-gray-500")
-                    return
-                ui.label("Saved:").classes("text-xs text-gray-500 mr-1")
-                for s in saved:
-                    with ui.row().classes(
-                        "items-center gap-0 rounded-full bg-gray-200 dark:bg-gray-700 pl-1"
-                    ):
-                        ui.button(
-                            s.name,
-                            icon="search",
-                            on_click=lambda s=s: ui.navigate.to(s.query_string()),
-                        ).props("flat dense no-caps size=sm").tooltip(s.summary())
-                        ui.button(icon="close", on_click=lambda s=s: _delete(s)).props(
-                            "flat dense round size=xs"
-                        ).tooltip(f'delete "{s.name}"')
-
-        def _delete(s: SavedSearch) -> None:
-            nonlocal saved
-            saved = remove_search(settings.paths, s.name)
-            _render_saved()
-            ui.notify(f'deleted "{s.name}"')
-
-        _render_saved()
-
-        if not query and not flt.is_active() and not missing:
-            ui.label("Enter a query or pick filters.").classes("m-4 text-gray-500")
-            return
-        if query and not clip_available():
-            ui.label(
-                "Semantic search needs CLIP (torch + open-clip-torch), not installed here. "
-                "Run in Docker, or search with filters only."
-            ).classes("m-4 text-amber-600")
-            return
-
-        try:
-            result = await nicegui_run.io_bound(_run_search, settings, engine, query, flt)
-            photos, stack_sizes = result if result else ([], {})
-        except ClipModelUnavailable:
-            ui.label("CLIP model could not be loaded.").classes("m-4 text-amber-600")
-            return
-        except Exception:
-            log.exception("search failed")
-            ui.label("Search failed — see logs.").classes("m-4 text-red-500")
-            return
-
-        label = f'"{query}"' if query else "filtered browse"
-        ui.label(f"{len(photos)} result(s) · {label}").classes("px-4 text-sm text-gray-500")
-        if not photos:
-            ui.label("No matches.").classes("m-4 text-gray-500")
-            return
-        with _photo_grid():
-            for photo in photos:
-                _thumb_cell(photo, thumb_small, stack_size=stack_sizes.get(photo.pixel_hash, 1))
+    def search_redirect(request: Request) -> RedirectResponse:
+        """Search lives in the library now. Old ``/search`` links and bookmarks
+        (``stars`` there meant "at least N") land on the equivalent ``/`` view."""
+        return RedirectResponse(legacy_query(dict(request.query_params)).url(), status_code=307)
 
     @ui.page("/review")
     async def review() -> None:
@@ -2322,53 +2230,71 @@ def _start_lock_watch(settings: Settings, manager: SyncManager) -> None:
     nicegui_app.on_shutdown(stop.set)
 
 
-def _run_search(
-    settings: Settings, engine: Engine, query: str, flt: PhotoFilter
-) -> tuple[list[Photo], dict[str, int]]:
-    """Runs off the event loop (``run.io_bound``). With a query: CLIP text-embed
-    + ranked lookup intersected with *flt*. Without: filtered browse by date.
-    Returns ``(photos, stack_sizes)`` -- when stacking is on, results are
-    collapsed to representatives and ``stack_sizes`` maps each to its member
-    count."""
+# The grid's resolved order per query string, so the photo page's prev/next
+# walks exactly what the grid showed -- a snapshot, so rating a photo out of an
+# "unrated" filter doesn't pull it out from under the arrow keys, and a text
+# query isn't re-embedded on every arrow press. Small and time-bounded; a miss
+# (reload, bookmark) just resolves again.
+_VIEW_CACHE: OrderedDict[str, tuple[float, list[str]]] = OrderedDict()
+_VIEW_CACHE_MAX = 16
+_VIEW_CACHE_TTL = 30 * 60.0
+_VIEW_CACHE_LOCK = threading.Lock()
+
+
+def _remember_view(key: str, ids: list[str]) -> None:
+    with _VIEW_CACHE_LOCK:
+        _VIEW_CACHE[key] = (time.monotonic(), ids)
+        _VIEW_CACHE.move_to_end(key)
+        while len(_VIEW_CACHE) > _VIEW_CACHE_MAX:
+            _VIEW_CACHE.popitem(last=False)
+
+
+def _cached_view(key: str) -> list[str] | None:
+    with _VIEW_CACHE_LOCK:
+        hit = _VIEW_CACHE.get(key)
+        if hit is None or time.monotonic() - hit[0] > _VIEW_CACHE_TTL:
+            return None
+        return hit[1]
+
+
+def _resolve(settings: Settings, engine: Engine, lq: LibraryQuery) -> LibraryView:
+    """Runs off the event loop (``run.io_bound``): a text query embeds with
+    CLIP. Caches the order for the photo page's prev/next."""
+    encoder = (lambda: State.get_clip_model(settings)) if clip_available() else None
     with Session(engine) as session:
-        if query:
-            model = State.get_clip_model(settings)
-            hits = semantic_search(session, settings, model, query, limit=_PAGE_SIZE, flt=flt)
-            order = {hit.pixel_hash: i for i, hit in enumerate(hits)}
-            if not order:
-                return [], {}
-            found = session.exec(select(Photo).where(col(Photo.pixel_hash).in_(list(order)))).all()
-            photos = sorted(found, key=lambda p: order[p.pixel_hash])
-        else:
-            photos = list(browse_photos(session, flt, limit=_PAGE_SIZE))
-
-        sizes: dict[str, int] = {}
-        if settings.config.stacking.enabled:
-            stacks = build_stacks(session, settings.config.stacking)
-            photos = _collapse_stacks(photos, stacks, session)
-            sizes = {p.pixel_hash: stacks.size(p.pixel_hash) for p in photos}
-
-        session.expunge_all()
-        return list(photos), sizes
+        view = resolve_view(session, settings, lq, encoder=encoder)
+    _remember_view(lq.query_string(), view.ids)
+    return view
 
 
-def _collapse_stacks(photos: list[Photo], stacks: StackIndex, session: Session) -> list[Photo]:
-    """Replace each result with its stack representative, keeping the first
-    (best-ranked) hit per stack and pulling in any representative not itself a
-    hit."""
-    have = {p.pixel_hash: p for p in photos}
-    ordered_reps: list[str] = []
-    seen: set[str] = set()
-    for photo in photos:
-        rep = stacks.representative(photo.pixel_hash)
-        if rep not in seen:
-            seen.add(rep)
-            ordered_reps.append(rep)
-    missing = [h for h in ordered_reps if h not in have]
-    if missing:
-        for photo in session.exec(select(Photo).where(col(Photo.pixel_hash).in_(missing))).all():
-            have[photo.pixel_hash] = photo
-    return [have[h] for h in ordered_reps if h in have]
+@dataclass
+class _LibraryData:
+    """Everything the ``/`` page needs from the DB, loaded in one off-loop call."""
+
+    view: LibraryView
+    cameras: list[tuple[str, int]]
+    folders: list[tuple[str, str]]
+    tags: dict[str, list[str]]
+    flag_n: int
+    cloud_n: int
+
+
+def _load_library(settings: Settings, engine: Engine, lq: LibraryQuery) -> _LibraryData:
+    view = _resolve(settings, engine, lq)
+    try:
+        vocab = load_vocab(settings.paths.tags_file)
+    except Exception:  # a broken tags.yaml must not break the library
+        log.exception("could not load the tag vocabulary")
+        vocab = None
+    with Session(engine) as session:
+        return _LibraryData(
+            view=view,
+            cameras=camera_choices(session),
+            folders=folder_choices(session, settings.library_roots),
+            tags=tag_choices(session, vocab),
+            flag_n=edit_flag_count(session),
+            cloud_n=online_only_count(session),
+        )
 
 
 def _run_index_pass(settings: Settings, engine: Engine) -> str:
@@ -3203,6 +3129,235 @@ def _edit_flag_button(
     return ui.switch("Mark for editing", value=flagged, on_change=_toggle).props("color=amber")
 
 
+_STAR_CHOICES: dict[int, str] = {
+    UNRATED: "Unrated",
+    1: "1★",
+    2: "2★",
+    3: "3★",
+    4: "4★",
+    5: "5★",
+}
+
+
+def _with_selected(options: dict[Any, str], selected: Any) -> dict[Any, str]:
+    """*options* plus any selected value it lacks (e.g. from an old saved
+    search) -- ``ui.select`` rejects a value that isn't an option."""
+    values = selected if isinstance(selected, list | tuple | set | frozenset) else [selected]
+    extra = {v: str(v) for v in values if v not in options and v is not None}
+    return {**options, **extra}
+
+
+def _multi_select(
+    options: dict[Any, str],
+    value: list[Any],
+    label: str,
+    on_apply: Callable[[list[Any]], None],
+    *,
+    classes: str = "w-40",
+    with_input: bool = False,
+) -> ui.select:
+    """A chip multi-select that applies each pick right away."""
+    sel = (
+        ui.select(
+            _with_selected(options, value),
+            value=value,
+            label=label,
+            multiple=True,
+            with_input=with_input,
+            clearable=True,
+        )
+        .props("dense outlined options-dense use-chips")
+        .classes(classes)
+    )
+    sel.on_value_change(lambda _: on_apply(list(sel.value or [])))
+    return sel
+
+
+def _with_flag(lq: LibraryQuery, key: str, on: bool) -> LibraryQuery:
+    """*lq* with one of its boolean filters (gps / dups / mark / missing) set."""
+    flags: dict[str, bool] = {k: getattr(lq, k) for k in ("gps", "dups", "mark", "missing")}
+    flags[key] = on
+    return replace(
+        lq, gps=flags["gps"], dups=flags["dups"], mark=flags["mark"], missing=flags["missing"]
+    )
+
+
+def _filter_bar(settings: Settings, lq: LibraryQuery, data: _LibraryData) -> ui.input:
+    """The library's search + filter row. Every change navigates to the new
+    view's URL -- all state lives there (see :mod:`sortandpost.library_view`) --
+    keeping the group-by view as it is. Returns the search box (``/`` focuses it)."""
+    sent = [False]
+
+    def _go(new: LibraryQuery) -> None:
+        if new == lq or sent[0]:  # blur after Enter, a menu closing unchanged, ...
+            return
+        sent[0] = True
+        ui.navigate.to(new.url())
+
+    def _keep_view(new: LibraryQuery) -> LibraryQuery:
+        return replace(new, group=lq.group, folder_sort=lq.folder_sort)
+
+    with ui.row().classes("w-full items-center gap-2 px-4 pt-3 flex-wrap"):
+        box = (
+            ui.input(placeholder="Search photos — e.g. dog on the beach", value=lq.q)
+            .props("dense outlined clearable")
+            .classes("min-w-64 flex-1")
+        )
+        with box.add_slot("prepend"):
+            ui.icon("search")
+        box.on("keydown.enter", lambda: _go(replace(lq, q=(box.value or "").strip())))
+        box.on("clear", lambda: _go(replace(lq, q="")))
+
+        _multi_select(
+            _STAR_CHOICES,
+            sorted(lq.stars),
+            "Stars",
+            lambda v: _go(replace(lq, stars=frozenset(int(x) for x in v))),
+            classes="w-36",
+        )
+        _multi_select(
+            {c: f"{c or 'Unknown camera'} ({n})" for c, n in data.cameras},
+            list(lq.cameras),
+            "Camera",
+            lambda v: _go(replace(lq, cameras=tuple(v))),
+            classes="w-44",
+        )
+
+        # Dates: a range calendar (click the first day, then the last; click one
+        # day twice for a single day). Picks apply at once, like the selects.
+        dates_btn = (
+            ui.button(dates_label(lq) or "Any date", icon="event")
+            .props("outline dense no-caps" + ("" if lq.dates else " color=grey-7"))
+            .classes("px-2")
+        )
+        if lq.date_error():
+            dates_btn.props("color=negative").tooltip(lq.date_error() or "")
+        with dates_btn, ui.menu(), ui.column().classes("gap-1 p-1"):
+            picker = ui.date(value=dates_to_picker(lq)).props("range today-btn minimal")
+            picker.on_value_change(lambda e: _go(replace(lq, dates=picker_to_dates(e.value))))
+            if lq.dates:
+                ui.button(
+                    "Any date", icon="event_busy", on_click=lambda: _go(replace(lq, dates=""))
+                ).props("flat dense no-caps")
+
+        folder = (
+            ui.select(
+                _with_selected(dict(data.folders), lq.folder or None),
+                value=lq.folder or None,
+                label="Folder",
+                with_input=True,
+                clearable=True,
+            )
+            .props("dense outlined options-dense")
+            .classes("w-52")
+        )
+        folder.on_value_change(lambda e: _go(replace(lq, folder=e.value or "")))
+
+        tag_opts = {
+            name: f"{name} · {facet}" for facet, names in data.tags.items() for name in names
+        }
+        _multi_select(
+            tag_opts,
+            list(lq.tags),
+            "Subject / tag",
+            lambda v: _go(replace(lq, tags=tuple(v))),
+            classes="w-52",
+            with_input=True,
+        )
+        if len(lq.tags) > 1:
+            ui.toggle({"any": "any", "all": "all"}, value=lq.tagmode).props(
+                "no-caps dense"
+            ).tooltip("Match any of the tags, or all of them").on_value_change(
+                lambda e: _go(replace(lq, tagmode=e.value or "any"))
+            )
+
+        extras = sum(bool(x) for x in (lq.gps, lq.dups, lq.missing, lq.mark))
+        with ui.button(icon="tune").props("flat dense").tooltip("More filters"):
+            if extras:
+                ui.badge(str(extras)).props("floating color=primary")
+            with ui.menu(), ui.column().classes("gap-0 p-2"):
+                for key, text in (
+                    ("gps", "Has GPS location"),
+                    ("dups", "Duplicates only"),
+                    ("mark", "⚑ Marked for editing"),
+                    ("missing", "Include missing files"),
+                ):
+                    ui.checkbox(
+                        text,
+                        value=bool(getattr(lq, key)),
+                        on_change=lambda e, k=key: _go(_with_flag(lq, k, bool(e.value))),
+                    )
+
+        _saved_searches_menu(settings, lq, _go, _keep_view)
+
+        if lq.has_filters():
+            ui.button(
+                icon="filter_alt_off",
+                on_click=lambda: _go(LibraryQuery(group=lq.group, folder_sort=lq.folder_sort)),
+            ).props("flat dense").tooltip("Clear search and filters")
+    return box
+
+
+def _saved_searches_menu(
+    settings: Settings,
+    lq: LibraryQuery,
+    go: Callable[[LibraryQuery], None],
+    keep_view: Callable[[LibraryQuery], LibraryQuery],
+) -> None:
+    """The filter bar's "Saved" dropdown: open / delete saved searches, and save
+    the current search + filters under a name."""
+    with ui.button(icon="bookmarks").props("flat dense").tooltip("Saved searches"):
+        menu = ui.menu()
+
+    def _save_dialog() -> None:
+        menu.close()
+        with ui.dialog() as dialog, ui.card().classes("gap-2"):
+            ui.label("Save this search").classes("font-medium")
+            ui.label(lq.summary()).classes("text-xs sp-muted")
+            name_in = ui.input(placeholder="name").props("dense autofocus").classes("w-64")
+
+            def _do() -> None:
+                name = (name_in.value or "").strip()
+                if not name:
+                    return
+                add_search(settings.paths, SavedSearch.of(name, lq))
+                dialog.close()
+                ui.notify(f'saved "{name}"')
+                _paint()
+
+            name_in.on("keydown.enter", _do)
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Save", on_click=_do).props("color=primary")
+        dialog.open()
+
+    def _delete(s: SavedSearch) -> None:
+        remove_search(settings.paths, s.name)
+        ui.notify(f'deleted "{s.name}"')
+        _paint()
+
+    def _paint() -> None:
+        menu.clear()
+        saved = load_searches(settings.paths)
+        with menu, ui.column().classes("gap-0 py-1 min-w-56"):
+            if not saved:
+                ui.label("No saved searches yet.").classes("px-4 py-2 text-xs sp-muted")
+            for s in saved:
+                with ui.row().classes("w-full items-center no-wrap gap-0 pr-1"):
+                    ui.menu_item(
+                        s.name, on_click=lambda s=s: go(keep_view(s.library_query))
+                    ).classes("flex-1").tooltip(s.summary())
+                    ui.button(icon="close", on_click=lambda s=s: _delete(s)).props(
+                        "flat dense round size=xs"
+                    ).tooltip(f'delete "{s.name}"')
+            ui.separator()
+            item = ui.menu_item("Save current search…", on_click=_save_dialog, auto_close=False)
+            if not lq.has_filters():
+                item.props("disable")
+
+    _paint()
+
+
 def _photo_grid(min_px: int = 220) -> ui.grid:
     """A full-bleed, auto-reflowing thumbnail grid. ``w-full`` is required: the
     NiceGUI page-content column is ``align-items: start``, so without it the grid
@@ -3281,7 +3436,7 @@ def _path_row(
             ).tooltip("Open in default app")
 
 
-def _stack_filmstrip(current: str, members: list[str], size: int) -> None:
+def _stack_filmstrip(current: str, members: list[str], size: int, link_query: str = "") -> None:
     """The other photos in this stack. ``members[0]`` is the representative
     (newest mtime); the photo being viewed is outlined.
 
@@ -3308,7 +3463,9 @@ def _stack_filmstrip(current: str, members: list[str], size: int) -> None:
                 if not is_current:
                     cell.on(
                         "click",
-                        lambda m=member: ui.run_javascript(f"location.replace('/photo/{m}')"),
+                        lambda m=member: ui.run_javascript(
+                            f"location.replace({json.dumps(_photo_url(m, link_query))})"
+                        ),
                     )
 
 
@@ -3461,8 +3618,10 @@ def _thumb_cell(
     rating_registry: dict[str, Callable[[int], Any]] | None = None,
     flag_toggle_registry: dict[str, Callable[[], Any]] | None = None,
     on_hover: Callable[[str, bool], Any] | None = None,
+    link_query: str = "",
 ) -> None:
-    with ui.link(target=f"/photo/{photo.pixel_hash}").classes("group relative block") as cell:
+    target = _photo_url(photo.pixel_hash, link_query)
+    with ui.link(target=target).classes("group relative block") as cell:
         if cell_registry is not None:
             cell_registry[photo.pixel_hash] = cell
         if on_hover is not None:
