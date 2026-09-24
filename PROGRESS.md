@@ -1,7 +1,26 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-24 (V1 P5: undo last delete + Recently deleted)._
-_Working branch: `v1-p5-undo-delete`._
+_Last updated: 2026-09-24 (V1 P6: RAW/HEIC no-write audit)._
+_Working branch: `main`._
+
+---
+
+## ✅ 2026-09-24 — V1 P6: RAW/HEIC no-write audit
+
+All tests pass (new: `test_raw_heic_audit.py`, 5 new tests); 454 total tests; ruff / format / mypy
+clean; no schema change. No bugs found (audit passed).
+
+- **Test suite `test_raw_heic_audit.py`:** audits constraint #2 (RAW files never written) and #3
+  (pixel_hash stable across EXIF writes) using real CR2 and HEIC fixtures from
+  `~/Downloads/sampleImages`:
+  - `test_raw_cr2_not_modified_by_rating`: record baseline bytes/mtime → rate through
+    `set_rating()` with exiftool active → assert file unchanged + no sidecars.
+  - `test_raw_cr2_not_modified_by_tag_approval`: same pattern for tag approval.
+  - `test_heic_rating_round_trip`: rate HEIC → verify exiftool.read() returns the rating.
+  - `test_heic_pixel_hash_stable_across_rating_writes`: write rating N times → verify pixel_hash
+    unchanged each time (immune to EXIF writes).
+  - `test_raw_files_are_correctly_identified`: sanity check fixture is CR2 (is_raw() == True).
+- **Result:** all constraints verified; no bugs found in ratings/tags code path with RAW/HEIC.
 
 ---
 
