@@ -1,7 +1,24 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-24 (V1 P3: live scan / CLIP progress)._
-_Working branch: `v1-p3-progress`._
+_Last updated: 2026-09-24 (V1 P4: per-photo /review + facets + shared exiftool)._
+_Working branch: `v1-p4-review`._
+
+---
+
+## 📈 2026-09-24 — V1 P4: per-photo `/review`, facet grouping, shared exiftool
+
+436 tests pass (+8); ruff / format / mypy clean; no schema change. User browser-tested +
+signed off.
+
+- `/review` groups tag panels under facet headings (vocab order, facet-less tags under "Other").
+  Each tag panel pages its pending photos (48 at a time, best score first, loaded on first open)
+  with per-photo ✓ / ✗; a decision removes the tile in place and updates the counts. Bulk
+  approve/reject-all kept. `clip.tagging` gained `facet_sections`, `pending_for_tag`,
+  `is_pending`; `pending_groups` now returns counts only (no `sample_hashes`).
+- `metadata/shared.py`: `SharedExiftool` / `EXIFTOOL` — one lazily-started, lock-serialized
+  `-stay_open` client with a 2-minute idle close, closed on app shutdown. Rating, bulk rating,
+  bulk tag and review all use it via `app._exif(settings)` instead of spawning one per action.
+- Per-photo decisions still emit `clip_approve` / `clip_reject` `changes` rows (constraint #4).
 
 ---
 

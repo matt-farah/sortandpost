@@ -53,7 +53,7 @@ only the widgets are missing.
 - Tag AND / OR selector (multi-tag).
 - Currently wired: stars ≥ N, camera, has-GPS, duplicates, missing.
 
-### 3. Per-photo `/review` controls + facet grouping
+### 3. Per-photo `/review` controls + facet grouping — ✅ shipped (V1 P4)
 Today `/review` is per-tag bulk approve/reject only.
 
 - Per-prediction approve/reject on individual photos.
@@ -72,7 +72,7 @@ lazy purge).
 - A live two-container test of the cross-machine lazy-trash path (unit-tested
   only so far).
 
-### 13. `/review` exiftool reuse
+### 13. `/review` exiftool reuse — ✅ shipped (V1 P4)
 Each bulk approve/reject spawns its own `exiftool -stay_open` process. Share
 one serialized client across a review session.
 

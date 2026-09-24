@@ -12,7 +12,14 @@ import pytest
 from PIL import Image
 from sqlmodel import Session, select
 
-from sortandpost.clip.tagging import approve, pending_groups, reject
+from sortandpost.clip.tagging import (
+    approve,
+    facet_sections,
+    is_pending,
+    pending_for_tag,
+    pending_groups,
+    reject,
+)
 from sortandpost.clip.vocab import load_vocab
 from sortandpost.config import Settings
 from sortandpost.db import init_db, make_engine
@@ -154,7 +161,6 @@ def test_pending_groups_shape(settings: Settings) -> None:
     assert [g.tag_name for g in groups] == ["red"]
     assert groups[0].facet == "colour"
     assert groups[0].count == 1
-    assert len(groups[0].sample_hashes) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -288,3 +294,69 @@ def test_reject_creates_row_when_prediction_absent(settings: Settings) -> None:
         row = s.exec(select(Prediction)).one()
         assert row.state == PredictionState.rejected
         assert row.tag_name == "blue"
+
+
+# --------------------------------------------------------------------------- #
+# facet sections + per-photo paging
+# --------------------------------------------------------------------------- #
+def test_facet_sections_follow_vocab_order_and_put_unknown_last(settings: Settings) -> None:
+    settings.paths.tags_file.write_text(
+        "scene:\n  - beach\n  - forest\nlighting:\n  - sunset\n", encoding="utf-8"
+    )
+    vocab = load_vocab(settings.paths.tags_file)
+    with _session(settings) as s:
+        for i, tag in enumerate(["sunset", "beach", "forest", "beach", "retired-tag"]):
+            _add_photo(s, f"h{i}", f"/x/{i}.jpg")
+            s.add(
+                Prediction(
+                    pixel_hash=f"h{i}",
+                    tag_name=tag,
+                    score=0.3,
+                    model="m",
+                    run_at=NOW,
+                    state=PredictionState.pending,
+                )
+            )
+        s.commit()
+        groups = pending_groups(s, model="m", vocab=vocab)
+
+    assert [(g.tag_name, g.count) for g in groups] == [
+        ("beach", 2),
+        ("forest", 1),
+        ("retired-tag", 1),
+        ("sunset", 1),
+    ]
+    sections = facet_sections(groups, vocab)
+    assert [(sec.facet, [g.tag_name for g in sec.groups]) for sec in sections] == [
+        ("scene", ["beach", "forest"]),
+        ("lighting", ["sunset"]),
+        (None, ["retired-tag"]),
+    ]
+    assert [sec.count for sec in sections] == [3, 1, 1]
+
+
+def test_pending_for_tag_pages_best_score_first_and_skips_decided(settings: Settings) -> None:
+    with _session(settings) as s:
+        for i, score in enumerate([0.25, 0.9, 0.5, 0.7]):
+            _add_photo(s, f"h{i}", f"/x/{i}.jpg")
+            s.add(
+                Prediction(
+                    pixel_hash=f"h{i}",
+                    tag_name="red",
+                    score=score,
+                    model="m",
+                    run_at=NOW,
+                    state=PredictionState.pending,
+                )
+            )
+        s.commit()
+        reject(s, device_id="d", model="m", pixel_hash="h1", tag_name="red", now=NOW)
+        s.commit()
+
+        first = pending_for_tag(s, model="m", tag_name="red", limit=2)
+        second = pending_for_tag(s, model="m", tag_name="red", limit=2, offset=2)
+        assert [h for h, _ in first] == ["h3", "h2"]
+        assert [h for h, _ in second] == ["h0"]
+        assert not is_pending(s, model="m", pixel_hash="h1", tag_name="red")
+        assert is_pending(s, model="m", pixel_hash="h3", tag_name="red")
+        assert not is_pending(s, model="other", pixel_hash="h3", tag_name="red")

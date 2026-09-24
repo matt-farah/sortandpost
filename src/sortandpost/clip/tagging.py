@@ -21,12 +21,12 @@ Review (called from the UI, off the event loop): the user's decision in
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, func, select
 
 from sortandpost.clip.vocab import Vocab
 from sortandpost.db.models import (
@@ -114,28 +114,72 @@ class ReviewGroup:
     tag_name: str
     facet: str | None
     count: int
-    sample_hashes: list[str] = field(default_factory=list)
 
 
-def pending_groups(
-    session: Session, *, model: str, vocab: Vocab, sample_size: int = 12
-) -> list[ReviewGroup]:
+@dataclass
+class FacetSection:
+    facet: str | None  # ``None`` = tags with no facet in the current vocabulary
+    groups: list[ReviewGroup]
+
+    @property
+    def count(self) -> int:
+        return sum(g.count for g in self.groups)
+
+
+def pending_groups(session: Session, *, model: str, vocab: Vocab) -> list[ReviewGroup]:
     """Pending predictions for *model*, grouped by tag, most-suggested first."""
     rows = session.exec(
-        select(Prediction)
+        select(Prediction.tag_name, func.count())
         .where(Prediction.model == model, Prediction.state == PredictionState.pending)
-        .order_by(col(Prediction.score).desc())
+        .group_by(Prediction.tag_name)
     ).all()
-    groups: dict[str, ReviewGroup] = {}
-    for row in rows:
-        group = groups.get(row.tag_name)
-        if group is None:
-            group = ReviewGroup(row.tag_name, vocab.facet_of(row.tag_name), 0)
-            groups[row.tag_name] = group
-        group.count += 1
-        if len(group.sample_hashes) < sample_size:
-            group.sample_hashes.append(row.pixel_hash)
-    return sorted(groups.values(), key=lambda g: (-g.count, g.tag_name))
+    groups = [ReviewGroup(tag, vocab.facet_of(tag), int(n)) for tag, n in rows]
+    return sorted(groups, key=lambda g: (-g.count, g.tag_name))
+
+
+def facet_sections(groups: list[ReviewGroup], vocab: Vocab) -> list[FacetSection]:
+    """Bucket tag groups under their facet, in the vocabulary's facet order
+    (``tags.yaml`` order); facet-less tags come last. Groups keep their order."""
+    order: dict[str | None, int] = {}
+    for term in vocab.terms:
+        order.setdefault(term.facet, len(order))
+    buckets: dict[str | None, list[ReviewGroup]] = {}
+    for group in groups:
+        buckets.setdefault(group.facet, []).append(group)
+    ranked = sorted(buckets, key=lambda f: (f is None, order.get(f, len(order)), f or ""))
+    return [FacetSection(facet, buckets[facet]) for facet in ranked]
+
+
+def pending_for_tag(
+    session: Session, *, model: str, tag_name: str, limit: int, offset: int = 0
+) -> list[tuple[str, float]]:
+    """One page of ``(pixel_hash, score)`` still pending for *tag_name*, best score first."""
+    rows = session.exec(
+        select(Prediction.pixel_hash, Prediction.score)
+        .where(
+            Prediction.model == model,
+            Prediction.tag_name == tag_name,
+            Prediction.state == PredictionState.pending,
+        )
+        .order_by(col(Prediction.score).desc(), col(Prediction.pixel_hash))
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return [(ph, float(score)) for ph, score in rows]
+
+
+def is_pending(session: Session, *, model: str, pixel_hash: str, tag_name: str) -> bool:
+    return (
+        session.exec(
+            select(Prediction.id).where(
+                Prediction.pixel_hash == pixel_hash,
+                Prediction.tag_name == tag_name,
+                Prediction.model == model,
+                Prediction.state == PredictionState.pending,
+            )
+        ).first()
+        is not None
+    )
 
 
 def approve(
