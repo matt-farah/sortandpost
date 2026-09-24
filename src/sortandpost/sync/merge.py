@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from sortandpost.db.meta import get_generation, set_generation
 from sortandpost.db.models import (
@@ -263,23 +263,51 @@ def _replay_state_changes(target: Session, source: Session) -> None:
                 )
             ).all():
                 pred.state = state
-        elif c.op is ChangeOp.unindex:
-            # An explicit user delete. Record the tombstone so this machine
-            # purges its derived rows and lazily trashes its own local copy on
-            # its next scan (see sortandpost.db.deletion.apply_pending_tombstones).
-            # Mark the photo missing in the meantime so it drops out of views.
-            if target.get(Tombstone, c.pixel_hash) is None:
+    _replay_deletes(target, rows)
+
+
+def _replay_deletes(target: Session, source_rows: list[Change]) -> None:
+    """Settle explicit deletes (``unindex``) vs put-backs (``restore``) for every
+    photo the source touched, last-writer-wins by :func:`sort_key` over the
+    *unioned* log -- so an older ``unindex`` from a conflict copy can't re-bury a
+    photo the base already put back, and vice versa.
+
+    Latest is ``unindex``: record the tombstone so this machine purges its
+    derived rows and lazily trashes its own local copy on its next scan (see
+    :func:`sortandpost.db.deletion.apply_pending_tombstones`), and mark the photo
+    missing in the meantime so it drops out of views. Latest is ``restore``:
+    drop the tombstone so the next scan indexes the file again.
+    """
+    hashes = {c.pixel_hash for c in source_rows if c.op in (ChangeOp.unindex, ChangeOp.restore)}
+    if not hashes:
+        return
+    target.flush()  # the unioned change rows must be visible to the query below
+    for h in sorted(hashes):
+        rows = target.exec(
+            select(Change).where(
+                Change.pixel_hash == h,
+                col(Change.op).in_([ChangeOp.unindex, ChangeOp.restore]),
+            )
+        ).all()
+        if not rows:
+            continue
+        last = max(rows, key=sort_key)
+        tomb = target.get(Tombstone, h)
+        if last.op is ChangeOp.unindex:
+            if tomb is None:
                 target.add(
                     Tombstone(
-                        pixel_hash=c.pixel_hash,
-                        deleted_at=c.ts,
-                        deleted_by_device=c.device_id,
+                        pixel_hash=h,
+                        deleted_at=last.ts,
+                        deleted_by_device=last.device_id,
                         applied=False,
                     )
                 )
-            for photo in target.exec(select(Photo).where(Photo.pixel_hash == c.pixel_hash)).all():
-                if photo.missing_since is None:
-                    photo.missing_since = c.ts
+            photo = target.get(Photo, h)
+            if photo is not None and photo.missing_since is None:
+                photo.missing_since = last.ts
+        elif tomb is not None:
+            target.delete(tomb)
 
 
 # --------------------------------------------------------------------------- #

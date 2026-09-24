@@ -14,6 +14,10 @@ Other machines learn of the delete through ``unindex`` merge replay (which write
 the same tombstone) and apply it lazily via :func:`apply_pending_tombstones` on
 their next scan -- purging their own derived rows and trashing their own local
 copy of the file if it is still present.
+
+Before purging, each photo's user state (rating, tags, CLIP decisions) is saved
+into the trash batch's manifest, so :func:`restore_photo_state` can put it back
+after a "Put back" (see :mod:`sortandpost.undelete`).
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from sqlmodel import Session, col, select
 
@@ -34,12 +39,18 @@ from sortandpost.db.models import (
     PhotoPath,
     PhotoTag,
     Prediction,
+    PredictionState,
     Rating,
+    RatingSource,
     ScanState,
+    Tag,
+    TagKind,
+    TagSource,
     Tombstone,
 )
 from sortandpost.paths import Paths
 from sortandpost.sync.changelog import record_change
+from sortandpost.sync.clock import parse as parse_ts
 from sortandpost.trash import TrashResult, move_to_trash
 
 log = logging.getLogger(__name__)
@@ -86,9 +97,9 @@ def delete_photos(
     existing = [h for h in wanted if session.get(Photo, h) is not None]
 
     if trash_files and existing:
-        present_paths = _present_paths(session, existing)
-        if present_paths:
-            result.trash = move_to_trash(present_paths, local_dir=paths.local, now=now)
+        result.trash = _trash_with_state(
+            session, existing, paths=paths, thumb_sizes=thumb_sizes, now=now, reason="delete"
+        )
 
     for h in wanted:
         n_paths = len(_all_paths(session, h))
@@ -140,9 +151,9 @@ def apply_pending_tombstones(
     existing = [h for h in hashes if session.get(Photo, h) is not None]
 
     if trash_local_files and existing:
-        on_disk = [p for p in _present_paths(session, existing) if Path(p).exists()]
-        if on_disk:
-            result.trash = move_to_trash(on_disk, local_dir=paths.local, now=now)
+        result.trash = _trash_with_state(
+            session, existing, paths=paths, thumb_sizes=thumb_sizes, now=now, reason="tombstone"
+        )
 
     for t in pending:
         if session.get(Photo, t.pixel_hash) is not None:
@@ -162,17 +173,184 @@ def is_tombstoned(session: Session, pixel_hash: str) -> bool:
     return session.get(Tombstone, pixel_hash) is not None
 
 
+def lift_tombstone(
+    session: Session, *, pixel_hash: str, device_id: str, now: datetime, n_paths: int
+) -> None:
+    """Undo a delete in the DB: drop the tombstone (so the scanner indexes the
+    file again) and append ``op=restore`` to ``changes`` (constraint #4). Merge
+    replay settles ``unindex`` vs ``restore`` last-writer-wins by timestamp.
+    Caller commits."""
+    tomb = session.get(Tombstone, pixel_hash)
+    if tomb is not None:
+        session.delete(tomb)
+    record_change(
+        session,
+        device_id=device_id,
+        op=ChangeOp.restore,
+        pixel_hash=pixel_hash,
+        ts=now,
+        field="delete",
+        new_value=str(n_paths),
+    )
+
+
+def capture_photo_state(session: Session, pixel_hash: str) -> dict[str, Any]:
+    """The user-authored rows the purge is about to drop, as plain JSON."""
+    rating = session.get(Rating, pixel_hash)
+    tags: list[dict[str, Any]] = []
+    for pt in session.exec(select(PhotoTag).where(PhotoTag.pixel_hash == pixel_hash)).all():
+        tag = session.get(Tag, pt.tag_id)
+        if tag is None:
+            continue
+        tags.append(
+            {
+                "name": tag.name,
+                "facet": tag.facet,
+                "kind": str(tag.kind),
+                "source": str(pt.source),
+                "score": pt.score,
+                "added_at": pt.added_at.isoformat(),
+                "added_by_device": pt.added_by_device,
+                "written_to_file": pt.written_to_file,
+            }
+        )
+    preds = [
+        {
+            "tag_name": p.tag_name,
+            "score": p.score,
+            "model": p.model,
+            "run_at": p.run_at.isoformat(),
+            "state": str(p.state),
+        }
+        for p in session.exec(select(Prediction).where(Prediction.pixel_hash == pixel_hash)).all()
+    ]
+    return {
+        "rating": None
+        if rating is None
+        else {
+            "stars": rating.stars,
+            "updated_at": rating.updated_at.isoformat(),
+            "updated_by_device": rating.updated_by_device,
+            "source": str(rating.source),
+        },
+        "tags": tags,
+        "predictions": preds,
+    }
+
+
+def restore_photo_state(session: Session, pixel_hash: str, state: dict[str, Any]) -> bool:
+    """Re-insert the rows :func:`capture_photo_state` saved, onto a photo that
+    was just re-indexed. The saved rating wins over whatever the re-index read
+    from the file (it was the DB's truth at delete time); tags and predictions
+    are only added where missing. Returns ``False`` if the photo row is absent
+    (the re-index failed). Caller commits."""
+    if session.get(Photo, pixel_hash) is None:
+        return False
+
+    r = state.get("rating")
+    if r:
+        row = session.get(Rating, pixel_hash)
+        if row is None:
+            row = Rating(
+                pixel_hash=pixel_hash,
+                stars=int(r["stars"]),
+                updated_at=parse_ts(r["updated_at"]),
+                updated_by_device=str(r["updated_by_device"]),
+            )
+            session.add(row)
+        row.stars = int(r["stars"])
+        row.updated_at = parse_ts(r["updated_at"])
+        row.updated_by_device = str(r["updated_by_device"])
+        row.source = RatingSource(r.get("source", "app"))
+
+    for t in state.get("tags", []):
+        tag = session.exec(select(Tag).where(Tag.name == t["name"])).first()
+        if tag is None:
+            tag = Tag(name=t["name"], facet=t.get("facet"), kind=TagKind(t.get("kind", "manual")))
+            session.add(tag)
+            session.flush()
+        assert tag.id is not None
+        have = session.exec(
+            select(PhotoTag).where(PhotoTag.pixel_hash == pixel_hash, PhotoTag.tag_id == tag.id)
+        ).first()
+        if have is None:
+            session.add(
+                PhotoTag(
+                    pixel_hash=pixel_hash,
+                    tag_id=tag.id,
+                    source=TagSource(t.get("source", "manual")),
+                    score=t.get("score"),
+                    added_at=parse_ts(t["added_at"]),
+                    added_by_device=str(t["added_by_device"]),
+                    written_to_file=bool(t.get("written_to_file", False)),
+                )
+            )
+
+    for p in state.get("predictions", []):
+        have_pred = session.exec(
+            select(Prediction).where(
+                Prediction.pixel_hash == pixel_hash,
+                Prediction.tag_name == p["tag_name"],
+                Prediction.model == p["model"],
+            )
+        ).first()
+        if have_pred is None:
+            session.add(
+                Prediction(
+                    pixel_hash=pixel_hash,
+                    tag_name=p["tag_name"],
+                    score=float(p["score"]),
+                    model=p["model"],
+                    run_at=parse_ts(p["run_at"]),
+                    state=PredictionState(p["state"]),
+                )
+            )
+        else:
+            have_pred.state = PredictionState(p["state"])
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # Internals
 # --------------------------------------------------------------------------- #
-def _present_paths(session: Session, hashes: Sequence[str]) -> list[str]:
+def _trash_with_state(
+    session: Session,
+    hashes: Sequence[str],
+    *,
+    paths: Paths,
+    thumb_sizes: Sequence[int],
+    now: datetime,
+    reason: str,
+) -> TrashResult | None:
+    """Move the on-disk copies of *hashes* into one managed trash batch, saving
+    each photo's user state + smallest thumbnail beside them for a put-back."""
     rows = session.exec(
         select(PhotoPath).where(
             col(PhotoPath.pixel_hash).in_(list(hashes)),
             col(PhotoPath.present).is_(True),
         )
     ).all()
-    return [r.path for r in rows]
+    on_disk = [r for r in rows if Path(r.path).exists()]
+    if not on_disk:
+        return None
+    hash_of = {r.path: r.pixel_hash for r in on_disk}
+    wanted = set(hash_of.values())
+    small = min(thumb_sizes) if thumb_sizes else None
+    thumbs = {}
+    if small is not None:
+        for h in wanted:
+            t = paths.thumbnail_file(h, small)
+            if t.is_file():
+                thumbs[h] = t
+    return move_to_trash(
+        [r.path for r in on_disk],
+        local_dir=paths.local,
+        now=now,
+        pixel_hash_of=hash_of,
+        photo_state={h: capture_photo_state(session, h) for h in wanted},
+        thumbs=thumbs,
+        reason=reason,
+    )
 
 
 def _all_paths(session: Session, pixel_hash: str) -> list[str]:

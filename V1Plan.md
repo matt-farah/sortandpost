@@ -10,7 +10,7 @@ deferred. Tick phases off here as they merge._
 - [x] P2 CLIP CPU control: slow/fast (Sonnet)
 - [x] P3 Live scan/CLIP progress (Sonnet)
 - [x] P4 `/review` per-photo + facets + shared exiftool (Sonnet)
-- [ ] P5 Undo last delete + trash view (Opus)
+- [x] P5 Undo last delete + trash view (Opus)
 - [ ] P6 RAW/HEIC no-write audit (Haiku)
 - [ ] P7 robopost composer (Opus for design + API, Sonnet for UI)
 

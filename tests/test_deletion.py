@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
-import pytest
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -41,12 +40,6 @@ NOW = datetime(2026, 2, 3, tzinfo=UTC)
 MODEL = "ViT-B-32"
 DIM = 4
 SIZES = (320, 1280)
-
-
-@pytest.fixture(autouse=True)
-def _force_managed_trash(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Deterministic across platforms: never touch the real OS Trash from a test.
-    monkeypatch.setattr("sortandpost.trash._use_os_trash", lambda: False)
 
 
 def _hash(tag: str) -> str:
@@ -330,7 +323,7 @@ def test_scanner_refuses_to_reindex_a_tombstoned_hash(engine: Engine, paths: Pat
 
 
 def test_managed_trash_is_recoverable(engine: Engine, paths: Paths, tmp_path: Path) -> None:
-    from sortandpost.trash import restore_managed
+    from sortandpost.trash import load_batch, put_back
 
     library = tmp_path / "library"
     library.mkdir()
@@ -353,6 +346,14 @@ def test_managed_trash_is_recoverable(engine: Engine, paths: Paths, tmp_path: Pa
     assert trash_dir.is_relative_to(paths.local)
     assert (trash_dir / "manifest.json").exists()
 
-    restored = restore_managed(trash_dir)
-    assert all(i.ok for i in restored)
+    batch = load_batch(trash_dir)
+    assert batch.hashes == [ph]
+    saved = batch.photos[ph]
+    assert saved["rating"]["stars"] == 4
+    assert [t["name"] for t in saved["tags"]] == ["tag-a"]
+    assert [p["tag_name"] for p in saved["predictions"]] == ["beach"]
+    assert batch.thumb(ph) is not None  # smallest thumbnail kept for the trash view
+
+    restored = put_back(trash_dir)
+    assert all(i.ok for i in restored.items)
     assert (library / "a.jpg").read_bytes().startswith(b"jpeg-bytes-a")

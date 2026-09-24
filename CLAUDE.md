@@ -26,13 +26,15 @@ updated as decisions are made or changed.
    1. writing embedded EXIF/XMP metadata (ratings, approved keywords) into formats that support
       it (JPEG, HEIC, TIFF, PNG);
    2. the **explicit user-invoked "Delete photos" action** (bulk toolbar / photo page, behind a
-      confirm dialog) *moves* the selected photo files to a recoverable location — the operating
-      system Trash / Recycle Bin via `send2trash` on macOS and Windows, or a managed
-      `<APP_DATA>/local/trash/<timestamp>/` folder with a `manifest.json` on Linux / headless /
-      Docker. It is never an `unlink`, never writes anything under a library root (no `.Trash-*`
-      dir on the library filesystem), and never runs automatically — only from a user click.
-      RAW files are moved by this action too (constraint #2 governs *metadata writes*, not an
-      explicit user delete).
+      confirm dialog) *moves* the selected photo files into the managed, never-synced
+      `<APP_DATA>/local/trash/<batch>/` folder (with a `manifest.json`) on every platform — and
+      its reverse, the explicit **"Put back" / "Undo delete"**, which moves them back to their
+      exact original paths (refused if that path is now taken or its folder is gone; it never
+      creates a folder). A separate user click, **"Move all to system Trash"** (macOS / Windows
+      only, via `send2trash`), hands the managed batches to the OS Trash. None of these is ever
+      an `unlink`, writes anything else under a library root (no `.Trash-*` dir on the library
+      filesystem), or runs automatically — only from a user click. RAW files are moved by these
+      actions too (constraint #2 governs *metadata writes*, not an explicit user delete).
 
    Outside those two: no renames, no moves, no other deletes, no new files, no new folders, no
    `.xmp` sidecars anywhere under a library root — ever.
@@ -301,7 +303,7 @@ deterministic because every user-authored mutation also appends to an in-DB `cha
 
 ```
 changes(id, ts, device_id, op, pixel_hash, field, old_value, new_value)
-        op ∈ { rate, tag_add, tag_remove, clip_approve, clip_reject, unindex }
+        op ∈ { rate, tag_add, tag_remove, clip_approve, clip_reject, unindex, restore }
 ```
 
 Merge algorithm:
@@ -329,20 +331,35 @@ if the file's mtime is newer than the DB row's `updated_at`, the file wins and w
 
 The "Delete photos" action is the one destructive operation. On the machine that runs it:
 
-1. Present file copies of each selected `pixel_hash` are **moved to trash** (see constraint #1):
-   the OS Trash on macOS/Windows, else `<APP_DATA>/local/trash/<ts>/` + `manifest.json`. RAW
-   included. Duplicates (one `pixel_hash`, several present paths) all go together.
+1. Present file copies of each selected `pixel_hash` are **moved to the managed trash** (see
+   constraint #1): one batch folder per delete, `<APP_DATA>/local/trash/<batch>/` with
+   `files/<seq>/<original name>`, `thumbs/<pixel_hash>.webp` and a `manifest.json` that also
+   saves each photo's user state (rating, tags, CLIP prediction states). RAW included.
+   Duplicates (one `pixel_hash`, several present paths) all go together.
 2. The DB rows for that `pixel_hash` are purged — `photos`, `photo_paths`, `ratings`,
    `photo_tags`, `predictions`, `embedding_rows`, `scan_state` — the embedding matrix is
    compacted, and the content-addressed thumbnails are deleted.
 3. A `changes` row `op=unindex` is appended (constraint #4) **and** a `tombstones` row is
    written: `(pixel_hash, deleted_at, deleted_by_device)`.
 
+**Undo / Put back** (`sortandpost.undelete.put_back_batch`, from the status bar's "Undo delete"
+for 5 minutes after a delete, or `/settings` → "Recently deleted"): move the batch's files back
+(`trash.put_back`), drop each photo's tombstone and append a `changes` row **`op=restore`**,
+re-index those paths immediately, then re-insert the saved rating / tags / prediction states. It
+runs under the indexer's `_INDEX_LOCK`. The managed trash is a short-lived "oops" buffer, not a
+history: **"Move all to system Trash"** (`trash.flush_to_system_trash`, macOS/Windows) forgets
+the batches after handing their files to the OS Trash; it is meant to become an on-quit cleanup
+step. On Linux / Docker there is no flush (send2trash could create a `.Trash-<uid>` on a library
+volume), so batches stay until put back or cleaned up by hand.
+
 **Stack scope** is a config choice, `deletion.stack_scope` — `selected` (default; only the
 clicked photo) or `whole_stack` (every stack member, like ratings fan out).
 
-**Cross-machine.** Conflict-copy merge replays `op=unindex` by writing the same `tombstones`
-row on every machine (it no longer merely sets `missing_since`). Each machine then applies its
+**Cross-machine.** Conflict-copy merge settles `unindex` vs `restore` per `pixel_hash`,
+last-writer-wins by `(ts, device_id, op)` over the unioned `changes` log: a winning `unindex`
+writes the same `tombstones` row on every machine (and sets `missing_since`); a winning
+`restore` drops it, so the next scan re-indexes the file. A machine that already lazily trashed
+its own copy keeps it in its own "Recently deleted" (`reason: tombstone`) for a manual put back. Each machine then applies its
 tombstones on its next scan: purge the local DB rows / thumbnails / embedding row as above, and
 **lazily move its own local copy of the file to trash** if the file is still present. The
 scanner refuses to re-index a `pixel_hash` that has a tombstone, so a not-yet-deleted file
@@ -350,10 +367,10 @@ cannot resurrect a deleted photo. `tombstones` is append-only and travels in the
 never GC'd (a tiny row per deleted photo, bounded by real deletes).
 
 **Caveat — this genuinely removes files from the library folder.** "Move to trash" is not a
-soft-delete flag: on macOS/Windows the file leaves its folder for the OS Trash/Recycle Bin; on
-Linux/headless it leaves for `<APP_DATA>/local/trash/`. Recovery is a manual "Put Back" (OS
-Trash) or a hand-move from the managed folder using its `manifest.json` — the app has no
-in-UI undo yet. If a **library root is itself inside a third-party sync folder** (OneDrive,
+soft-delete flag: the file leaves its folder for `<APP_DATA>/local/trash/`. Recovery is the
+in-app Put back, until the batch is moved to the system Trash. After that, the OS Trash's own
+Put Back only returns the file to `local/trash/<batch>/files/…`, and a file moved back into the
+library by hand stays **tombstoned** (the scanner skips it) — there is no un-tombstone UI yet. If a **library root is itself inside a third-party sync folder** (OneDrive,
 Drive, Dropbox, …), that sync tool then propagates the deletion to every other copy and to the
 provider's own trash/version history, independently of our `tombstones` mechanism. The confirm
 dialog must state plainly that files are moved out of the library; never widen this action to

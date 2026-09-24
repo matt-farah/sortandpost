@@ -62,9 +62,12 @@ Today `/review` is per-tag bulk approve/reject only.
 
 ## Polish
 
-### 11. Bulk-delete follow-ups
+### 11. Bulk-delete follow-ups — ✅ shipped (V1 P5)
 The delete action itself is done (move-to-trash + tombstones + cross-machine
-lazy purge).
+lazy purge). P5 moved every OS to the managed trash, added status-bar "Undo
+delete", `/settings` → "Recently deleted" (Put back, Move all to system Trash)
+and the `restore` change op. Still open: the live two-container test below, and
+an un-tombstone control for files recovered after a system-Trash flush.
 
 - In-app **"undo last delete"** using the managed
   `local/trash/<ts>/manifest.json`.
