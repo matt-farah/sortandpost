@@ -7,20 +7,30 @@ _Working branch: `main`._
 
 ## ✅ 2026-09-24 — V1 P6: RAW/HEIC no-write audit
 
-All tests pass (new: `test_raw_heic_audit.py`, 5 new tests); 454 total tests; ruff / format / mypy
-clean; no schema change. No bugs found (audit passed).
+All tests pass (`test_raw_heic_audit.py`, 8 tests); 457 total tests; ruff / format / mypy
+clean; no schema change. No bugs found (audit passed). Test-only phase — no browser test.
 
-- **Test suite `test_raw_heic_audit.py`:** audits constraint #2 (RAW files never written) and #3
-  (pixel_hash stable across EXIF writes) using real CR2 and HEIC fixtures from
-  `~/Downloads/sampleImages`:
-  - `test_raw_cr2_not_modified_by_rating`: record baseline bytes/mtime → rate through
-    `set_rating()` with exiftool active → assert file unchanged + no sidecars.
-  - `test_raw_cr2_not_modified_by_tag_approval`: same pattern for tag approval.
-  - `test_heic_rating_round_trip`: rate HEIC → verify exiftool.read() returns the rating.
-  - `test_heic_pixel_hash_stable_across_rating_writes`: write rating N times → verify pixel_hash
-    unchanged each time (immune to EXIF writes).
-  - `test_raw_files_are_correctly_identified`: sanity check fixture is CR2 (is_raw() == True).
-- **Result:** all constraints verified; no bugs found in ratings/tags code path with RAW/HEIC.
+- **Test suite `test_raw_heic_audit.py`:** audits constraints #1/#2 (RAW files never written to or
+  beside) and #3 (pixel_hash stable across EXIF writes) using real CR2 and HEIC fixtures from
+  `~/Downloads/sampleImages` (skipped when absent, e.g. inside Docker). Every RAW test snapshots
+  the **whole library folder** (every file's sha256 + mtime, hidden files included) before and
+  after, and asserts the listing is identical and only the expected files changed:
+  - `test_raw_cr2_not_modified_by_rating`: `set_rating()` with exiftool active.
+  - `test_stacked_rating_writes_jpeg_but_not_raw`: the real UI path — `_apply_rating` with
+    stacking on, on the JPEG of a RAW+JPEG pair → the RAW gets the rating in the DB only, the
+    JPEG gets it embedded, the CR2 is untouched.
+  - `test_bulk_rating_and_bulk_tag_skip_raw`: `_apply_bulk_rating` + `_apply_bulk_tag` on the
+    RAW of the pair → fans out to the JPEG (embedded), RAW DB-only.
+  - `test_raw_cr2_not_modified_by_manual_tag`: `add_manual_tag()` with exiftool active.
+  - `test_raw_cr2_not_modified_by_clip_approval`: the real `approve()` with exiftool active.
+  - `test_heic_rating_round_trip`: rate HEIC → rating reads back, written in place (no new
+    files), pixel_hash unchanged.
+  - `test_heic_pixel_hash_stable_across_rating_writes`: ratings 1–5 then clear → pixel_hash
+    unchanged each time.
+  - `test_raw_files_are_correctly_identified`: sanity check the fixture is RAW.
+- **Result:** all constraints verified; no bugs found in the rating/tag write paths with RAW/HEIC.
+  (RAW is guarded three times: `is_raw` skip in each embed helper, `can_embed_metadata`, and
+  `ExiftoolClient._guard_writable`.)
 
 ---
 
