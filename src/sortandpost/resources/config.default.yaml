@@ -24,6 +24,7 @@ clip:
   pretrained: laion2b_s34b_b79k
   device: auto                    # auto -> cuda / Apple MPS / cpu (Docker gets cpu); or force cpu/mps/cuda
   batch_size: 16
+  speed: slow                     # slow = ~30% of CPU cores, low priority (default); fast = all cores but one
 
 tagging:
   vocab_file: tags.yaml
@@ -40,7 +41,7 @@ thumbnails:
 
 indexer:
   full_scan_interval_min: 15
-  workers: auto                   # "auto" -> cpu_count - 1
+  workers: auto                   # "auto" -> follows clip.speed (slow ~30% of cores, fast cores - 1)
   clip_deferred: true             # make photos browsable first, run CLIP after
   run_in_app: true                # run the continuous indexer inside the web app process
   watch: true                     # react to filesystem events (needs `watchdog`), not just the timer

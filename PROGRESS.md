@@ -1,7 +1,34 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-24 (V1 P1: search merged into the library + filter bar)._
-_Working branch: `v1-plan`._
+_Last updated: 2026-09-24 (V1 P2: CLIP CPU control, slow / fast)._
+_Working branch: `v1-p2-clip-speed`._
+
+---
+
+## ⚙️ 2026-09-24 — V1 P2: CLIP CPU control (slow / fast)
+
+`clip.speed: slow | fast` (default `slow`). 422 tests pass (+19); ruff / format / mypy
+clean; no schema change. User browser-tested + signed off.
+
+- **`cpu.py` (new)**: pure policy, no torch. `default_workers(speed)` (slow
+  `max(1, round(0.3 × cores))`, fast `cores − 1`), `clip_profile(speed, batch_size)` →
+  `CpuProfile(threads, batch_size, lower_priority)` (slow caps the batch at 8, but respects
+  a smaller configured one), `lower_process_priority()` (`os.nice(10)`; Windows via
+  `ctypes.SetPriorityClass`, no `psutil`), `set_thread_priority()` (Linux per-thread only).
+- `AppConfig.worker_count()` follows the speed unless `indexer.workers` is an int.
+  `ClipModel.profile()` + `apply_cpu_profile()` replace the hard-coded
+  `torch.set_num_threads`. `scan_clip_once` snapshots the profile once per pass, so a
+  Settings change applies from the *next* pass. The decode pool gets
+  `initializer=lower_process_priority` when slow.
+- **Priority is best-effort:** CLIP runs in the app process, so we never renice the whole
+  process (it would slow the web UI). Off Linux the CLIP thread isn't reniced; slow there
+  = fewer threads + small batches. On Linux, slow → fast can't raise priority back
+  without privileges until restart.
+- **Settings → "Indexing speed"** toggle + help text + amber warning on Fast (writer only).
+- **Measured** (402 photos, 8-core Mac, CLIP on MPS, cold index): slow 161.9 s (scan ~75 s,
+  CLIP ~84 s) vs fast 123.9 s (scan ~37 s, CLIP ~83 s). Fast only helps the scan; CLIP on
+  MPS is bound by single-threaded decode, so overlapping decode with inference is the next
+  lever (not done).
 
 ---
 

@@ -234,6 +234,7 @@ clip:
   pretrained: laion2b_s34b_b79k
   device: auto        # auto -> cuda / Apple MPS / cpu; Docker on macOS always lands on cpu
   batch_size: 16
+  speed: slow         # slow = ~30% of cores, batch <= 8, low priority; fast = cores - 1 (see sortandpost.cpu)
 tagging:
   vocab_file: tags.yaml
   score_threshold: 0.22
@@ -242,7 +243,7 @@ tagging:
 thumbnails: { sizes: [320, 1280], format: webp, quality: 80 }
 indexer:
   full_scan_interval_min: 15
-  workers: auto
+  workers: auto                    # follows clip.speed unless an int
   clip_deferred: true              # make photos browsable first, run CLIP after
   online_only: skip                # cloud placeholder stubs: "skip" (record, don't fetch) | "download"
 rating: { write_windows_compat_tags: true }
@@ -392,7 +393,9 @@ without an explicit user action (see Sync model → Deletion). A pending `tombst
 one case the scanner acts on: it skips re-indexing that `pixel_hash` and, on the post-scan
 sweep, trashes the still-present local file and purges the derived rows.
 
-Concurrency: `ProcessPoolExecutor` sized to `cpu_count - 1` for decode/hash/CLIP. `watchdog`
+Concurrency: `ProcessPoolExecutor` for decode/hash/thumbnails, sized by `clip.speed` (`slow` ≈ 30% of
+cores at lowered priority, the default; `fast` = `cpu_count - 1`); CLIP inference runs in the app/indexer
+process with the same thread budget. `watchdog`
 observers on the library roots, debounced, plus a periodic full reconcile scan
 (`full_scan_interval_min`). The indexer only runs when this machine holds the write lock.
 

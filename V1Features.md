@@ -25,7 +25,7 @@ tab. One filter bar on `/`, with all state in the URL query string:
 - Saved searches become a "Saved" dropdown in the bar. `/search` redirects to `/`.
 - Photo-page arrows page through the filtered set (fixes the `Issues.md` bug).
 
-### Control for CLIP CPU/memory usage
+### Control for CLIP CPU/memory usage — ✅ shipped (V1 P2)
 - Add a setting for CLIP for slow/fast scan that shows a warning that fast scan will use all CPU cores and may slow down your computer
 - Limit CLIP scan by default to use 30% CPU/Memory
 
