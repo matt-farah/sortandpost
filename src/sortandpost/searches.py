@@ -1,4 +1,10 @@
-"""Saved searches -- named `/search` states, stored in ``sync/searches.json``.
+"""Saved searches -- named library views, stored in ``sync/searches.json``.
+
+A saved search is a name plus the canonical query string of a
+:class:`~sortandpost.library_view.LibraryQuery` (filters + text query, never the
+group-by view), so it opens as ``/?<query>``. Older files stored ``/search``'s
+separate fields (``q``, ``stars`` = minimum, ``camera`` ...); those are read and
+converted on load.
 
 They ride along in the sync folder like ``tags.yaml``: user-editable, shared
 between machines, but **not** merged. Two machines editing the list at the same
@@ -11,109 +17,77 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, fields
-from urllib.parse import quote
+from dataclasses import asdict, dataclass
 
+from sortandpost.library_view import LibraryQuery
 from sortandpost.paths import Paths
 
 log = logging.getLogger(__name__)
 
+_LEGACY_KEYS = ("q", "stars", "camera", "gps", "dups", "missing", "mark")
+
 
 @dataclass
 class SavedSearch:
-    """One named `/search` state. Field names match the `/search` query params."""
+    """One named library view. ``query`` is ``LibraryQuery.query_string(view=False)``."""
 
     name: str
-    q: str = ""
-    stars: int = 0
-    camera: str = ""
-    gps: bool = False
-    dups: bool = False
-    missing: bool = False
-    mark: bool = False
+    query: str = ""
+
+    @classmethod
+    def of(cls, name: str, lq: LibraryQuery) -> SavedSearch:
+        return cls(name=name, query=lq.query_string(view=False))
+
+    @property
+    def library_query(self) -> LibraryQuery:
+        return LibraryQuery.from_query_string(self.query)
 
     def is_empty(self) -> bool:
-        return not (
-            self.q.strip()
-            or self.stars
-            or self.camera.strip()
-            or self.gps
-            or self.dups
-            or self.missing
-            or self.mark
-        )
+        return not self.library_query.has_filters()
 
-    def query_string(self) -> str:
-        parts: list[str] = []
-        if self.q.strip():
-            parts.append(f"q={quote(self.q.strip())}")
-        if self.stars:
-            parts.append(f"stars={int(self.stars)}")
-        if self.camera.strip():
-            parts.append(f"camera={quote(self.camera.strip())}")
-        if self.gps:
-            parts.append("gps=true")
-        if self.dups:
-            parts.append("dups=true")
-        if self.missing:
-            parts.append("missing=true")
-        if self.mark:
-            parts.append("mark=true")
-        return "/search?" + "&".join(parts) if parts else "/search"
+    def url(self) -> str:
+        return f"/?{self.query}" if self.query else "/"
 
     def summary(self) -> str:
         """Short human description of the filters, for a tooltip."""
-        bits: list[str] = []
-        if self.q.strip():
-            bits.append(f'"{self.q.strip()}"')
-        if self.stars:
-            bits.append(f"≥{int(self.stars)}★")
-        if self.camera.strip():
-            bits.append(self.camera.strip())
-        if self.gps:
-            bits.append("GPS")
-        if self.dups:
-            bits.append("dupes")
-        if self.missing:
-            bits.append("incl. missing")
-        if self.mark:
-            bits.append("⚑ to edit")
-        return " · ".join(bits) or "all photos"
+        return self.library_query.summary()
+
+
+def legacy_query(raw: dict[str, object]) -> LibraryQuery:
+    """The old ``/search`` fields -> a :class:`LibraryQuery`. ``stars`` was a
+    *minimum* there (``3`` = 3★ and up); ``camera`` was free text and becomes an
+    exact camera choice."""
+    pairs: list[tuple[str, str]] = []
+    q = raw.get("q")
+    if isinstance(q, str) and q.strip():
+        pairs.append(("q", q.strip()))
+    stars = raw.get("stars")
+    if isinstance(stars, str) and stars.strip().isdigit():
+        stars = int(stars)
+    if isinstance(stars, int) and not isinstance(stars, bool) and 1 <= stars <= 5:
+        pairs.append(("stars", ",".join(str(n) for n in range(stars, 6))))
+    camera = raw.get("camera")
+    if isinstance(camera, str) and camera.strip():
+        pairs.append(("camera", camera.strip()))
+    for key in ("gps", "dups", "missing", "mark"):
+        v = raw.get(key)
+        if v is True or (isinstance(v, str) and v.strip().lower() in ("1", "true", "yes")):
+            pairs.append((key, "true"))
+    return LibraryQuery.from_pairs(pairs)
 
 
 def _coerce(raw: dict[str, object]) -> SavedSearch | None:
-    known = {f.name for f in fields(SavedSearch)}
-    data = {k: v for k, v in raw.items() if k in known}
-
-    def _str(key: str) -> str:
-        v = data.get(key)
-        return v.strip() if isinstance(v, str) else ""
-
-    def _int(key: str) -> int:
-        v = data.get(key)
-        if isinstance(v, bool):  # bool is an int subclass; not what we want here
-            return 0
-        if isinstance(v, int):
-            return v
-        if isinstance(v, str):
-            try:
-                return int(v)
-            except ValueError:
-                return 0
-        return 0
-
-    if not _str("name"):
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
         return None
-    return SavedSearch(
-        name=_str("name"),
-        q=_str("q"),
-        stars=_int("stars"),
-        camera=_str("camera"),
-        gps=bool(data.get("gps", False)),
-        dups=bool(data.get("dups", False)),
-        missing=bool(data.get("missing", False)),
-        mark=bool(data.get("mark", False)),
-    )
+    query = raw.get("query")
+    if isinstance(query, str):
+        lq = LibraryQuery.from_query_string(query)
+    elif any(k in raw for k in _LEGACY_KEYS):
+        lq = legacy_query(raw)
+    else:
+        lq = LibraryQuery()
+    return SavedSearch.of(name.strip(), lq.without_view())
 
 
 def load_searches(paths: Paths) -> list[SavedSearch]:

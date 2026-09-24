@@ -15,19 +15,37 @@ from datetime import datetime
 from sqlalchemy import ColumnElement, func
 from sqlmodel import Session, col, select
 
-from sortandpost.db.models import Photo, PhotoTag, Rating, Tag
+from sortandpost.db.models import (
+    Photo,
+    PhotoPath,
+    PhotoTag,
+    Prediction,
+    PredictionState,
+    Rating,
+    Tag,
+)
 from sortandpost.dedup import NEAR_DUPLICATE_DISTANCE, find_duplicate_groups
+from sortandpost.grouping import camera_label
 
 
 @dataclass
 class PhotoFilter:
     min_stars: int | None = None
+    # exact star values to keep; 0 means *unrated* (no ratings row, or 0 stars)
+    stars_in: frozenset[int] = frozenset()
     has_gps: bool | None = None
     camera: str | None = None  # case-insensitive substring of "make model"
+    # exact camera labels (``grouping.camera_label``), OR'd; "" = unknown camera
+    cameras: list[str] = field(default_factory=list)
+    # a folder (container path): photos with a present file in it or below it
+    folder: str | None = None
     taken_from: datetime | None = None
     taken_to: datetime | None = None
     tags_all: list[str] = field(default_factory=list)
     tags_any: list[str] = field(default_factory=list)
+    # tag clauses also match un-rejected CLIP suggestions (``predictions``), not
+    # only applied ``photo_tags`` -- so "subject" filtering works before review
+    tag_suggestions: bool = False
     include_missing: bool = False
     only_duplicates: bool = False
     duplicate_distance: int = NEAR_DUPLICATE_DISTANCE
@@ -38,8 +56,11 @@ class PhotoFilter:
         return any(
             (
                 self.min_stars,
+                self.stars_in,
                 self.has_gps is not None,
                 self.camera,
+                self.cameras,
+                self.folder,
                 self.taken_from is not None,
                 self.taken_to is not None,
                 self.tags_all,
@@ -78,6 +99,18 @@ def allowed_hashes(session: Session, flt: PhotoFilter) -> set[str] | None:
 
     hashes = set(session.exec(stmt).all())
 
+    if flt.cameras:
+        wanted = set(flt.cameras)
+        rows = session.exec(select(Photo.pixel_hash, Photo.camera_make, Photo.camera_model)).all()
+        hashes &= {h for h, make, model in rows if camera_label(make, model) in wanted}
+
+    if flt.folder:
+        hashes &= _in_folder(session, flt.folder)
+
+    if flt.stars_in:
+        by_stars = {h: n for h, n in session.exec(select(Rating.pixel_hash, Rating.stars)).all()}
+        hashes = {h for h in hashes if by_stars.get(h, 0) in flt.stars_in}
+
     if flt.min_stars:
         rated = set(
             session.exec(select(Rating.pixel_hash).where(col(Rating.stars) >= flt.min_stars)).all()
@@ -85,11 +118,11 @@ def allowed_hashes(session: Session, flt: PhotoFilter) -> set[str] | None:
         hashes &= rated
 
     for name in flt.tags_all:
-        hashes &= _tagged_with(session, name)
+        hashes &= _tagged_with(session, name, suggestions=flt.tag_suggestions)
     if flt.tags_any:
         any_hashes: set[str] = set()
         for name in flt.tags_any:
-            any_hashes |= _tagged_with(session, name)
+            any_hashes |= _tagged_with(session, name, suggestions=flt.tag_suggestions)
         hashes &= any_hashes
 
     if flt.only_duplicates:
@@ -134,11 +167,39 @@ def browse_photos(
     return list(session.exec(stmt).all())
 
 
-def _tagged_with(session: Session, name: str) -> set[str]:
-    return set(
+def _tagged_with(session: Session, name: str, *, suggestions: bool = False) -> set[str]:
+    out = set(
         session.exec(
             select(PhotoTag.pixel_hash)
             .join(Tag, col(PhotoTag.tag_id) == col(Tag.id))
             .where(func.lower(Tag.name) == name.lower())
         ).all()
     )
+    if suggestions:
+        out |= set(
+            session.exec(
+                select(Prediction.pixel_hash).where(
+                    func.lower(Prediction.tag_name) == name.lower(),
+                    col(Prediction.state) != PredictionState.rejected,
+                )
+            ).all()
+        )
+    return out
+
+
+def _in_folder(session: Session, folder: str) -> set[str]:
+    """Photos with a *present* file at or below *folder*. A prefix compare
+    (not ``LIKE``, whose ``%`` / ``_`` would need escaping in real folder names),
+    anchored at a separator so ``/a/b`` doesn't also match ``/a/bc``."""
+    base = folder.rstrip("/\\")
+    if not base:
+        return set()
+    sep = "\\" if "\\" in base and "/" not in base else "/"
+    prefix = base + sep
+    rows = session.exec(
+        select(PhotoPath.pixel_hash).where(
+            col(PhotoPath.present).is_(True),
+            func.substr(PhotoPath.path, 1, len(prefix)) == prefix,
+        )
+    ).all()
+    return set(rows)

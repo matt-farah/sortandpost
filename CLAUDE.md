@@ -139,9 +139,9 @@ Automated tests + a headless smoke are necessary but not sufficient. After build
    ```
 
    (`library_roots` there points at `~/Downloads/sampleImages`; ~300 photos already indexed;
-   `.venv` has no torch, so CLIP features degrade gracefully.)
+   `.venv` has real torch + CLIP on MPS, and Playwright + Chromium for headless UI checks.)
 3. Tell the user exactly which keys / buttons / flows to exercise, and what each should do.
-4. Wait for their sign-off. Only then update `PROGRESS.md` / `Features.md` and commit.
+4. Wait for their sign-off. Only then update `PROGRESS.md` / `V1Plan.md` (+ `V1Features.md`) and commit.
 
 Leave the app running until the user says they're done, then shut it down.
 
@@ -462,12 +462,17 @@ The **only** module allowed to write under a library root. Wraps a persistent
 
 ## Frontend (NiceGUI pages)
 
-- `/` — virtualized thumbnail grid, keyboard-first: arrows navigate, `1`–`5` rate, `0` clears,
-  `f` filter, `/` search. Infinite scroll ordered by `taken_at`.
+- `/` — the library **and** search (merged 2026-09-24). Virtualized thumbnail grid,
+  keyboard-first: arrows navigate, `1`–`5` rate, `0` clears, `f` flags, `/` focuses search.
+  A filter bar (text query, stars incl. unrated, camera, date-range calendar, folder,
+  subject/tag any|all, GPS / duplicates / ⚑ / missing, saved-searches dropdown) whose
+  state lives entirely in the URL (`sortandpost.library_view.LibraryQuery`). Filters keep
+  `taken_at` order + group-by; a text query ranks by CLIP relevance with group-by off.
+  Subject/tag also matches un-rejected CLIP suggestions.
 - `/photo/{pixel_hash}` — large preview, star widget, EXIF panel, manual tag editor, CLIP
-  suggestion chips (approve/reject), "more like this".
-- `/search` — semantic text search + filters (stars ≥ N, tag AND/OR, date range, camera,
-  has-GPS, missing, duplicates).
+  suggestion chips (approve/reject), "more like this". Links carry the grid's query string;
+  prev/next walk the same resolved view (`resolve_view`, cached per query for 30 min).
+- `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/review` — pending CLIP predictions grouped by tag for bulk approve/reject.
 - `/settings` — CLIP model & thresholds, re-index / re-embed actions, sync status (lock holder,
   last publish, `db_generation`, snapshots, last merge summary), the app-data folder picker (see
