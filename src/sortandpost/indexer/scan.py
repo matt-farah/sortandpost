@@ -49,6 +49,7 @@ from sortandpost.indexer.pipeline import (
     persist_decoded,
     sweep_presence,
 )
+from sortandpost.indexer.progress import PROGRESS
 from sortandpost.indexer.scanner import iter_image_files
 from sortandpost.indexer.workers import DecodedFile, DecodeJob, decode_file, decode_local
 from sortandpost.library_roots import container_roots
@@ -59,6 +60,9 @@ log = logging.getLogger(__name__)
 # Below this many files needing work, the spawn cost of a process pool is not
 # worth it -- decode them inline on the calling thread instead.
 _MIN_FILES_FOR_POOL = 8
+
+# The folder walk reports progress every this many files (it is a tight loop).
+_PROGRESS_EVERY = 25
 
 # Serializes scan_once/scan_clip_once against each other and themselves within
 # this process. The background indexer loop, a manual "Run indexer pass now"
@@ -131,7 +135,10 @@ def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
     (hard constraint #9) doesn't cover this -- it's intra-process.
     """
     with _INDEX_LOCK:
-        return _scan_once_locked(settings, workers=workers)
+        try:
+            return _scan_once_locked(settings, workers=workers)
+        finally:
+            PROGRESS.finish()
 
 
 def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> ScanStats:
@@ -163,6 +170,7 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
 
     stats = ScanStats()
     seen_paths: set[str] = set()
+    PROGRESS.begin("discovering")
     with Session(engine) as session, et_ctx as exiftool:
         # -- discover + fast-path filter (main thread, one ScanState query) --- #
         scan_rows = {s.path: s for s in session.exec(select(ScanState)).all()}
@@ -175,6 +183,8 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
             key = str(path)
             seen_paths.add(key)
             stats.seen += 1
+            if stats.seen % _PROGRESS_EVERY == 0:
+                PROGRESS.update(done=stats.seen, current=path.name)
             try:
                 st = path.stat()
             except OSError as exc:
@@ -189,9 +199,12 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
             todo.append(key)
 
         # -- stages 2-4 in parallel, stages 5-6 + DB serial here ------------- #
-        for decoded in _decode_stream(
-            todo, pcfg, paths.app_data, n_workers, lower_priority=lower_priority
+        PROGRESS.begin("indexing", total=len(todo))
+        for n_done, decoded in enumerate(
+            _decode_stream(todo, pcfg, paths.app_data, n_workers, lower_priority=lower_priority),
+            start=1,
         ):
+            PROGRESS.update(done=n_done, current=Path(decoded.path).name)
             try:
                 outcome = persist_decoded(
                     session,
@@ -395,7 +408,10 @@ def scan_clip_once(
     do get-or-create DB writes that aren't safe from two concurrent sessions.
     """
     with _INDEX_LOCK:
-        return _scan_clip_once_locked(settings, reembed=reembed, model=model)
+        try:
+            return _scan_clip_once_locked(settings, reembed=reembed, model=model)
+        finally:
+            PROGRESS.finish()
 
 
 def _scan_clip_once_locked(
@@ -449,7 +465,11 @@ def _scan_clip_once_locked(
         with EmbeddingStore.open(matrix_path, rowmap_path, dim=dim, model=ccfg.model) as store:
             candidates = _clip_candidates(session, store)
             batch_size = profile.batch_size
+            PROGRESS.begin("embedding", total=len(candidates))
+            n_done = 0
             for chunk in _chunked(candidates, batch_size):
+                PROGRESS.update(done=n_done, current=Path(chunk[0][1]).name)
+                n_done += len(chunk)
                 images = []
                 hashes = []
                 for pixel_hash, primary_path in chunk:
@@ -486,6 +506,7 @@ def _scan_clip_once_locked(
                     now=now,
                 )
                 session.commit()
+                PROGRESS.update(done=n_done)
             stats.total_rows = len(store)
 
     log.info("clip pass complete: %s", stats)

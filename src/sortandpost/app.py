@@ -89,6 +89,7 @@ from sortandpost.grouping import PhotoGroup, parse_folder_sort
 from sortandpost.helper import HelperInfo, read_helper_info
 from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.hydrate import hydrate_online_only
+from sortandpost.indexer.progress import PROGRESS, ProgressSnapshot
 from sortandpost.indexer.service import run_indexer
 from sortandpost.launcher_pref import remember_app_data
 from sortandpost.library_roots import (
@@ -424,7 +425,20 @@ def _status_bar() -> None:
     if State.engine is None:
         return
     with ui.footer().classes("sp-statusbar px-4 py-1 items-center justify-between"):
-        summary = ui.label("…")
+        with ui.row().classes("items-center gap-3"):
+            summary = ui.label("…")
+            live = ui.label().classes("sp-chip text-sky-600 dark:text-sky-400")
+            live.set_visibility(False)
+            bar = ui.linear_progress(value=0, show_value=False, size="6px").classes("w-32")
+            bar.set_visibility(False)
+
+        def _live_tick() -> None:
+            snap = PROGRESS.snapshot()
+            live.set_visibility(snap.active)
+            bar.set_visibility(snap.fraction is not None)
+            if snap.active:
+                live.set_text(_progress_text(snap))
+                bar.set_value(snap.fraction or 0.0)
 
         def _tick() -> None:
             try:
@@ -451,7 +465,53 @@ def _status_bar() -> None:
                 summary.set_text("status unavailable")
 
         _tick()
+        _live_tick()
         ui.timer(5.0, _tick)
+        ui.timer(1.0, _live_tick)
+
+
+def _progress_text(snap: ProgressSnapshot) -> str:
+    """``Indexing 120/4,300 · ~3 min left`` -- the status bar / settings label."""
+    text = snap.label()
+    eta = snap.eta_seconds()
+    if eta is not None:
+        text += f" · {_fmt_eta(eta)} left"
+    return text
+
+
+def _fmt_eta(seconds: float) -> str:
+    if seconds < 90:
+        return f"~{max(5, round(seconds / 5) * 5)} sec"
+    if seconds < 90 * 60:
+        return f"~{round(seconds / 60)} min"
+    return f"~{seconds / 3600:.1f} h"
+
+
+def _progress_panel() -> None:
+    """`/settings` live view of the running scan / CLIP pass (polls 1s)."""
+    with ui.column().classes("gap-1 w-full max-w-xl"):
+        title = ui.label().classes("text-sm")
+        bar = ui.linear_progress(value=0, show_value=False).classes("w-full")
+        current = ui.label().classes("text-xs sp-faint truncate w-full")
+
+        def _tick() -> None:
+            snap = PROGRESS.snapshot()
+            if not snap.active:
+                title.set_text("Indexer idle.")
+                bar.set_visibility(False)
+                current.set_text("")
+                return
+            title.set_text(_progress_text(snap))
+            bar.set_visibility(True)
+            if snap.fraction is None:
+                bar.props("indeterminate")
+            else:
+                bar.props(remove="indeterminate")
+                bar.set_value(snap.fraction)
+            current.set_text(snap.current)
+
+        _tick()
+        ui.timer(1.0, _tick)
 
 
 def _thumb_src(pixel_hash: str, size: int) -> str:
@@ -2150,6 +2210,8 @@ def build_ui(settings: Settings) -> None:
             _clip_model_editor(settings)
 
             ui.separator()
+            ui.label("Indexing progress").classes("font-bold")
+            _progress_panel()
             if State.write_mode == WriteMode.writable:
                 client = ui.context.client  # a real scan outlasts the page; see _scan_now
 
