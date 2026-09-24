@@ -15,12 +15,11 @@ from __future__ import annotations
 import bisect
 import json
 import logging
-import shutil
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -30,7 +29,7 @@ from fastapi.responses import RedirectResponse
 from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
-from nicegui.events import KeyEventArguments
+from nicegui.events import KeyEventArguments, ValueChangeEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
@@ -47,7 +46,15 @@ from sortandpost.clip.model import (
     ensure_downloaded as clip_ensure_downloaded,
 )
 from sortandpost.clip.store import ModelMismatch
-from sortandpost.clip.tagging import approve, pending_groups, reject
+from sortandpost.clip.tagging import (
+    ReviewGroup,
+    approve,
+    facet_sections,
+    is_pending,
+    pending_for_tag,
+    pending_groups,
+    reject,
+)
 from sortandpost.clip.vocab import load_vocab
 from sortandpost.collections import (
     Collection,
@@ -114,6 +121,7 @@ from sortandpost.library_view import (
     tag_choices,
 )
 from sortandpost.metadata import ExiftoolClient
+from sortandpost.metadata.shared import EXIFTOOL
 from sortandpost.prefs import Theme, get_theme, set_theme
 from sortandpost.reveal import open_in_default_app, reveal_in_file_manager, reveal_supported
 from sortandpost.searches import (
@@ -137,6 +145,7 @@ _PAGES = [
     ("/review", "Review"),
     ("/settings", "Settings"),
 ]
+_REVIEW_PAGE = 48  # per-photo tiles loaded per /review "Show more" step
 _GRID_BATCH = 80  # thumbnails appended per infinite-scroll step
 _PICKER_CAP = 500  # photos offered at once in the "add photos to collection" picker
 _THUMB_URL = "/thumbs"
@@ -540,6 +549,7 @@ def build_ui(settings: Settings) -> None:
         log.exception("sync layer failed to start; continuing read-only")
     State.apply(manager)
     nicegui_app.on_shutdown(manager.stop)
+    nicegui_app.on_shutdown(EXIFTOOL.close)
 
     if settings.config.indexer.run_in_app and State.write_mode == WriteMode.writable:
         _start_indexer_thread(settings, manager)
@@ -2088,10 +2098,17 @@ def build_ui(settings: Settings) -> None:
         with _session() as session:
             groups = pending_groups(session, model=model_name, vocab=vocab)
         pending_total = sum(g.count for g in groups)
+        sections = facet_sections(groups, vocab)
 
-        ui.label(f"{pending_total} pending CLIP suggestion(s) across {len(groups)} tag(s)").classes(
-            "px-4 pt-2 text-sm text-gray-500"
-        )
+        totals = {"pending": pending_total}
+
+        def _summary() -> str:
+            return (
+                f"{totals['pending']} pending CLIP suggestion(s) across "
+                f"{len(groups)} tag(s) in {len(sections)} facet(s)"
+            )
+
+        summary = ui.label(_summary()).classes("px-4 pt-2 text-sm text-gray-500")
 
         if State.write_mode != WriteMode.writable:
             ui.label(
@@ -2113,26 +2130,96 @@ def build_ui(settings: Settings) -> None:
             ui.notify(f"{decision}d {done} · {tag_name}")
             ui.navigate.reload()
 
-        for group in groups:
-            title = f"{group.tag_name}  ·  {group.count}" + (
-                f"  ({group.facet})" if group.facet else ""
-            )
-            with ui.expansion(title).classes("w-full"):
+        def _tag_panel(group: ReviewGroup) -> None:
+            """One tag: header with a live count, bulk buttons, and per-photo tiles
+            (loaded a page at a time, the first when the panel is opened)."""
+            shown: dict[str, ui.element] = {}
+            state = {"count": group.count, "loaded": False}
+            with ui.expansion().classes("w-full") as panel:
+                with panel.add_slot("header"):
+                    title = ui.label().classes("text-base")
                 with ui.row().classes("gap-2 p-2"):
                     ui.button(
                         "Approve all",
-                        on_click=lambda g=group: _bulk(g.tag_name, "approve"),
+                        on_click=lambda: _bulk(group.tag_name, "approve"),
                     ).props("color=positive")
                     ui.button(
                         "Reject all",
-                        on_click=lambda g=group: _bulk(g.tag_name, "reject"),
+                        on_click=lambda: _bulk(group.tag_name, "reject"),
                     ).props("color=negative flat")
-                with _photo_grid(150):
-                    for pixel_hash in group.sample_hashes:
-                        with ui.link(target=f"/photo/{pixel_hash}"):
-                            ui.image(_thumb_src(pixel_hash, thumb_small)).classes(
-                                "w-full aspect-square object-cover bg-gray-100"
-                            ).props("loading=lazy")
+                grid = _photo_grid(150)
+                more = ui.button("Show more").props("flat")
+
+            def _retitle() -> None:
+                title.set_text(f"{group.tag_name}  ·  {state['count']}")
+
+            def _load_page() -> None:
+                with _session() as session:
+                    page = pending_for_tag(
+                        session,
+                        model=model_name,
+                        tag_name=group.tag_name,
+                        limit=_REVIEW_PAGE,
+                        offset=len(shown),
+                    )
+                with grid:
+                    for pixel_hash, score in page:
+                        _tile(pixel_hash, score)
+                more.set_visibility(state["count"] > len(shown))
+
+            async def _decide(pixel_hash: str, decision: str) -> None:
+                tile = shown[pixel_hash]
+                for btn in tile.descendants():
+                    if isinstance(btn, ui.button):
+                        btn.disable()
+                applied = await nicegui_run.io_bound(
+                    _apply_review_one, settings, engine, group.tag_name, pixel_hash, decision
+                )
+                shown.pop(pixel_hash, None)
+                tile.delete()
+                if applied:
+                    state["count"] -= 1
+                    totals["pending"] -= 1
+                    summary.set_text(_summary())
+                if state["count"] <= 0:
+                    panel.delete()
+                    return
+                _retitle()
+                more.set_visibility(state["count"] > len(shown))
+
+            def _tile(pixel_hash: str, score: float) -> None:
+                with ui.column().classes("gap-0 w-full") as tile:
+                    with ui.link(target=f"/photo/{pixel_hash}").classes("block w-full"):
+                        ui.image(_thumb_src(pixel_hash, thumb_small)).classes(
+                            "w-full aspect-square object-cover bg-gray-100"
+                        ).props("loading=lazy")
+                    with ui.row().classes("w-full items-center justify-between no-wrap"):
+                        ui.label(f"{score:.2f}").classes("text-xs sp-faint")
+                        with ui.row().classes("gap-0 no-wrap"):
+                            ui.button(
+                                icon="close", on_click=lambda: _decide(pixel_hash, "reject")
+                            ).props("flat dense round size=sm color=negative").tooltip("Reject")
+                            ui.button(
+                                icon="check", on_click=lambda: _decide(pixel_hash, "approve")
+                            ).props("flat dense round size=sm color=positive").tooltip("Approve")
+                shown[pixel_hash] = tile
+
+            def _on_toggle(event: ValueChangeEventArguments[bool]) -> None:
+                if event.value and not state["loaded"]:
+                    state["loaded"] = True
+                    _load_page()
+
+            _retitle()
+            more.set_visibility(False)
+            more.on_click(_load_page)
+            panel.on_value_change(_on_toggle)
+
+        for section in sections:
+            with ui.row().classes("items-baseline gap-2 px-4 pt-4"):
+                ui.label(section.facet or "Other").classes("sp-display text-lg font-semibold")
+                ui.label(f"{section.count} pending").classes("text-sm sp-faint")
+            for group in section.groups:
+                _tag_panel(group)
 
     @ui.page("/settings")
     async def settings_page() -> None:
@@ -2381,6 +2468,14 @@ def _run_hydrate_pass(settings: Settings, engine: Engine) -> str:
     return f"{hy}  |  {_run_index_pass(settings, engine)}"
 
 
+def _exif(settings: Settings) -> AbstractContextManager[ExiftoolClient | None]:
+    """The shared exiftool client (``None`` when exiftool isn't installed).
+    Blocking: only use it off the event loop."""
+    return EXIFTOOL.session(
+        write_windows_compat_tags=settings.config.rating.write_windows_compat_tags
+    )
+
+
 def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decision: str) -> int:
     """Off the event loop (``run.io_bound``): approve/reject every pending
     prediction for *tag_name*. Approve embeds keywords via exiftool, so it must
@@ -2388,14 +2483,9 @@ def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decisi
     model_name = settings.config.clip.model
     facet = load_vocab(settings.paths.tags_file).facet_of(tag_name)
     approving = decision == "approve"
-    want_exif = approving and shutil.which("exiftool") is not None
-    exif_ctx = (
-        ExiftoolClient(write_windows_compat_tags=settings.config.rating.write_windows_compat_tags)
-        if want_exif
-        else nullcontext(None)
-    )
 
     done = 0
+    exif_ctx = _exif(settings) if approving else nullcontext(None)
     with Session(engine) as session, exif_ctx as exiftool:
         preds = session.exec(
             select(Prediction).where(
@@ -2430,18 +2520,47 @@ def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decisi
     return done
 
 
+def _apply_review_one(
+    settings: Settings, engine: Engine, tag_name: str, pixel_hash: str, decision: str
+) -> bool:
+    """Off the event loop: approve/reject one photo's suggestion. ``False`` when it
+    was no longer pending (already decided, e.g. by a bulk action in another tab)."""
+    model_name = settings.config.clip.model
+    facet = load_vocab(settings.paths.tags_file).facet_of(tag_name)
+    with Session(engine) as session:
+        if not is_pending(session, model=model_name, pixel_hash=pixel_hash, tag_name=tag_name):
+            return False
+        if decision == "approve":
+            with _exif(settings) as exiftool:
+                approve(
+                    session,
+                    device_id=settings.device_id,
+                    model=model_name,
+                    pixel_hash=pixel_hash,
+                    tag_name=tag_name,
+                    facet=facet,
+                    now=utcnow(),
+                    exiftool=exiftool,
+                )
+        else:
+            reject(
+                session,
+                device_id=settings.device_id,
+                model=model_name,
+                pixel_hash=pixel_hash,
+                tag_name=tag_name,
+                now=utcnow(),
+            )
+        session.commit()
+    return True
+
+
 def _apply_rating(settings: Settings, engine: Engine, pixel_hash: str, stars: int) -> bool:
     """Off the event loop (``run.io_bound``): set the rating (``ratings`` row +
     ``changes`` row) and mirror it into the present, embed-capable file copies via
     exiftool when available (hard constraints #4, #7). With stacking on, the
     rating is applied to every member of the stack (stack-level ratings)."""
-    want_exif = shutil.which("exiftool") is not None
-    exif_ctx = (
-        ExiftoolClient(write_windows_compat_tags=settings.config.rating.write_windows_compat_tags)
-        if want_exif
-        else nullcontext(None)
-    )
-    with Session(engine) as session, exif_ctx as exiftool:
+    with Session(engine) as session, _exif(settings) as exiftool:
         targets = [pixel_hash]
         if settings.config.stacking.enabled:
             targets = build_stacks(session, settings.config.stacking).members(pixel_hash)
@@ -2477,13 +2596,7 @@ def _bulk_targets(session: Session, settings: Settings, hashes: list[str]) -> li
 
 def _apply_bulk_rating(settings: Settings, engine: Engine, hashes: list[str], stars: int) -> int:
     """Off the event loop: rate every selected photo (fanning to stack members)."""
-    want_exif = shutil.which("exiftool") is not None
-    exif_ctx = (
-        ExiftoolClient(write_windows_compat_tags=settings.config.rating.write_windows_compat_tags)
-        if want_exif
-        else nullcontext(None)
-    )
-    with Session(engine) as session, exif_ctx as exiftool:
+    with Session(engine) as session, _exif(settings) as exiftool:
         for target in _bulk_targets(session, settings, hashes):
             set_rating(
                 session,
@@ -2499,13 +2612,7 @@ def _apply_bulk_rating(settings: Settings, engine: Engine, hashes: list[str], st
 
 def _apply_bulk_tag(settings: Settings, engine: Engine, hashes: list[str], tag_name: str) -> int:
     """Off the event loop: add *tag_name* to every selected photo (+ stack members)."""
-    want_exif = shutil.which("exiftool") is not None
-    exif_ctx = (
-        ExiftoolClient(write_windows_compat_tags=settings.config.rating.write_windows_compat_tags)
-        if want_exif
-        else nullcontext(None)
-    )
-    with Session(engine) as session, exif_ctx as exiftool:
+    with Session(engine) as session, _exif(settings) as exiftool:
         for target in _bulk_targets(session, settings, hashes):
             add_manual_tag(
                 session,
