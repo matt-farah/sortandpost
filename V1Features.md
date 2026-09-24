@@ -100,7 +100,7 @@ or out of step with the library.
   whether to offer a lighter "re-scan only" alternative.
 - Only when this machine holds the write lock; runs through the normal indexer.
 
-### 16. RAW + HEIC end-to-end audit
+### 16. RAW + HEIC end-to-end audit — ✅ shipped (V1 P6)
 Decode real `.CR2` / `.NEF` / `.HEIC` via embedded preview and **verify
 constraint #2**: RAW files are never written to or beside (check mtimes + logs
 before/after a rating write). Partly exercised (a full native index incl.
