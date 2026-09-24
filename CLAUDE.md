@@ -141,7 +141,7 @@ Automated tests + a headless smoke are necessary but not sufficient. After build
    (`library_roots` there points at `~/Downloads/sampleImages`; ~300 photos already indexed;
    `.venv` has no torch, so CLIP features degrade gracefully.)
 3. Tell the user exactly which keys / buttons / flows to exercise, and what each should do.
-4. Wait for their sign-off. Only then update `PROGRESS.md` / `Features.md` and commit.
+4. Wait for their sign-off. Only then update `PROGRESS.md` / `V1Plan.md` (+ `V1Features.md`) and commit.
 
 Leave the app running until the user says they're done, then shut it down.
 

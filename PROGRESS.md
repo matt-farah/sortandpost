@@ -1,7 +1,18 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-10 (indexer concurrency + retry fixes from a real-library test)._
-_Working branch: `scaffold` (== `main` content). Next PR: `scaffold → main`._
+_Last updated: 2026-09-24 (V1 scoped: see `V1Plan.md`)._
+_Working branch: `v1-plan`._
+
+---
+
+## 🗺️ 2026-09-24 — V1 scoped
+
+Roadmap docs reorganized: `Features.md` → `InitialFeatures.md` (history), the old
+`V2.md` → `V1Features.md` (trimmed to the V1 scope), the deferred items → a new `V2.md`
+(original item numbers kept), and `Issues.md` for bugs found in use.
+**`V1Plan.md` is the resume point:** phase order P0–P7, which Claude model to use for
+each phase, and a status checklist. P1 (search merged into the library + filter bar)
+is next.
 
 ---
 
