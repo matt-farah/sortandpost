@@ -151,6 +151,21 @@ Leave the app running until the user says they're done, then shut it down.
 
 `APP_DATA` has two subtrees. The user points their file-sync app at **`sync/` only**.
 
+**Which folder is `APP_DATA`?** In order: a genuine process/shell `APP_DATA` env var
+(Docker's fixed container mount, or `APP_DATA=... command`) — a real instruction from
+whoever launched the process, always wins and can't be overridden from the UI; else the
+folder last saved from **Settings → App-data folder**, recorded outside any `APP_DATA`
+tree in `~/.sortandpost/app_data_path.json` (see `sortandpost.launcher_pref`) so it
+survives regardless of the launch command's cwd — this is how an end user sets it up
+with no environment variables at all; else a bare value left in a `.env` file (a soft
+default, e.g. a previous setup's leftover — deliberately ranked *below* a saved folder);
+else a bare `./appdata` next to wherever the launch happened to run from.
+`Env.resolved_app_data()` / `Env.app_data_source()` implement this (`sortandpost.config`);
+telling a real env var from a `.env`-file value apart means checking `os.environ` directly
+rather than trusting pydantic-settings' own (order-collapsing) env/dotenv merge. Saving a
+new folder from Settings takes effect on the next restart, not live — the running process
+already has an engine open on the old one.
+
 ```
 <APP_DATA>/
   local/                       # machine-specific — NEVER synced
@@ -455,7 +470,11 @@ The **only** module allowed to write under a library root. Wraps a persistent
   has-GPS, missing, duplicates).
 - `/review` — pending CLIP predictions grouped by tag for bulk approve/reject.
 - `/settings` — CLIP model & thresholds, re-index / re-embed actions, sync status (lock holder,
-  last publish, `db_generation`, snapshots, last merge summary).
+  last publish, `db_generation`, snapshots, last merge summary), the app-data folder picker (see
+  "App-data layout" above), and a CLIP-weights cache check / force-download control (`Check if
+  downloaded` / `Download / verify CLIP model`, `sortandpost.clip.model.check_cached` /
+  `ensure_downloaded` — toggles `HF_HUB_OFFLINE` around the probe so it works even when the app
+  itself was launched offline).
 - Persistent status bar: index progress (`X/Y`, current stage), CLIP queue depth, write-lock
   state (writable / read-only + holder), last publish time.
 
