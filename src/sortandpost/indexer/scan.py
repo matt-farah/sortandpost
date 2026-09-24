@@ -24,11 +24,12 @@ from pathlib import Path
 import numpy as np
 from sqlmodel import Session, col, select
 
-from sortandpost.clip.model import ClipModel, ClipModelUnavailable
+from sortandpost.clip.model import ClipModel, ClipModelUnavailable, apply_cpu_profile
 from sortandpost.clip.store import EmbeddingStore, check_compatible, ensure_meta
 from sortandpost.clip.tagging import pick_terms, upsert_prediction
 from sortandpost.clip.vocab import Vocab, ensure_text_matrix, load_vocab
 from sortandpost.config import Settings, TaggingConfig
+from sortandpost.cpu import clip_profile, lower_process_priority, set_thread_priority
 from sortandpost.db import init_db, make_engine
 from sortandpost.db.deletion import apply_pending_tombstones
 from sortandpost.db.models import (
@@ -148,6 +149,8 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
         online_only_mode=settings.config.indexer.online_only,
     )
     n_workers = settings.config.worker_count() if workers is None else max(1, workers)
+    lower_priority = settings.config.clip.speed == "slow"
+    set_thread_priority(lower_priority)  # inline decoding + any pool we spawn inherit it (Linux)
 
     have_exiftool = shutil.which("exiftool") is not None
     if not have_exiftool:
@@ -186,7 +189,9 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
             todo.append(key)
 
         # -- stages 2-4 in parallel, stages 5-6 + DB serial here ------------- #
-        for decoded in _decode_stream(todo, pcfg, paths.app_data, n_workers):
+        for decoded in _decode_stream(
+            todo, pcfg, paths.app_data, n_workers, lower_priority=lower_priority
+        ):
             try:
                 outcome = persist_decoded(
                     session,
@@ -233,6 +238,8 @@ def _decode_stream(
     pcfg: PipelineConfig,
     app_data: Path,
     n_workers: int,
+    *,
+    lower_priority: bool = False,
 ) -> Iterator[DecodedFile]:
     """Yield a :class:`DecodedFile` per input path -- via a process pool when the
     batch is large enough, otherwise inline. Bounded in-flight work keeps peak
@@ -269,7 +276,11 @@ def _decode_stream(
     log.info("indexing %d files across %d worker processes", len(paths_to_do), n_workers)
     done_keys: set[str] = set()
     try:
-        with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            mp_context=ctx,
+            initializer=lower_process_priority if lower_priority else None,
+        ) as pool:
             pending: dict[Future[DecodedFile], str] = {}
             stream = iter(paths_to_do)
             for key in islice(stream, max_inflight):
@@ -397,6 +408,10 @@ def _scan_clip_once_locked(
     ccfg = settings.config.clip
     tcfg = settings.config.tagging
 
+    # Snapshot the CPU budget once per pass: a slow/fast change in Settings
+    # applies from the next pass, never mid-pass.
+    profile = clip_profile(ccfg.speed, ccfg.batch_size)
+
     if model is None:
         model = ClipModel(ccfg, paths.models_dir)
     try:
@@ -404,6 +419,7 @@ def _scan_clip_once_locked(
     except ClipModelUnavailable as exc:
         log.warning("CLIP pass skipped: %s", exc)
         return ClipStats(skipped_no_model=True)
+    apply_cpu_profile(profile)
     dim = model.dim
 
     engine = make_engine(paths.working_db)
@@ -432,7 +448,7 @@ def _scan_clip_once_locked(
 
         with EmbeddingStore.open(matrix_path, rowmap_path, dim=dim, model=ccfg.model) as store:
             candidates = _clip_candidates(session, store)
-            batch_size = max(1, ccfg.batch_size)
+            batch_size = profile.batch_size
             for chunk in _chunked(candidates, batch_size):
                 images = []
                 hashes = []

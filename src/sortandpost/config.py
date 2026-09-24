@@ -25,6 +25,7 @@ import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from sortandpost.cpu import ClipSpeed, default_workers
 from sortandpost.launcher_pref import read_remembered_app_data
 from sortandpost.library_roots import LibraryRoot, load_roots, save_roots
 from sortandpost.paths import Paths
@@ -107,6 +108,9 @@ class ClipConfig(BaseModel):
     pretrained: str = "laion2b_s34b_b79k"
     device: str = "auto"  # "auto" -> cuda / mps / cpu; or force "cpu" / "mps" / "cuda"
     batch_size: int = 16
+    # "slow": ~30% of cores, batch <= 8, lowered OS priority -- a background scan
+    # that leaves the machine usable. "fast": every core but one, full batch.
+    speed: ClipSpeed = "slow"
 
 
 class TaggingConfig(BaseModel):
@@ -191,9 +195,7 @@ class AppConfig(BaseModel):
         workers = self.indexer.workers
         if isinstance(workers, int):
             return max(1, workers)
-        import os
-
-        return max(1, (os.cpu_count() or 2) - 1)
+        return default_workers(self.clip.speed)
 
 
 def _resource_text(name: str) -> str:

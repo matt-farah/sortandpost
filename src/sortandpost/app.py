@@ -64,6 +64,7 @@ from sortandpost.collections import (
     set_collection_notes,
 )
 from sortandpost.config import Settings
+from sortandpost.cpu import default_workers
 from sortandpost.db import add_manual_tag, init_db, make_engine, set_rating
 from sortandpost.db.browse import (
     get_paths,
@@ -2161,6 +2162,7 @@ def build_ui(settings: Settings) -> None:
                 ui.button("Run indexer pass now", on_click=_scan_now)
                 _exclude_editor(settings, engine)
                 _online_only_editor(settings, engine, cloud_n)
+                _cpu_speed_editor(settings)
                 _stacking_editor(settings)
                 _deletion_editor(settings)
             else:
@@ -2592,6 +2594,42 @@ def _theme_editor(settings: Settings, dark: ui.dark_mode) -> None:
         dark.set_value(_THEME_TO_DARK[value])
 
     choice.on_value_change(_on_change)
+
+
+def _cpu_speed_editor(settings: Settings) -> None:
+    """`/settings` control for ``clip.speed``: how much CPU indexing + CLIP may
+    use. Applies from the next pass (the running one keeps its budget)."""
+    ccfg = settings.config.clip
+    slow_w = default_workers("slow")
+
+    ui.label("Indexing speed").classes("font-bold mt-4")
+    ui.label(
+        "Indexing gathers your photos, stacks photos together that are the same, and "
+        "uses machine learning to determine the contents of the photos without using "
+        "any internet resources or uploading your photos anywhere."
+    ).classes("text-xs sp-faint max-w-xl")
+    ui.label(
+        f"By default, indexing runs slowly using about {slow_w} cpu core(s), however "
+        f"if you'd like to run the index quickly select fast and it will use all "
+        f"available CPU cores. This may cause your computer to run slowly."
+    ).classes("text-xs sp-faint max-w-xl")
+
+    mode = ui.toggle(
+        {"slow": "Slow (background)", "fast": "Fast"},
+        value=ccfg.speed if ccfg.speed in ("slow", "fast") else "slow",
+    ).props("no-caps dense")
+    warning = ui.label("Fast uses all CPU cores and may slow down your computer.").classes(
+        "text-amber-600 text-sm"
+    )
+    warning.set_visibility(ccfg.speed == "fast")
+
+    def _save_speed(e: Any) -> None:
+        ccfg.speed = "fast" if e.value == "fast" else "slow"
+        settings.config.dump(settings.paths.config_file)
+        warning.set_visibility(ccfg.speed == "fast")
+        ui.notify(f"indexing speed: {ccfg.speed} (applies from the next pass)")
+
+    mode.on_value_change(_save_speed)
 
 
 def _deletion_editor(settings: Settings) -> None:

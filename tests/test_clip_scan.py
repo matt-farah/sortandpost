@@ -192,3 +192,28 @@ def test_clip_pass_skips_cleanly_without_model(settings: Settings) -> None:
     stats = scan_clip_once(settings, model=Unavailable())
     assert stats.skipped_no_model
     assert stats.embedded == 0
+
+
+class _BatchRecorder(FakeClipModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches: list[int] = []
+
+    def encode_images(self, images: list[Image.Image]) -> np.ndarray:
+        self.batches.append(len(images))
+        return super().encode_images(images)
+
+
+@pytest.mark.parametrize(("speed", "expected"), [("slow", [8, 2]), ("fast", [10])])
+def test_clip_pass_batch_size_follows_speed(
+    settings: Settings, speed: str, expected: list[int]
+) -> None:
+    for i in range(10):
+        _jpeg(_lib(settings) / f"p{i}.jpg", (20 * i, 10, 10))
+    scan_once(settings)
+    settings.config.clip.speed = speed  # type: ignore[assignment]
+    settings.config.clip.batch_size = 16
+
+    model = _BatchRecorder()
+    assert scan_clip_once(settings, model=model).embedded == 10
+    assert model.batches == expected

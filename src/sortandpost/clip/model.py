@@ -23,6 +23,7 @@ import numpy as np
 from PIL import Image
 
 from sortandpost.config import ClipConfig
+from sortandpost.cpu import CpuProfile, clip_profile, set_thread_priority
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,16 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     open_clip = None
     torch = None
     _IMPORT_ERROR = exc
+
+
+def apply_cpu_profile(profile: CpuProfile) -> None:
+    """Point torch's thread count and the calling thread's priority at *profile*.
+    Called at the start of each CLIP pass so a slow/fast change made in Settings
+    takes effect on the next pass, never mid-pass."""
+    if torch is not None:
+        torch.set_num_threads(profile.threads)
+    set_thread_priority(profile.lower_priority)
+
 
 # open_clip embedding dims for the architectures we ship a default for. Lets a
 # compatibility check answer without downloading/loading weights.
@@ -161,6 +172,10 @@ class ClipModel:
         assert self._dim is not None
         return self._dim
 
+    def profile(self) -> CpuProfile:
+        """The CPU budget for the *current* ``clip.speed`` setting."""
+        return clip_profile(self.config.speed, self.config.batch_size)
+
     def load(self) -> None:
         if self._model is not None:
             return
@@ -172,7 +187,7 @@ class ClipModel:
 
         self.device = _resolve_device(self.config.device)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        torch.set_num_threads(max(1, (os.cpu_count() or 2) - 1))
+        torch.set_num_threads(self.profile().threads)
         model, _, preprocess = open_clip.create_model_and_transforms(
             self.config.model,
             pretrained=self.config.pretrained,
