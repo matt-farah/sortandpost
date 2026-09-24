@@ -1,324 +1,294 @@
-"""P6: RAW/HEIC no-write audit — verify constraint #2.
+"""P6: RAW/HEIC no-write audit -- verify constraints #1, #2 and #3 end to end.
 
-RAW files are read-only (ratings/tags live in DB only, never in the file).
-HEIC files support rating round-trips and pixel_hash stability.
+RAW files are read-only (ratings/tags live in the DB only, never in or beside
+the file) on every user write path: single rating, stacked rating (a RAW paired
+with its same-named JPEG), bulk rating, manual tags, bulk tags, and CLIP
+approval. Each RAW test snapshots the whole library folder (every file's bytes +
+mtime, hidden files included) before and after, so a stray sidecar, exiftool
+temp file or ``._`` AppleDouble would fail the audit too. HEIC ratings
+round-trip and the pixel_hash is stable across our own EXIF writes.
+
+Uses real fixtures from ``~/Downloads/sampleImages``; skipped when they're absent.
 """
 
 from __future__ import annotations
 
 import hashlib
 import shutil
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from PIL import Image
+from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
+from sortandpost.app import _apply_bulk_rating, _apply_bulk_tag, _apply_rating
 from sortandpost.clip.tagging import approve
+from sortandpost.config import Settings
 from sortandpost.db import init_db, make_engine
 from sortandpost.db.models import Photo, PhotoPath, Prediction, Rating, Tag
 from sortandpost.db.ratings import set_rating
+from sortandpost.db.tags import add_manual_tag, photo_keywords
 from sortandpost.hashing import pixel_hash
 from sortandpost.metadata import ExiftoolClient, is_raw
+from sortandpost.metadata.shared import EXIFTOOL
 
 pytestmark = pytest.mark.skipif(shutil.which("exiftool") is None, reason="exiftool not on PATH")
 
-# Paths to real fixtures from ~/Downloads/sampleImages
 SAMPLE_CR2 = Path.home() / "Downloads" / "sampleImages" / "RAWs" / "IMG_4909.CR2"
 SAMPLE_HEIC = Path.home() / "Downloads" / "sampleImages" / "HEIC" / "IMG_8709.HEIC"
 
-
-def file_hash_and_mtime(path: Path) -> tuple[str, int]:
-    """Return (SHA256 of file bytes, mtime_ns)."""
-    if not path.is_file():
-        raise FileNotFoundError(f"File not found: {path}")
-    h = hashlib.sha256(path.read_bytes()).hexdigest()
-    mtime_ns = int(path.stat().st_mtime_ns)
-    return h, mtime_ns
-
-
-def assert_file_unchanged(path: Path, baseline_hash: str, baseline_mtime: int) -> None:
-    """Assert file bytes and mtime haven't changed."""
-    current_hash, current_mtime = file_hash_and_mtime(path)
-    assert current_hash == baseline_hash, f"File bytes changed: {path}"
-    assert current_mtime == baseline_mtime, f"File mtime changed: {path}"
-
-
-def assert_no_sidecars(path: Path) -> None:
-    """Assert no sidecar files (*.xmp, etc.) were created beside the file."""
-    parent = path.parent
-    stem = path.stem
-    sidecars = list(parent.glob(f"{stem}.*")) + list(parent.glob(f"{stem}-*"))
-    # Filter out the original file
-    sidecars = [p for p in sidecars if p != path]
-    assert not sidecars, f"Sidecar files were created: {sidecars}"
-
-
-@pytest.mark.skipif(
-    not SAMPLE_CR2.is_file(),
-    reason=f"Sample RAW fixture not found at {SAMPLE_CR2}",
+needs_cr2 = pytest.mark.skipif(
+    not SAMPLE_CR2.is_file(), reason=f"Sample RAW fixture not found at {SAMPLE_CR2}"
 )
-def test_raw_cr2_not_modified_by_rating(tmp_path: Path) -> None:
-    """Verify constraint #2: CR2 files are never written to when rated."""
-    # Copy the fixture into a temporary library
+needs_heic = pytest.mark.skipif(
+    not SAMPLE_HEIC.is_file(), reason=f"Sample HEIC fixture not found at {SAMPLE_HEIC}"
+)
+
+DEVICE = "test-device"
+NOW = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+
+FolderSnapshot = dict[str, tuple[str, int]]
+
+
+def snapshot_folder(root: Path) -> FolderSnapshot:
+    """Every file under *root* (hidden ones included) -> (sha256, mtime_ns)."""
+    return {
+        str(p.relative_to(root)): (
+            hashlib.sha256(p.read_bytes()).hexdigest(),
+            p.stat().st_mtime_ns,
+        )
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+def assert_only_changed(before: FolderSnapshot, after: FolderSnapshot, *changed: str) -> None:
+    """No file appeared or vanished, and only *changed* differ in bytes/mtime."""
+    assert sorted(after) == sorted(before), "library folder listing changed"
+    differs = sorted(name for name in before if before[name] != after[name])
+    assert differs == sorted(changed)
+
+
+def index_file(session: Session, path: Path) -> str:
+    """Insert a ``photos`` + ``photo_paths`` row for *path*; return its pixel_hash."""
+    ph = pixel_hash(path)
+    with Image.open(path) as img:
+        width, height = img.size
+    st = path.stat()
+    session.add(
+        Photo(
+            pixel_hash=ph,
+            primary_path=str(path),
+            width=width,
+            height=height,
+            format=path.suffix.lstrip(".").upper(),
+            is_raw=is_raw(path),
+            file_size=st.st_size,
+            file_mtime_ns=st.st_mtime_ns,
+            first_indexed_at=NOW,
+            last_indexed_at=NOW,
+        )
+    )
+    session.add(PhotoPath(pixel_hash=ph, path=str(path), size=st.st_size, mtime_ns=st.st_mtime_ns))
+    session.commit()
+    return ph
+
+
+@pytest.fixture
+def library(tmp_path: Path) -> Path:
     lib = tmp_path / "library"
     lib.mkdir()
-    test_cr2 = lib / SAMPLE_CR2.name
-    shutil.copy2(SAMPLE_CR2, test_cr2)
+    return lib
 
-    # Baseline: record the file's bytes and mtime
-    baseline_hash, baseline_mtime = file_hash_and_mtime(test_cr2)
 
-    # Create a DB and index this file
+@pytest.fixture
+def db(tmp_path: Path) -> Iterator[Engine]:
     engine = make_engine(tmp_path / "db.sqlite")
     init_db(engine)
-    now = datetime.now(UTC)
+    yield engine
+    engine.dispose()
 
-    # Compute pixel hash
-    ph = pixel_hash(test_cr2)
 
-    # Get image dimensions
-    with Image.open(test_cr2) as img:
-        width, height = img.size
+@pytest.fixture
+def raw_jpeg_pair(library: Path, db: Engine) -> tuple[str, str]:
+    """``IMG_4909.CR2`` + a same-named ``IMG_4909.JPG`` (a RAW+JPEG stack);
+    returns their (raw, jpeg) pixel_hashes."""
+    cr2 = library / SAMPLE_CR2.name
+    shutil.copy2(SAMPLE_CR2, cr2)
+    jpg = library / f"{SAMPLE_CR2.stem}.JPG"
+    Image.new("RGB", (64, 48), "red").save(jpg, "JPEG")
+    with Session(db) as session:
+        return index_file(session, cr2), index_file(session, jpg)
 
-    # Insert the photo into the DB
-    with Session(engine) as session:
-        session.add(
-            Photo(
-                pixel_hash=ph,
-                primary_path=str(test_cr2),
-                width=width,
-                height=height,
-                format="CR2",
-                file_size=test_cr2.stat().st_size,
-                file_mtime_ns=int(test_cr2.stat().st_mtime_ns),
-                first_indexed_at=now,
-                last_indexed_at=now,
-            )
-        )
-        session.add(
-            PhotoPath(
-                pixel_hash=ph,
-                path=str(test_cr2),
-                size=test_cr2.stat().st_size,
-                mtime_ns=int(test_cr2.stat().st_mtime_ns),
-                present=True,
-            )
-        )
+
+@pytest.fixture
+def stacked_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Settings]:
+    """App settings with stacking on (RAW+JPEG pairing), as the UI would run."""
+    monkeypatch.setenv("APP_DATA", str(tmp_path / "appdata"))
+    monkeypatch.delenv("PORT", raising=False)
+    settings = Settings.resolve()
+    settings.config.stacking.enabled = True
+    settings.config.stacking.raw_jpeg = True
+    yield settings
+    EXIFTOOL.close()
+
+
+# -- RAW: every user write path leaves the file alone ---------------------- #
+
+
+@needs_cr2
+def test_raw_cr2_not_modified_by_rating(library: Path, db: Engine) -> None:
+    cr2 = library / SAMPLE_CR2.name
+    shutil.copy2(SAMPLE_CR2, cr2)
+    with Session(db) as session:
+        ph = index_file(session, cr2)
+    before = snapshot_folder(library)
+
+    with Session(db) as session, ExiftoolClient() as exiftool:
+        set_rating(session, pixel_hash=ph, stars=4, device_id=DEVICE, now=NOW, exiftool=exiftool)
         session.commit()
 
-    # Rate the photo through the DB layer
-    with Session(engine) as session, ExiftoolClient() as exiftool:
-        set_rating(
-            session,
-            pixel_hash=ph,
-            stars=4,
-            device_id="test-device",
-            now=now,
-            exiftool=exiftool,  # this is the key: exiftool is used, but RAW should be skipped
-        )
-        session.commit()
-
-    # Verify the file is unchanged
-    assert_file_unchanged(test_cr2, baseline_hash, baseline_mtime)
-
-    # Verify no sidecars were created
-    assert_no_sidecars(test_cr2)
-
-    # Verify the rating was recorded in the DB
-    with Session(engine) as session:
+    assert_only_changed(before, snapshot_folder(library))
+    with Session(db) as session:
         row = session.get(Rating, ph)
         assert row is not None and row.stars == 4
 
 
-@pytest.mark.skipif(
-    not SAMPLE_CR2.is_file(),
-    reason=f"Sample RAW fixture not found at {SAMPLE_CR2}",
-)
-def test_raw_cr2_not_modified_by_clip_approval(tmp_path: Path) -> None:
-    """Verify constraint #2: CR2 files are never written to when CLIP tags are approved."""
+@needs_cr2
+def test_stacked_rating_writes_jpeg_but_not_raw(
+    library: Path, db: Engine, raw_jpeg_pair: tuple[str, str], stacked_settings: Settings
+) -> None:
+    """The UI path: rating the JPEG of a RAW+JPEG stack fans out to the RAW
+    (DB only) and embeds into the JPEG only."""
+    raw_ph, jpg_ph = raw_jpeg_pair
+    before = snapshot_folder(library)
 
-    # Copy the fixture
-    lib = tmp_path / "library"
-    lib.mkdir()
-    test_cr2 = lib / SAMPLE_CR2.name
-    shutil.copy2(SAMPLE_CR2, test_cr2)
+    assert _apply_rating(stacked_settings, db, jpg_ph, 4)
 
-    # Baseline
-    baseline_hash, baseline_mtime = file_hash_and_mtime(test_cr2)
+    jpg_name = f"{SAMPLE_CR2.stem}.JPG"
+    assert_only_changed(before, snapshot_folder(library), jpg_name)
+    with Session(db) as session:
+        raw_row = session.get(Rating, raw_ph)
+        assert raw_row is not None and raw_row.stars == 4, "stack fan-out didn't reach the RAW"
+    with ExiftoolClient() as exiftool:
+        assert exiftool.read(library / jpg_name).rating == 4
 
-    # Create DB and index
-    engine = make_engine(tmp_path / "db.sqlite")
-    init_db(engine)
-    now = datetime.now(UTC)
 
-    # Compute pixel hash and get dimensions
-    ph = pixel_hash(test_cr2)
-    with Image.open(test_cr2) as img:
-        width, height = img.size
+@needs_cr2
+def test_bulk_rating_and_bulk_tag_skip_raw(
+    library: Path, db: Engine, raw_jpeg_pair: tuple[str, str], stacked_settings: Settings
+) -> None:
+    raw_ph, _jpg_ph = raw_jpeg_pair
+    before = snapshot_folder(library)
 
-    with Session(engine) as session:
-        # Add photo
-        session.add(
-            Photo(
-                pixel_hash=ph,
-                primary_path=str(test_cr2),
-                width=width,
-                height=height,
-                format="CR2",
-                file_size=test_cr2.stat().st_size,
-                file_mtime_ns=int(test_cr2.stat().st_mtime_ns),
-                first_indexed_at=now,
-                last_indexed_at=now,
-            )
+    _apply_bulk_rating(stacked_settings, db, [raw_ph], 3)
+    _apply_bulk_tag(stacked_settings, db, [raw_ph], "sunset")
+
+    jpg_name = f"{SAMPLE_CR2.stem}.JPG"
+    assert_only_changed(before, snapshot_folder(library), jpg_name)
+    with Session(db) as session:
+        raw_row = session.get(Rating, raw_ph)
+        assert raw_row is not None and raw_row.stars == 3
+        assert photo_keywords(session, raw_ph) == ["sunset"]
+    with ExiftoolClient() as exiftool:
+        md = exiftool.read(library / jpg_name)
+    assert md.rating == 3
+    assert "sunset" in md.keywords
+
+
+@needs_cr2
+def test_raw_cr2_not_modified_by_manual_tag(library: Path, db: Engine) -> None:
+    cr2 = library / SAMPLE_CR2.name
+    shutil.copy2(SAMPLE_CR2, cr2)
+    with Session(db) as session:
+        ph = index_file(session, cr2)
+    before = snapshot_folder(library)
+
+    with Session(db) as session, ExiftoolClient() as exiftool:
+        assert add_manual_tag(
+            session, pixel_hash=ph, tag_name="beach", device_id=DEVICE, now=NOW, exiftool=exiftool
         )
-        session.add(
-            PhotoPath(
-                pixel_hash=ph,
-                path=str(test_cr2),
-                size=test_cr2.stat().st_size,
-                mtime_ns=int(test_cr2.stat().st_mtime_ns),
-                present=True,
-            )
-        )
+        session.commit()
 
-        # Add a CLIP prediction to approve
-        tag = Tag(name="test-tag", facet="test")
-        session.add(tag)
-        session.flush()
+    assert_only_changed(before, snapshot_folder(library))
+    with Session(db) as session:
+        assert photo_keywords(session, ph) == ["beach"]
 
+
+@needs_cr2
+def test_raw_cr2_not_modified_by_clip_approval(library: Path, db: Engine) -> None:
+    cr2 = library / SAMPLE_CR2.name
+    shutil.copy2(SAMPLE_CR2, cr2)
+    with Session(db) as session:
+        ph = index_file(session, cr2)
+        session.add(Tag(name="test-tag", facet="test"))
         session.add(
             Prediction(
                 pixel_hash=ph,
                 tag_name="test-tag",
                 score=0.95,
                 model="ViT-B-32",
-                run_at=now,
+                run_at=NOW,
                 state="pending",
             )
         )
         session.commit()
+    before = snapshot_folder(library)
 
-    # Call the real approve() function with exiftool active
-    with Session(engine) as session, ExiftoolClient() as exiftool:
+    with Session(db) as session, ExiftoolClient() as exiftool:
         approve(
             session,
-            device_id="test-device",
+            device_id=DEVICE,
             model="ViT-B-32",
             pixel_hash=ph,
             tag_name="test-tag",
             facet="test",
-            now=now,
+            now=NOW,
             exiftool=exiftool,
         )
         session.commit()
 
-    # Verify the file is unchanged
-    assert_file_unchanged(test_cr2, baseline_hash, baseline_mtime)
-    assert_no_sidecars(test_cr2)
+    assert_only_changed(before, snapshot_folder(library))
 
 
-@pytest.mark.skipif(
-    not SAMPLE_HEIC.is_file(),
-    reason=f"Sample HEIC fixture not found at {SAMPLE_HEIC}",
-)
-def test_heic_rating_round_trip(tmp_path: Path) -> None:
-    """Verify HEIC files support rating round-trips."""
-    # Copy the fixture
-    lib = tmp_path / "library"
-    lib.mkdir()
-    test_heic = lib / SAMPLE_HEIC.name
-    shutil.copy2(SAMPLE_HEIC, test_heic)
+@needs_cr2
+def test_raw_files_are_correctly_identified() -> None:
+    """Sanity check: the fixture really is treated as RAW."""
+    assert is_raw(SAMPLE_CR2)
 
-    # Create DB and index
-    engine = make_engine(tmp_path / "db.sqlite")
-    init_db(engine)
-    now = datetime.now(UTC)
 
-    # Compute pixel hash and get dimensions
-    ph = pixel_hash(test_heic)
-    with Image.open(test_heic) as img:
-        width, height = img.size
+# -- HEIC: ratings round-trip, pixel_hash is stable ------------------------ #
 
-    with Session(engine) as session:
-        session.add(
-            Photo(
-                pixel_hash=ph,
-                primary_path=str(test_heic),
-                width=width,
-                height=height,
-                format="HEIC",
-                file_size=test_heic.stat().st_size,
-                file_mtime_ns=int(test_heic.stat().st_mtime_ns),
-                first_indexed_at=now,
-                last_indexed_at=now,
-            )
-        )
-        session.add(
-            PhotoPath(
-                pixel_hash=ph,
-                path=str(test_heic),
-                size=test_heic.stat().st_size,
-                mtime_ns=int(test_heic.stat().st_mtime_ns),
-                present=True,
-            )
-        )
+
+@needs_heic
+def test_heic_rating_round_trip(library: Path, db: Engine) -> None:
+    heic = library / SAMPLE_HEIC.name
+    shutil.copy2(SAMPLE_HEIC, heic)
+    with Session(db) as session:
+        ph = index_file(session, heic)
+    before = snapshot_folder(library)
+
+    with Session(db) as session, ExiftoolClient() as exiftool:
+        set_rating(session, pixel_hash=ph, stars=5, device_id=DEVICE, now=NOW, exiftool=exiftool)
         session.commit()
 
-    # Rate the HEIC file
-    with Session(engine) as session, ExiftoolClient() as exiftool:
-        set_rating(
-            session,
-            pixel_hash=ph,
-            stars=5,
-            device_id="test-device",
-            now=now,
-            exiftool=exiftool,
-        )
-        session.commit()
-
-    # Verify the rating was written to the file and can be read back
+    # Written in place: same listing, only the HEIC itself changed.
+    assert_only_changed(before, snapshot_folder(library), heic.name)
     with ExiftoolClient() as exiftool:
-        md = exiftool.read(test_heic)
-        assert md.rating == 5, "HEIC rating did not round-trip"
-
-    # Verify pixel_hash is stable (hasn't changed after EXIF write)
-    ph_after = pixel_hash(test_heic)
-    assert ph == ph_after, "pixel_hash changed after EXIF write (constraint #3)"
+        assert exiftool.read(heic).rating == 5, "HEIC rating did not round-trip"
+    assert pixel_hash(heic) == ph, "pixel_hash changed after EXIF write (constraint #3)"
 
 
-@pytest.mark.skipif(
-    not SAMPLE_HEIC.is_file(),
-    reason=f"Sample HEIC fixture not found at {SAMPLE_HEIC}",
-)
+@needs_heic
 def test_heic_pixel_hash_stable_across_rating_writes(tmp_path: Path) -> None:
-    """Verify constraint #3: pixel_hash is immune to our own EXIF writes."""
-    # Copy the fixture
-    test_heic = tmp_path / SAMPLE_HEIC.name
-    shutil.copy2(SAMPLE_HEIC, test_heic)
+    heic = tmp_path / SAMPLE_HEIC.name
+    shutil.copy2(SAMPLE_HEIC, heic)
+    ph_before = pixel_hash(heic)
 
-    # Compute baseline pixel hash
-    ph_before = pixel_hash(test_heic)
-
-    # Write a rating through exiftool multiple times
     with ExiftoolClient() as exiftool:
-        for stars in (1, 2, 3, 4, 5):
-            exiftool.write_rating(test_heic, stars)
-            ph_after = pixel_hash(test_heic)
-            assert ph_before == ph_after, f"pixel_hash changed after writing rating {stars}"
-
-
-@pytest.mark.skipif(
-    not SAMPLE_CR2.is_file(),
-    reason=f"Sample RAW fixture not found at {SAMPLE_CR2}",
-)
-def test_raw_files_are_correctly_identified(tmp_path: Path) -> None:
-    """Sanity check: verify the test fixture is correctly identified as RAW."""
-    lib = tmp_path / "library"
-    lib.mkdir()
-    test_cr2 = lib / SAMPLE_CR2.name
-    shutil.copy2(SAMPLE_CR2, test_cr2)
-
-    assert is_raw(test_cr2), f"CR2 file not identified as RAW: {test_cr2}"
-    assert test_cr2.suffix.upper() == ".CR2"
+        for stars in (1, 2, 3, 4, 5, 0):
+            exiftool.write_rating(heic, stars)
+            assert pixel_hash(heic) == ph_before, f"pixel_hash changed after rating {stars}"

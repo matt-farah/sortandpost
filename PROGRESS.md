@@ -1,26 +1,40 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-24 (V1 P6: RAW/HEIC no-write audit)._
-_Working branch: `main`._
+_Last updated: 2026-09-24 (V1 P6: RAW/HEIC no-write audit + follow-up)._
+_Working branch: `v1-p6-audit-followup` (P6 follow-up commit, not yet pushed / PR'd)._
+
+> **▶️ Next session:** V1 **P7 — robopost composer** (the last V1 phase). Start in **plan
+> mode with Opus** to design the robopost.app API setup, then code the back end, then the
+> front end. See "NEXT SESSION — start here" below and `V1Plan.md` Phase 7.
 
 ---
 
 ## ✅ 2026-09-24 — V1 P6: RAW/HEIC no-write audit
 
-All tests pass (new: `test_raw_heic_audit.py`, 5 new tests); 454 total tests; ruff / format / mypy
-clean; no schema change. No bugs found (audit passed).
+All tests pass (`test_raw_heic_audit.py`, 8 tests); 457 total tests; ruff / format / mypy
+clean; no schema change. No bugs found (audit passed). Test-only phase — no browser test.
 
-- **Test suite `test_raw_heic_audit.py`:** audits constraint #2 (RAW files never written) and #3
-  (pixel_hash stable across EXIF writes) using real CR2 and HEIC fixtures from
-  `~/Downloads/sampleImages`:
-  - `test_raw_cr2_not_modified_by_rating`: record baseline bytes/mtime → rate through
-    `set_rating()` with exiftool active → assert file unchanged + no sidecars.
-  - `test_raw_cr2_not_modified_by_tag_approval`: same pattern for tag approval.
-  - `test_heic_rating_round_trip`: rate HEIC → verify exiftool.read() returns the rating.
-  - `test_heic_pixel_hash_stable_across_rating_writes`: write rating N times → verify pixel_hash
-    unchanged each time (immune to EXIF writes).
-  - `test_raw_files_are_correctly_identified`: sanity check fixture is CR2 (is_raw() == True).
-- **Result:** all constraints verified; no bugs found in ratings/tags code path with RAW/HEIC.
+- **Test suite `test_raw_heic_audit.py`:** audits constraints #1/#2 (RAW files never written to or
+  beside) and #3 (pixel_hash stable across EXIF writes) using real CR2 and HEIC fixtures from
+  `~/Downloads/sampleImages` (skipped when absent, e.g. inside Docker). Every RAW test snapshots
+  the **whole library folder** (every file's sha256 + mtime, hidden files included) before and
+  after, and asserts the listing is identical and only the expected files changed:
+  - `test_raw_cr2_not_modified_by_rating`: `set_rating()` with exiftool active.
+  - `test_stacked_rating_writes_jpeg_but_not_raw`: the real UI path — `_apply_rating` with
+    stacking on, on the JPEG of a RAW+JPEG pair → the RAW gets the rating in the DB only, the
+    JPEG gets it embedded, the CR2 is untouched.
+  - `test_bulk_rating_and_bulk_tag_skip_raw`: `_apply_bulk_rating` + `_apply_bulk_tag` on the
+    RAW of the pair → fans out to the JPEG (embedded), RAW DB-only.
+  - `test_raw_cr2_not_modified_by_manual_tag`: `add_manual_tag()` with exiftool active.
+  - `test_raw_cr2_not_modified_by_clip_approval`: the real `approve()` with exiftool active.
+  - `test_heic_rating_round_trip`: rate HEIC → rating reads back, written in place (no new
+    files), pixel_hash unchanged.
+  - `test_heic_pixel_hash_stable_across_rating_writes`: ratings 1–5 then clear → pixel_hash
+    unchanged each time.
+  - `test_raw_files_are_correctly_identified`: sanity check the fixture is RAW.
+- **Result:** all constraints verified; no bugs found in the rating/tag write paths with RAW/HEIC.
+  (RAW is guarded three times: `is_raw` skip in each embed helper, `can_embed_metadata`, and
+  `ExiftoolClient._guard_writable`.)
 
 ---
 
@@ -1226,25 +1240,33 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-**All `Features.md` items are done or deferred.** The social composer and the
-full backlog are in **`V2.md`** (repo root). What's left before calling v1
-"production":
+**V1 P0–P6 are done** (see the `V1Plan.md` checklist). Only **P7 — robopost composer**
+(`V1Features.md` #1, `V1Plan.md` Phase 7) is left.
 
-1. **RAW + HEIC no-write audit** — index real `.CR2` / `.NEF` / `.HEIC`, then
-   rate one and confirm the RAW file's mtime / bytes are untouched (hard
-   constraint #2). `.venv` has `rawpy` + `pillow-heif` + `torch` now. A full
-   native index incl. `.CR2` + `.HEIC` has run clean (0 errors) — the no-write
-   property just isn't formally audited.
-2. **In-app indexer lock re-check** — a web session that starts read-only never
-   promotes itself to indexing until restart (`manager.refresh()` never called
-   in-app; the standalone `python -m sortandpost.indexer` does re-check).
-   Harmless single-machine; matters with two machines on one sync folder.
-3. **Browser smoke** of the non-feature surface: `/review` bulk approve/reject,
-   `/settings` "run indexer pass now", the status-bar footer, a live
-   read-only→writable header promotion.
+0. Housekeeping: push `v1-p6-audit-followup` and merge its PR into `main` (if not done
+   already), then branch `v1-p7-robopost` from `main`.
+1. **Plan in plan mode with Opus**:
+   - Needs a robopost.app account + API key (goes in `.env` as `ROBOPOST_API_KEY`, per
+     machine, never synced). **Fetch robopost's API docs first — don't guess endpoints**
+     (auth, media upload, create post, schedule, list channels/accounts, errors / rate limits).
+   - Data model: a post = collection id + caption + per-image alt text + order + schedule
+     time + target channels + status + publish log. Stored like collections
+     (`sync/posts.json` or extend `collections.json`). Any user-authored state emits
+     `changes` rows (constraint #4) — decide the new `op`s and how merge replays them.
+   - Decide: `/compose` page vs a "Compose post" action on a collection; what the
+     confirm dialog lists (exact files, destination, time). Never auto-post.
+2. **Back end** (Opus): `sortandpost/robopost.py` client (upload media → create post →
+   schedule), all calls off the event loop (constraint #7); RAW → upload a JPEG
+   render/preview, never touch the source file. Tests with the HTTP layer mocked.
+3. **Front end** (Sonnet is fine once the plan is approved): compose UI, confirm
+   dialog, post status / publish log.
+4. Quality gate → boot on `browser_test_data` → user click-through → sign-off →
+   update `PROGRESS.md` / `V1Plan.md` / `V1Features.md` → commit → PR.
 
-Everything else (design pass 2, bulk-delete undo, group-by scroll race,
-Dockerfile caching, `/search` filter widgets, Docker/NAS hardening) → `V2.md`.
+Carried-over open threads (not V1 blockers): the in-app indexer never re-checks the
+write lock after starting read-only (only matters with two machines on one sync
+folder); a browser smoke of `/settings` "run indexer pass now" + a live
+read-only→writable header promotion.
 
 ---
 
