@@ -1,7 +1,28 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-24 (V1 P2: CLIP CPU control, slow / fast)._
-_Working branch: `v1-p2-clip-speed`._
+_Last updated: 2026-09-24 (V1 P3: live scan / CLIP progress)._
+_Working branch: `v1-p3-progress`._
+
+---
+
+## 📈 2026-09-24 — V1 P3: live scan / CLIP progress
+
+428 tests pass (+6); ruff / format / mypy clean; no schema change. User browser-tested +
+signed off.
+
+- **`indexer/progress.py` (new)**: thread-safe in-memory `ProgressTracker` (module singleton
+  `PROGRESS`) holding a frozen `ProgressSnapshot(stage, done, total, current, started_at)`;
+  stages `discovering` / `indexing` / `embedding` / `idle`. `label()` → `Indexing 120/4,300`,
+  `fraction`, and a naive linear `eta_seconds()`.
+- `scan_once` / `scan_clip_once` write it: discovery reports every 25 files (total unknown →
+  indeterminate bar), indexing reports per decoded file (`total = len(todo)`), embedding per
+  CLIP batch (`total = len(candidates)`). The public wrappers call `PROGRESS.finish()` in a
+  `finally`, so a raising pass can't leave a stale "running" state.
+- **UI**: the status bar gets a live chip + thin bar (own 1 s timer; the DB-totals tick stays
+  at 5 s), and `/settings` gets an "Indexing progress" panel (label, bar, current file).
+- **Caveat:** progress lives in the indexing process's memory. The in-app indexer (default)
+  is visible; a standalone `python -m sortandpost.indexer` isn't, and the UI shows only the
+  DB totals then.
 
 ---
 

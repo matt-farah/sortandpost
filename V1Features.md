@@ -80,13 +80,30 @@ one serialized client across a review session.
 
 ## Robustness & scale
 
+### 21. Full re-index from Settings
+_Added 2026-09-24; not scheduled, lower priority._ A `/settings` action to clear the
+index and rebuild it from scratch, as a recovery path if the database gets corrupted
+or out of step with the library.
+
+- Needs clear warnings, in a confirm dialog, of what a rebuild can lose. Anything that
+  lives only in the DB and can't be re-derived from the photo files: ratings on RAW
+  files (never written to the file), un-approved CLIP suggestions and their
+  approve/reject decisions, flags, collections, saved searches, and manual tags on
+  formats that can't hold embedded metadata. Ratings and approved keywords embedded in
+  JPEG / HEIC / TIFF / PNG files are re-imported from EXIF.
+- Design questions to settle first: take a snapshot before clearing (so it's undoable);
+  what happens to synced thumbnails / embeddings and to the `changes` log and
+  tombstones; how a second machine picks up the rebuilt DB (`db_generation`); and
+  whether to offer a lighter "re-scan only" alternative.
+- Only when this machine holds the write lock; runs through the normal indexer.
+
 ### 16. RAW + HEIC end-to-end audit
 Decode real `.CR2` / `.NEF` / `.HEIC` via embedded preview and **verify
 constraint #2**: RAW files are never written to or beside (check mtimes + logs
 before/after a rating write). Partly exercised (a full native index incl.
 `.CR2` + `.HEIC` ran clean) but the no-write property isn't formally audited.
 
-### 20. Live scan/CLIP progress in `/settings`
+### 20. Live scan/CLIP progress in `/settings` — ✅ shipped (V1 P3)
 The status bar (`_status_bar` in `app.py`) polls DB totals every 5s, so it
 shows *outcome* (`present/total indexed`, pending predictions) but not
 *in-progress* counts — during a big real-world scan there's no "X of Y files
