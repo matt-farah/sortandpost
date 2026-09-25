@@ -1,10 +1,27 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-25 (V1 P7: robopost composer)._
-_Working branch: `v1-p7-robopost` (PR open)._
+_Last updated: 2026-09-25 (**v1.0.0 released** — V1 P0–P7 complete)._
+_Working branch: `main` (tag `v1.0.0`)._
 
-> **▶️ Next session:** **V1 is complete** (P0–P7). Merge the P7 PR, then pick the next
-> milestone from `V2.md`. See "NEXT SESSION — start here" below.
+> **▶️ Next session:** the user is testing v1.0.0 hands-on and will bring bug fixes / small
+> changes → ship them as **1.0.x** (fixes) / **1.1.0** (small features). See "Versioning" and
+> "NEXT SESSION — start here" below.
+
+---
+
+## 🏷️ 2026-09-25 — v1.0.0
+
+V1 is done and tagged `v1.0.0` (GitHub release). P7 merged as PR #24.
+
+### Versioning
+- The version lives in **one place**: `__version__` in `src/sortandpost/__init__.py`.
+  `pyproject.toml` reads it (`dynamic = ["version"]` + `[tool.hatch.version]`), and the header
+  shows it next to the app name.
+- Semver: **1.0.x** = bug fixes, **1.x.0** = small features/changes, **2.0.0** = V2.
+- To release: bump `__version__` in the fix/feature PR (or a release PR), merge, then
+  `git tag -a vX.Y.Z -m ... && git push origin vX.Y.Z` and `gh release create vX.Y.Z`.
+- After a bump, the dev venv's package metadata updates on `pip install -e . --no-deps`
+  (the header reads `__version__` directly, so it's right either way).
 
 ---
 
@@ -1275,8 +1292,10 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-**V1 P0–P7 are done** (see the `V1Plan.md` checklist). Merge the `v1-p7-robopost` PR, then
-choose the next milestone from `V2.md` (plan in Opus plan mode first).
+**v1.0.0 is released** (V1 P0–P7, see `V1Plan.md`). The user is testing it hands-on and will
+bring bug fixes and small changes: collect them, fix on a branch per batch, bump
+`__version__` (1.0.x for fixes, 1.1.0 for small features), PR, browser-test, merge, tag +
+GitHub release. Bigger work comes from `V2.md`.
 
 Possible P7 follow-ups (not blockers): a full library picker inside the composer (today:
 "Add from collection" + the bulk toolbar's ✈); alt text if robopost's API adds it; caption
