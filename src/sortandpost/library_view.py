@@ -49,6 +49,7 @@ from sortandpost.grouping import (
     parse_mode,
 )
 from sortandpost.library_roots import LibraryRoot
+from sortandpost.posts import posted_hashes
 from sortandpost.search.filters import PhotoFilter, allowed_hashes
 from sortandpost.search.service import TextEncoder, semantic_search
 from sortandpost.stacks import StackIndex, build_stacks
@@ -146,7 +147,8 @@ class LibraryQuery:
 
     ``q`` text · ``stars`` comma list (``u`` = unrated) · ``camera`` (repeat) ·
     ``dates`` · ``folder`` · ``tag`` (repeat) + ``tagmode`` any|all · ``gps`` ·
-    ``dups`` · ``missing`` · ``mark`` · ``group`` + ``folder_sort`` (view only).
+    ``dups`` · ``missing`` · ``mark`` · ``posted`` (``1`` sent to robopost /
+    ``0`` not yet) · ``group`` + ``folder_sort`` (view only).
     """
 
     q: str = ""
@@ -160,13 +162,14 @@ class LibraryQuery:
     dups: bool = False
     missing: bool = False
     mark: bool = False
+    posted: str = ""  # "" any · "1" sent to robopost · "0" not sent yet
     group: str = ""  # view only: not a filter, not saved with a search
     folder_sort: str = ""
 
     # -- parsing ------------------------------------------------------------ #
     @classmethod
     def from_pairs(cls, pairs: Iterable[tuple[str, str]]) -> LibraryQuery:
-        q = dates = folder = group = folder_sort = ""
+        q = dates = folder = group = folder_sort = posted = ""
         tagmode = "any"
         stars: set[int] = set()
         cameras: list[str] = []
@@ -195,6 +198,8 @@ class LibraryQuery:
                 tagmode = value
             elif key in flags:
                 flags[key] = _truthy(value)
+            elif key == "posted" and value:
+                posted = "1" if _truthy(value) else "0"
             elif key == "group":
                 group = parse_mode(value) or ""
             elif key == "folder_sort":
@@ -209,6 +214,7 @@ class LibraryQuery:
             tagmode=tagmode,
             group=group,
             folder_sort=folder_sort,
+            posted=posted,
             **flags,
         )
 
@@ -236,6 +242,8 @@ class LibraryQuery:
         for key in ("gps", "dups", "missing", "mark"):
             if getattr(self, key):
                 out.append((key, "true"))
+        if self.posted:
+            out.append(("posted", self.posted))
         if view and self.group:
             out.append(("group", self.group))
             if self.group == "folder" and self.folder_sort:
@@ -323,6 +331,8 @@ class LibraryQuery:
         ):
             if getattr(self, key):
                 bits.append(label)
+        if self.posted:
+            bits.append("posted" if self.posted == "1" else "not posted")
         return " · ".join(bits) or "all photos"
 
 
@@ -378,6 +388,12 @@ def resolve_view(
             ids = [h for h in reps_all if h in reps]
     else:
         ids = reps_all
+
+    if lq.posted:
+        # A stack counts as posted when any of its members went out.
+        sent = posted_hashes(settings.paths)
+        want = lq.posted == "1"
+        ids = [h for h in ids if any(m in sent for m in stacks.members(h)) == want]
 
     groups: list[PhotoGroup] = []
     mode = lq.mode

@@ -59,3 +59,7 @@ stacking:
 
 deletion:
   stack_scope: selected           # "selected" = only the clicked photo; "whole_stack" = every stack member
+
+posting:
+  export_long_edge: 2048          # long edge of the JPEG uploaded to robopost (0 = full resolution)
+  export_quality: 90              # JPEG quality of that upload (GPS/EXIF are always stripped)

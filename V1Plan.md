@@ -12,7 +12,7 @@ deferred. Tick phases off here as they merge._
 - [x] P4 `/review` per-photo + facets + shared exiftool (Sonnet)
 - [x] P5 Undo last delete + trash view (Opus)
 - [x] P6 RAW/HEIC no-write audit (Haiku)
-- [ ] P7 robopost composer (Opus for design + API, Sonnet for UI)
+- [x] P7 robopost composer (Opus for design + API, Sonnet for UI)
 
 ## Context
 v.5 shipped: indexing, ratings, tags, CLIP, collections, group-by, bulk delete, sync. `V1Features.md`

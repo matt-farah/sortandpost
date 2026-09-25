@@ -124,6 +124,13 @@ from sortandpost.library_view import (
 )
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.metadata.shared import EXIFTOOL
+from sortandpost.posts import posted_hashes
+from sortandpost.posts_ui import (
+    compose_button,
+    posted_note,
+    posting_settings_panel,
+    register_post_pages,
+)
 from sortandpost.prefs import Theme, get_theme, set_theme
 from sortandpost.reveal import open_in_default_app, reveal_in_file_manager, reveal_supported
 from sortandpost.searches import (
@@ -150,6 +157,7 @@ log = logging.getLogger(__name__)
 _PAGES = [
     ("/", "Library"),
     ("/collections", "Collections"),
+    ("/posts", "Posts"),
     ("/rate", "Rate"),
     ("/review", "Review"),
     ("/settings", "Settings"),
@@ -632,6 +640,8 @@ def build_ui(settings: Settings) -> None:
         with Session(engine) as session:
             yield session
 
+    register_post_pages(settings, engine, thumb_small)
+
     @ui.page("/")
     async def library(request: Request) -> None:
         _header("/")
@@ -1027,6 +1037,12 @@ def build_ui(settings: Settings) -> None:
                 _collection_add_button(
                     settings, lambda: list(sel.selected), label=None, on_added=sel.clear
                 )
+                compose_button(
+                    settings,
+                    sel.ordered,
+                    title=lambda: f"Post · {utcnow():%d %b %Y}",
+                    label=None,
+                )
                 ui.button(icon="close", on_click=sel.clear).props("flat dense round").tooltip(
                     "deselect all"
                 )
@@ -1050,6 +1066,7 @@ def build_ui(settings: Settings) -> None:
                     ).all()
                 }
                 flagged_ids = edit_flagged_hashes(session, hashes)
+            sent = posted_hashes(settings.paths)
             with container:
                 for h in hashes:
                     photo = by_hash.get(h)
@@ -1069,6 +1086,7 @@ def build_ui(settings: Settings) -> None:
                             flag_toggle_registry=flag_toggles,
                             on_hover=_on_hover,
                             link_query=link_query,
+                            posted=any(m in sent for m in stacks.members(h)),
                         )
 
         def append_batch() -> None:
@@ -1407,6 +1425,8 @@ def build_ui(settings: Settings) -> None:
             _paint_collections()
 
         _paint_collections()
+        with ui.column().classes("w-full gap-1 px-4"):
+            posted_note(settings, pixel_hash)
 
         if len(members) > 1:
             _stack_filmstrip(pixel_hash, members, thumb_small, link_query)
@@ -2025,6 +2045,13 @@ def build_ui(settings: Settings) -> None:
             ui.button("Add photos", icon="add_photo_alternate", on_click=_add_photos_dialog).props(
                 "color=primary flat"
             )
+            compose_button(
+                settings,
+                lambda: _members_ids(),
+                title=lambda: title.text,
+                caption=lambda: notes_box.value or "",
+                collection_id=coll_id,
+            )
             ui.button("Rename", icon="edit", on_click=_rename).props("flat dense")
             ui.button("Delete", icon="delete", on_click=_confirm_delete).props(
                 "flat dense color=negative"
@@ -2051,6 +2078,10 @@ def build_ui(settings: Settings) -> None:
                 h for h in member_hashes if h not in found or found[h].missing_since is not None
             ]
             return present, gone
+
+        def _members_ids() -> list[str]:
+            """Present members in collection order (what a new post starts with)."""
+            return [p.pixel_hash for p in _members()[0]]
 
         def _move(pixel_hash: str, step: int, ids: list[str]) -> None:
             order = list(ids)
@@ -2362,6 +2393,9 @@ def build_ui(settings: Settings) -> None:
 
             ui.separator()
             _clip_model_editor(settings)
+
+            ui.separator()
+            posting_settings_panel(settings, writable=State.write_mode == WriteMode.writable)
 
             ui.separator()
             ui.label("Indexing progress").classes("font-bold")
@@ -3647,7 +3681,7 @@ def _filter_bar(settings: Settings, lq: LibraryQuery, data: _LibraryData) -> ui.
                 lambda e: _go(replace(lq, tagmode=e.value or "any"))
             )
 
-        extras = sum(bool(x) for x in (lq.gps, lq.dups, lq.missing, lq.mark))
+        extras = sum(bool(x) for x in (lq.gps, lq.dups, lq.missing, lq.mark, lq.posted))
         with ui.button(icon="tune").props("flat dense").tooltip("More filters"):
             if extras:
                 ui.badge(str(extras)).props("floating color=primary")
@@ -3663,6 +3697,10 @@ def _filter_bar(settings: Settings, lq: LibraryQuery, data: _LibraryData) -> ui.
                         value=bool(getattr(lq, key)),
                         on_change=lambda e, k=key: _go(_with_flag(lq, k, bool(e.value))),
                     )
+                ui.label("Sent to robopost").classes("text-xs sp-faint pt-2")
+                ui.toggle({"": "Any", "1": "Posted", "0": "Not posted"}, value=lq.posted).props(
+                    "dense no-caps"
+                ).on_value_change(lambda e: _go(replace(lq, posted=str(e.value or ""))))
 
         _saved_searches_menu(settings, lq, _go, _keep_view)
 
@@ -3882,6 +3920,10 @@ class _GridSelection:
             self._anchor = idx
         self._repaint(self.selected ^ before)
 
+    def ordered(self) -> list[str]:
+        """The selection in grid order."""
+        return [h for h in self._order if h in self.selected]
+
     def clear(self) -> None:
         stale = set(self.selected)
         self.selected.clear()
@@ -3995,6 +4037,7 @@ def _thumb_cell(
     flag_toggle_registry: dict[str, Callable[[], Any]] | None = None,
     on_hover: Callable[[str, bool], Any] | None = None,
     link_query: str = "",
+    posted: bool = False,
 ) -> None:
     target = _photo_url(photo.pixel_hash, link_query)
     with ui.link(target=target).classes("group relative block") as cell:
@@ -4011,6 +4054,10 @@ def _thumb_cell(
                 "absolute left-1 bottom-1 rounded bg-black/70 px-1.5 py-0.5 "
                 "text-xs font-medium text-white"
             )
+        if posted:
+            ui.icon("send", size="0.9rem").classes(
+                "absolute right-1 bottom-1 rounded bg-black/60 p-0.5 text-emerald-400"
+            ).tooltip("sent to robopost")
         if on_flag is not None:
             _grid_flag(photo.pixel_hash, flagged, on_flag, flag_registry, flag_toggle_registry)
         elif flagged:

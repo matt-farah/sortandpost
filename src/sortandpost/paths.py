@@ -5,6 +5,8 @@
         sortandpost.db (+ -wal/-shm/-journal while running)
         device.json
         publish_state.json
+        robopost.json  cached robopost channel list (no secrets)
+        post_exports/  temporary clean JPEGs made for an upload
         models/        downloaded CLIP weights
         logs/
       sync/           user points their file-sync tool HERE
@@ -12,6 +14,7 @@
         .sortandpost.lock
         config.yaml
         tags.yaml
+        posts/<post_id>.json    social posts (one file each)
         snapshots/  (+ snapshots/merged/)
         thumbnails/<hh>/<pixel_hash>_<size>.webp
         embeddings/img_<model>.npy, text_<model>_<vocabhash>.npy, rowmap.json
@@ -63,6 +66,19 @@ class Paths:
         return self.local / "helper.json"
 
     @property
+    def robopost_file(self) -> Path:
+        """Non-secret robopost cache (channel list). The API key is NEVER stored
+        here -- it lives in the OS keychain or ``ROBOPOST_API_KEY`` (see
+        :mod:`sortandpost.secrets_store`). Never synced."""
+        return self.local / "robopost.json"
+
+    @property
+    def post_exports_dir(self) -> Path:
+        """Temporary clean-JPEG exports made for an upload, one folder per post.
+        Removed after a successful send. Never synced."""
+        return self.local / "post_exports"
+
+    @property
     def models_dir(self) -> Path:
         return self.local / "models"
 
@@ -100,6 +116,13 @@ class Paths:
     def collections_file(self) -> Path:
         """User photo collections. Synced (like ``tags.yaml``), not merged."""
         return self.sync / "collections.json"
+
+    @property
+    def posts_dir(self) -> Path:
+        """Social posts, one ``<post_id>.json`` per post. Synced, not merged --
+        one file per post so two machines editing different posts never
+        collide. See :mod:`sortandpost.posts`."""
+        return self.sync / "posts"
 
     @property
     def devices_dir(self) -> Path:
@@ -149,6 +172,7 @@ class Paths:
             self.logs_dir,
             self.sync,
             self.devices_dir,
+            self.posts_dir,
             self.snapshots_dir,
             self.merged_snapshots_dir,
             self.thumbnails_dir,

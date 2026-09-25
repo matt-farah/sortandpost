@@ -1,11 +1,46 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-24 (V1 P6: RAW/HEIC no-write audit + follow-up)._
-_Working branch: `v1-p6-audit-followup` (P6 follow-up commit, not yet pushed / PR'd)._
+_Last updated: 2026-09-25 (V1 P7: robopost composer)._
+_Working branch: `v1-p7-robopost` (PR open)._
 
-> **▶️ Next session:** V1 **P7 — robopost composer** (the last V1 phase). Start in **plan
-> mode with Opus** to design the robopost.app API setup, then code the back end, then the
-> front end. See "NEXT SESSION — start here" below and `V1Plan.md` Phase 7.
+> **▶️ Next session:** **V1 is complete** (P0–P7). Merge the P7 PR, then pick the next
+> milestone from `V2.md`. See "NEXT SESSION — start here" below.
+
+---
+
+## 📮 2026-09-25 — V1 P7: robopost composer
+
+520 tests pass (61 new); ruff / format / mypy clean; alembic autogenerate empty (no schema
+change — posts are JSON in `sync/posts/`). User browser-tested from the UI with a live
+robopost account (draft + scheduled post) and signed off.
+
+- **Back end:** `robopost.py` (httpx client: auth, channels, upload, create; typed
+  `RobopostError` with friendly text; `apikey=` redacted everywhere incl. a filter on the
+  httpx/httpcore loggers; https only, redirects never followed), `posts.py` (one
+  `sync/posts/<id>.json` per post, atomic writes, conflict copies ignored, corrupt files moved
+  aside; `validate` + `build_payload`; `posted_hashes` cached on the folder mtime),
+  `post_export.py` (clean sRGB JPEG, no EXIF/GPS/ICC, via `load_image`, in a spawn process
+  pool), `post_send.py` (validate → `sending` → export → upload (cached) → create →
+  `scheduled`/`sent_draft`; unknown create outcome stays `sending` for a manual resolve),
+  `secrets_store.py` (keyring; env var wins; no plaintext fallback). Config: `posting:
+  {export_long_edge, export_quality}`.
+- **UI (`posts_ui.py`):** `/posts` list; composer (photo strip with reorder/remove + "Add from
+  collection", caption seeded from collection notes, first comment, channels grouped by
+  network with IG/FB post type + Pinterest title/link, date+time in the browser's time zone,
+  inline errors/warnings, confirm dialog, history, interrupted-send banner, Duplicate/Delete);
+  Settings → Posting (write-only key, Test connection & load channels, upload size + quality);
+  "Compose post" on collections, ✈ in the bulk toolbar, ✈ tile badge, "In posts:" on the photo
+  page, `posted=1|0` filter under More filters.
+- **Found in live testing (both fixed + pinned by tests):** robopost's paths are
+  slash-sensitive (`/auth`, `/channels/`, `/medias/upload`, `/scheduled_posts`) and the wrong
+  form 307s to **plain http with the key in the URL**; `image_object_ids` needs the upload's
+  `storage_object_id`, not `id` (a wrong id is silently accepted → post with no image). 5xx on
+  create is now treated as an unknown outcome.
+- **Decisions:** API key in the OS keychain (user asked; see CLAUDE.md "Posting"); sent posts
+  are frozen (Duplicate to re-send); drafts editable in read-only mode but sending needs the
+  lock; Pinterest link optional; no alt text (API has none).
+- **Test data:** live test posts were scheduled on Bluesky for 2026-10-25 and deleted by the
+  user in robopost. `browser_test_data/sync/posts/` holds their (sent) records.
 
 ---
 
@@ -1240,28 +1275,12 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-**V1 P0–P6 are done** (see the `V1Plan.md` checklist). Only **P7 — robopost composer**
-(`V1Features.md` #1, `V1Plan.md` Phase 7) is left.
+**V1 P0–P7 are done** (see the `V1Plan.md` checklist). Merge the `v1-p7-robopost` PR, then
+choose the next milestone from `V2.md` (plan in Opus plan mode first).
 
-0. Housekeeping: push `v1-p6-audit-followup` and merge its PR into `main` (if not done
-   already), then branch `v1-p7-robopost` from `main`.
-1. **Plan in plan mode with Opus**:
-   - Needs a robopost.app account + API key (goes in `.env` as `ROBOPOST_API_KEY`, per
-     machine, never synced). **Fetch robopost's API docs first — don't guess endpoints**
-     (auth, media upload, create post, schedule, list channels/accounts, errors / rate limits).
-   - Data model: a post = collection id + caption + per-image alt text + order + schedule
-     time + target channels + status + publish log. Stored like collections
-     (`sync/posts.json` or extend `collections.json`). Any user-authored state emits
-     `changes` rows (constraint #4) — decide the new `op`s and how merge replays them.
-   - Decide: `/compose` page vs a "Compose post" action on a collection; what the
-     confirm dialog lists (exact files, destination, time). Never auto-post.
-2. **Back end** (Opus): `sortandpost/robopost.py` client (upload media → create post →
-   schedule), all calls off the event loop (constraint #7); RAW → upload a JPEG
-   render/preview, never touch the source file. Tests with the HTTP layer mocked.
-3. **Front end** (Sonnet is fine once the plan is approved): compose UI, confirm
-   dialog, post status / publish log.
-4. Quality gate → boot on `browser_test_data` → user click-through → sign-off →
-   update `PROGRESS.md` / `V1Plan.md` / `V1Features.md` → commit → PR.
+Possible P7 follow-ups (not blockers): a full library picker inside the composer (today:
+"Add from collection" + the bulk toolbar's ✈); alt text if robopost's API adds it; caption
+snippets / hashtags from tags; cleaning up robopost media left behind by failed sends.
 
 Carried-over open threads (not V1 blockers): the in-app indexer never re-checks the
 write lock after starting read-only (only matters with two machines on one sync

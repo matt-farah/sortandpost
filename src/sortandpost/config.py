@@ -164,6 +164,14 @@ class DeletionConfig(BaseModel):
     stack_scope: Literal["selected", "whole_stack"] = "selected"
 
 
+class PostingConfig(BaseModel):
+    """The clean JPEG made from each photo before it is uploaded to robopost.
+    Never the source file: orientation applied, sRGB, all EXIF/GPS stripped."""
+
+    export_long_edge: int = 2048  # 0 = full resolution
+    export_quality: int = 90
+
+
 class AppConfig(BaseModel):
     """Mirror of ``APP_DATA/sync/config.yaml``."""
 
@@ -177,6 +185,7 @@ class AppConfig(BaseModel):
     rating: RatingConfig = Field(default_factory=RatingConfig)
     stacking: StackingConfig = Field(default_factory=StackingConfig)
     deletion: DeletionConfig = Field(default_factory=DeletionConfig)
+    posting: PostingConfig = Field(default_factory=PostingConfig)
 
     @classmethod
     def load(cls, path: Path) -> AppConfig:
