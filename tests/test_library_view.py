@@ -427,3 +427,28 @@ def test_folder_choices_include_ancestors_relative_to_root(session: Session) -> 
         ("/lib/trip/day2", "Pictures/trip/day2"),
         ("/lib/tripx", "Pictures/tripx"),
     ]
+
+
+# --------------------------------------------------------------------------- #
+# posted (sent to robopost)
+# --------------------------------------------------------------------------- #
+def test_posted_param_round_trips() -> None:
+    for raw, want in (("1", "1"), ("true", "1"), ("0", "0"), ("no", "0"), ("", "")):
+        lq = LibraryQuery.from_query_string(f"posted={raw}")
+        assert lq.posted == want
+        assert LibraryQuery.from_query_string(lq.query_string()) == lq
+    assert LibraryQuery(posted="0").summary() == "not posted"
+    assert LibraryQuery(posted="1").has_filters()
+
+
+def test_posted_filter(session: Session, settings: Settings) -> None:
+    from sortandpost.posts import create_post, save_post
+
+    _seed(session)
+    sent = create_post(settings.paths, title="x", photos=[_h("a"), _h("c")])
+    sent.status = "scheduled"
+    save_post(settings.paths, sent)
+    create_post(settings.paths, title="draft only", photos=[_h("b")])  # never sent
+    assert _ids(session, settings, "posted=1") == ["a", "c"]
+    assert _ids(session, settings, "posted=0") == ["b", "d", "e"]
+    assert _ids(session, settings, "posted=0&stars=5") == []

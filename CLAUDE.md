@@ -175,6 +175,8 @@ already has an engine open on the old one.
     device.json                # {"device_id": "<random>", "hostname": "..."}  created on first run
     publish_state.json         # last published DB generation counter + hash
     helper.json                # {port, token, ...} — written by the optional host file-manager agent
+    robopost.json              # cached robopost channel list — NO secrets (the API key is in the OS keychain)
+    post_exports/<post_id>/    # temporary clean JPEGs for an upload; removed after the send
     models/                    # downloaded CLIP weights
     logs/
   sync/                        # user points OneDrive / Drive / Synology / Dropbox HERE
@@ -182,6 +184,7 @@ already has an engine open on the old one.
     .sortandpost.lock          # {device_id, hostname, pid, acquired_at, heartbeat_at, db_generation}
     config.yaml
     devices/<slug(hostname)>-<device_id[:8]>/library.json # PER-DEVICE library folders (see below)
+    posts/<post_id>.json       # robopost posts, one file each (see "Posting" below)
     tags.yaml                  # user-editable zero-shot vocabulary (facet-grouped)
     snapshots/sortandpost-YYYYMMDD-HHMMSS.db.zst          # last N clean snapshots (corruption recovery)
     thumbnails/<hh>/<pixel_hash>_<size>.webp              # content-addressed, write-once, conflict-free
@@ -500,8 +503,44 @@ The **only** module allowed to write under a library root. Wraps a persistent
   downloaded` / `Download / verify CLIP model`, `sortandpost.clip.model.check_cached` /
   `ensure_downloaded` — toggles `HF_HUB_OFFLINE` around the probe so it works even when the app
   itself was launched offline).
+- `/posts` + `/posts/{id}` — the robopost composer (see "Posting (robopost.app)" below).
+  Entry points: "Compose post" on a collection, ✈ in the library's bulk toolbar. The grid
+  shows a ✈ badge on posted photos and `/` has a `posted=1|0` filter.
 - Persistent status bar: index progress (`X/Y`, current stage), CLIP queue depth, write-lock
   state (writable / read-only + holder), last publish time.
+
+---
+
+## Posting (robopost.app)
+
+`sortandpost.robopost` (HTTP client), `posts` (records, validation, payload),
+`post_export` (clean JPEGs), `post_send` (orchestration), `posts_ui` (pages),
+`secrets_store` (API key).
+
+- **API key** — never in a file under `APP_DATA`. Native: saved from `/settings` into the OS
+  keychain via `keyring`. Docker: `ROBOPOST_API_KEY` env var (always wins). No plaintext
+  fallback. Never sent to the browser (write-only field, `••••` + last 4); `apikey=` is
+  redacted from every log line, exception and stored error.
+- **API facts** (verified live 2026-09-25): auth is an `?apikey=` query param. Exact paths
+  matter — `GET /v1/auth`, `GET /v1/channels/`, `POST /v1/medias/upload`,
+  `POST /v1/scheduled_posts`; the other slash form gets a **307 to plain http carrying the key**,
+  so redirects are never followed. `image_object_ids` takes the upload's
+  **`storage_object_id`**, not its `id` (robopost silently accepts a wrong id and posts no
+  image). There is no read / edit / delete for a post and no alt text.
+- **Posts** live in `sync/posts/<post_id>.json`, one file each (a deliberate exception to
+  constraint #4, like collections: not `pixel_hash` state, not in `changes`, not merged). Status:
+  `draft` → `sending` → `sent_draft` | `scheduled` (or `failed`, retryable). A sent post is
+  frozen; "Duplicate" makes a new draft.
+- **No double posts** — `sending` is written before the create call, which is never retried.
+  A network error / timeout / 5xx on create leaves the post `sending` for the user to settle
+  ("It was sent" / "It wasn't sent") after checking robopost; only a 4xx becomes `failed`.
+  Uploads are cached per photo + export settings, so a retry doesn't re-upload.
+- **Uploads are never the source file**: decoded like the indexer (RAW preview / HEIC), rotated
+  upright, converted to sRGB, scaled to `posting.export_long_edge` (default 2048, 0 = full) at
+  `posting.export_quality` (90), saved with no EXIF / GPS / ICC, in the process pool.
+- **Guardrails**: sending needs the write lock and an explicit confirm dialog listing each photo,
+  channel, and the local + UTC time. Instagram ≤ 10 photos and Pinterest's pin title block the
+  send; other per-network limits are warnings.
 
 ---
 

@@ -29,8 +29,14 @@ tab. One filter bar on `/`, with all state in the URL query string:
 - Add a setting for CLIP for slow/fast scan that shows a warning that fast scan will use all CPU cores and may slow down your computer
 - Limit CLIP scan by default to use 30% CPU/Memory
 
-### 1. Social media post composer (robopost.app)
+### 1. Social media post composer (robopost.app) — ✅ shipped (V1 P7)
 The last unchecked `Features.md` item, and the app's namesake half.
+
+_As built:_ `/posts` + `/posts/{id}` composer (a post is its own record built from a collection
+or a library selection, one `sync/posts/<id>.json` each); "Send as draft" / "Schedule" behind a
+confirm; clean JPEG uploads (GPS stripped); API key in the OS keychain (or `ROBOPOST_API_KEY`
+under Docker); posted badge + filter. **No per-image alt text** — robopost's API has no field
+for it (moved to V2 if they add one). Original notes below.
 
 - Group photos into a post with caption text; reorder; per-image alt text.
 - Push to the **robopost.app API** — upload media, create a post, schedule for a
