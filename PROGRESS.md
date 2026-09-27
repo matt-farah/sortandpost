@@ -1,11 +1,31 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-25 (**v1.0.0 released** — V1 P0–P7 complete)._
-_Working branch: `main` (tag `v1.0.0`)._
+_Last updated: 2026-09-27 (**v1.1.0** — prebuilt Tailwind fixes the grid freeze; shortcut focus guard; photo-page sizing)._
+_Working branch: `main` (tag `v1.0.0`; v1.1.0 not tagged yet)._
 
 > **▶️ Next session:** the user is testing v1.0.0 hands-on and will bring bug fixes / small
 > changes → ship them as **1.0.x** (fixes) / **1.1.0** (small features). See "Versioning" and
 > "NEXT SESSION — start here" below.
+
+---
+
+## 🏷️ 2026-09-27 — v1.1.0
+
+533 tests pass (new: `test_tailwind_css.py`, `test_key_focus_guard.py`); ruff / format / mypy
+clean; alembic check empty (no schema change). User browser-tested + signed off.
+
+- **Grid freeze fixed (see Issues.md):** NiceGUI's in-browser Tailwind compiler rescanned the
+  whole DOM on every mutation, so the infinite-scroll grid got quadratically slower until the
+  tab froze, dropped its websocket and reload-looped. Now `ui.run(tailwind=False)` and the app
+  serves a prebuilt `src/sortandpost/resources/tailwind.css` at `/_sp/tailwind.css?v=<hash>`
+  (`_add_tailwind_css` in `app.py`). **After adding/changing Tailwind classes in `src/`, run
+  `tools/tailwind/build.sh` (needs Node) and commit the CSS**; `test_tailwind_css.py` fails if
+  it's stale (skipped without `tools/tailwind/node_modules`) or if a NiceGUI upgrade changes the
+  bundled Tailwind version (then bump `tools/tailwind/package.json`). NiceGUI's `dark` variant
+  and headwind override are reproduced in `tools/tailwind/input.css`.
+- **Keyboard shortcuts no longer go dead** after Esc out of a filter dropdown / the search box
+  (`_KEY_FOCUS_GUARD_JS`).
+- **Photo page:** a plain `<img>` sized to fit the viewport, so portrait photos don't overflow.
 
 ---
 

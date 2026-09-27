@@ -13,6 +13,7 @@ CLIP stay off it -- the indexer process, or ``run.io_bound`` for query embedding
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import logging
 import re
@@ -23,6 +24,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +170,12 @@ _PICKER_CAP = 500  # photos offered at once in the "add photos to collection" pi
 _THUMB_URL = "/thumbs"
 _TRASH_THUMB_URL = "/trash-thumb"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+# Prebuilt Tailwind (tools/tailwind/build.sh), served in place of NiceGUI's
+# in-browser compiler -- that one rescans every element's classes on each DOM
+# mutation, so the infinite-scroll grid grew it quadratically until the tab
+# froze, dropped its websocket and reloaded. Hence `ui.run(tailwind=False)`.
+_TAILWIND_CSS = "tailwind.css"
+_TAILWIND_URL = "/_sp/tailwind.css"
 
 # The grid's scroll position + loaded count live in this history entry's
 # ``history.state``. The browser keeps per-entry state across navigations and
@@ -204,6 +212,27 @@ _GRID_COLS_JS = """
   return tracks || 1;
 })()
 """
+
+# ui.keyboard silently drops every key while an <input>/<select>/<textarea>/
+# <button> holds focus, so focus stranded there made the page shortcuts go dead
+# with nothing on screen to say why -- e.g. a filter dropdown or the search box
+# dismissed with Esc keeps focus in its (hidden) input. Capture phase, so it runs
+# before ui.keyboard's own focus check: a shortcut key on a focused button blurs
+# the button and goes through, and Esc in a field lets go of it on keyup (so the
+# Esc itself is still the field's, and doesn't also clear the grid). Space /
+# Enter / Tab are left alone on a button -- they're its own activate / move.
+# Shared, one-time per browser tab.
+_KEY_FOCUS_GUARD_JS = (
+    "if(!window.__spKeyFocusGuard){window.__spKeyFocusGuard=1;"
+    "const f=()=>document.activeElement,m=e=>e.ctrlKey||e.metaKey||e.altKey;"
+    "addEventListener('keyup',e=>{const a=f();"
+    "if(a&&!m(e)&&e.key==='Escape'&&['INPUT','TEXTAREA','SELECT'].includes(a.tagName))"
+    "a.blur();},true);"
+    "addEventListener('keydown',e=>{const a=f();"
+    "if(a&&!m(e)&&a.tagName==='BUTTON'&&![' ','Enter','Tab','Escape'].includes(e.key)"
+    "&&(e.key.length===1||e.key.startsWith('Arrow')))a.blur();"
+    "},true);}"
+)
 
 # Keyboard-focus on a grid tile: an amber border (via ::after, so it sits above
 # the opaque thumbnail) plus -- like a real mouse hover -- the tile's rating and
@@ -598,7 +627,18 @@ def _photo_url(pixel_hash: str, link_query: str = "") -> str:
     return f"/photo/{pixel_hash}?{link_query}" if link_query else f"/photo/{pixel_hash}"
 
 
+def _add_tailwind_css() -> None:
+    """Serve the prebuilt Tailwind stylesheet and link it from every page, with a
+    content hash in the URL so a rebuilt file isn't masked by the browser cache."""
+    css = resources.files("sortandpost.resources").joinpath(_TAILWIND_CSS)
+    with resources.as_file(css) as path:
+        nicegui_app.add_static_file(local_file=path, url_path=_TAILWIND_URL)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    ui.add_head_html(f'<link rel="stylesheet" href="{_TAILWIND_URL}?v={digest}">', shared=True)
+
+
 def build_ui(settings: Settings) -> None:
+    _add_tailwind_css()  # stands in for NiceGUI's in-browser Tailwind (see ui.run)
     ui.add_css(_GRID_KB_CSS, shared=True)  # grid keyboard-focus styling, all pages
     ui.add_css(_THEME_CSS, shared=True)  # design tokens + component polish, all pages
     engine = make_engine(settings.paths.working_db)
@@ -1296,6 +1336,7 @@ def build_ui(settings: Settings) -> None:
                     await toggle()
 
         ui.keyboard(on_key=_grid_key)
+        ui.run_javascript(_KEY_FOCUS_GUARD_JS)  # keep shortcuts alive after Esc
         # Space would otherwise scroll the page -- swallow its default over the
         # grid (but not while typing in a field or on a focused button).
         ui.run_javascript(
@@ -1371,8 +1412,18 @@ def build_ui(settings: Settings) -> None:
             "mx-4 mt-2"
         )
         with ui.row().classes("w-full no-wrap gap-6 p-4"):
-            ui.image(_thumb_src(pixel_hash, thumb_large)).classes("max-w-2xl rounded shadow")
-            with ui.column().classes("gap-1 text-sm"):
+            # a plain <img>, not ui.image: q-img sizes itself by aspect-ratio
+            # padding and ignores max-height, so a portrait photo overflowed the
+            # window. This fits whole inside the viewport (minus header, back
+            # button and status bar) and the width left beside the info column.
+            ui.element("img").props(f'src="{_thumb_src(pixel_hash, thumb_large)}"').classes(
+                "rounded shadow"
+            ).style(
+                "display:block; min-width:0; flex:0 1 auto; width:auto; height:auto;"
+                " max-width:min(100%, 1280px); max-height:calc(100vh - 12rem - 20px);"
+                " object-fit:contain"
+            )
+            with ui.column().classes("gap-1 text-sm shrink-0 max-w-sm"):
                 star_widget = _star_widget(settings, engine, pixel_hash, stars or 0)
                 flag_switch = _edit_flag_button(settings, engine, pixel_hash, flagged)
                 ui.label("← → move · 1-5 rate · 0 clear · f flag").classes(
@@ -1499,6 +1550,7 @@ def build_ui(settings: Settings) -> None:
                 flag_switch.set_value(not flag_switch.value)
 
         ui.keyboard(on_key=_on_key)
+        ui.run_javascript(_KEY_FOCUS_GUARD_JS)  # keep shortcuts alive after Esc
 
     @ui.page("/rate")
     async def rate_page() -> None:
@@ -1665,6 +1717,7 @@ def build_ui(settings: Settings) -> None:
                     switch.set_value(not switch.value)
 
         ui.keyboard(on_key=_on_key)
+        ui.run_javascript(_KEY_FOCUS_GUARD_JS)  # keep shortcuts alive after Esc
         # Space would otherwise scroll the page -- swallow its default (shared,
         # one-time; the library grid installs the same guard).
         ui.run_javascript(
@@ -4193,4 +4246,5 @@ def run(settings: Settings) -> None:
         reload=False,
         show=False,
         storage_secret=settings.device_id,
+        tailwind=False,  # prebuilt instead -- see _TAILWIND_URL
     )
