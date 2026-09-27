@@ -27,3 +27,6 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# Tailwind build tooling (tools/tailwind/build.sh)
+node_modules/

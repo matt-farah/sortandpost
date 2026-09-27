@@ -69,6 +69,7 @@ updated as decisions are made or changed.
 | Language / runtime | Python 3.12 |
 | Package manager    | `uv` + `pyproject.toml` |
 | Web UI             | NiceGUI (browser mode, not native), served by its bundled uvicorn |
+| CSS                | Tailwind **prebuilt** (`tools/tailwind/build.sh` → `resources/tailwind.css`, run after changing classes); NiceGUI runs `tailwind=False` — its in-browser compiler froze the infinite-scroll grid |
 | DB                 | SQLite via SQLModel/SQLAlchemy, migrations via Alembic |
 | Embedded metadata  | `exiftool` as a persistent `-stay_open` subprocess |
 | Image decode       | Pillow + pillow-heif (HEIC); `rawpy`/LibRaw for RAW (embedded preview) |

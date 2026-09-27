@@ -1,0 +1,12 @@
+{
+  "name": "sortandpost-tailwind",
+  "private": true,
+  "description": "Builds src/sortandpost/resources/tailwind.css -- see build.sh",
+  "scripts": {
+    "build": "tailwindcss -i input.css -o ../../src/sortandpost/resources/tailwind.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.1.13",
+    "tailwindcss": "4.1.13"
+  }
+}

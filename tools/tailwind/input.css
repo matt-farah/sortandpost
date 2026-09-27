@@ -1,0 +1,20 @@
+/* Prebuilt Tailwind for the app (run ./build.sh after changing classes in src/).
+ *
+ * NiceGUI's default is the in-browser Tailwind compiler, which rescans every
+ * element's classes on each DOM mutation -- with an infinite-scroll grid that
+ * grew quadratically and froze the tab. The app runs with `tailwind=False` and
+ * serves this file instead. Pinned to the Tailwind version NiceGUI bundles
+ * (4.1.13) and mirroring its setup: full `tailwindcss` (theme + preflight +
+ * utilities, in the layers NiceGUI's page template declares) plus its `dark`
+ * variant, and its headwind.css override (below, in its `overrides` layer). */
+@import "tailwindcss" source(none);
+@source "../../src/sortandpost";
+
+@custom-variant dark (&:where(body.body--dark, body.body--dark *));
+
+/* verbatim from nicegui/static/headwind.css (injected only when tailwind=True) */
+@layer overrides {
+  .rotate-45, .rotate-90, .rotate-135, .rotate-180, .rotate-225, .rotate-270, .rotate-315 {
+    rotate: 0deg;
+  }
+}
