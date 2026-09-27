@@ -1,7 +1,7 @@
 # sortandpost — build progress & resume notes
 
 _Last updated: 2026-09-27 (**v1.1.0** — prebuilt Tailwind fixes the grid freeze; shortcut focus guard; photo-page sizing)._
-_Working branch: `main` (tag `v1.0.0`; v1.1.0 not tagged yet)._
+_Working branch: `main` (tag `v1.1.0`, GitHub release published)._
 
 > **▶️ Next session:** the user is testing v1.0.0 hands-on and will bring bug fixes / small
 > changes → ship them as **1.0.x** (fixes) / **1.1.0** (small features). See "Versioning" and
@@ -9,7 +9,7 @@ _Working branch: `main` (tag `v1.0.0`; v1.1.0 not tagged yet)._
 
 ---
 
-## 🏷️ 2026-09-27 — v1.1.0
+## 🏷️ 2026-09-27 — v1.1.0 (PR #26, tagged + released)
 
 533 tests pass (new: `test_tailwind_css.py`, `test_key_focus_guard.py`); ruff / format / mypy
 clean; alembic check empty (no schema change). User browser-tested + signed off.
