@@ -488,10 +488,14 @@ The **only** module allowed to write under a library root. Wraps a persistent
 
 - `/` — the library **and** search (merged 2026-09-24). Virtualized thumbnail grid,
   keyboard-first: arrows navigate, `1`–`5` rate, `0` clears, `f` flags, `/` focuses search.
-  A filter bar (text query, stars incl. unrated, camera, date-range calendar, folder,
-  subject/tag any|all, GPS / duplicates / ⚑ / missing, saved-searches dropdown) whose
-  state lives entirely in the URL (`sortandpost.library_view.LibraryQuery`). Filters keep
-  `taken_at` order + group-by; a text query ranks by CLIP relevance with group-by off.
+  A compact toolbar: search box, then icon buttons whose popovers hold each filter (★ stars
+  incl. unrated, camera, date-range calendar, folder, subject/tag any|all, ⋯ GPS / duplicates /
+  ⚑ / missing / posted) — tinted with a count badge while active — then the group-by menu
+  button (Month · Day · Folder (+ section sort) · Camera · Flat, with collapse/expand-all),
+  saved searches and clear. Active filters also show as removable chips under the bar
+  (`LibraryQuery.chips()`). All state lives in the URL (`sortandpost.library_view.LibraryQuery`).
+  **Group-by defaults to Month** (no `group` param); `group=flat` is the ungrouped grid.
+  Filters keep `taken_at` order + group-by; a text query ranks by CLIP relevance with group-by off.
   Subject/tag also matches un-rejected CLIP suggestions.
 - `/photo/{pixel_hash}` — large preview, star widget, EXIF panel, manual tag editor, CLIP
   suggestion chips (approve/reject), "more like this". Links carry the grid's query string;

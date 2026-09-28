@@ -1,11 +1,34 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-28 (V2 P3-A — seasonal themes)._
+_Last updated: 2026-09-28 (V2 P3-B — compact filter bar + group-by)._
 _Working branch: `main` (tag `v1.1.0`, GitHub release published)._
 
 > **▶️ Next session:** V2 P0–P2 done; P3 (design pass round 2) in progress — **A (seasonal
-> themes) done**; next **B** compact icon filter bar + group-by in the toolbar, defaulting to
-> Month (`group=flat` for the flat grid), then **C** `/settings` in categories. See `V2Plan.md` P3.
+> themes) and B (compact filter bar + group-by) done**; next **C** `/settings` in categories
+> (side rail + 2-col cards). See `V2Plan.md` P3.
+
+---
+
+## 📋 2026-09-28 — V2 P3-B: compact filter bar + group-by in the toolbar (`V2.md` #10, part B)
+
+User browser-tested (dev on :8081) + signed off. All tests pass; ruff / format / mypy clean;
+no schema change. Branch stacked on P3-A.
+
+- **`library_view.py`**: `DEFAULT_GROUP = "month"` — no `group` param now means grouped by
+  month; `FLAT = "flat"` is the explicit ungrouped grid (`?group=flat`). `LibraryQuery.chips()`
+  → `FilterChip(icon, label, without)` per active filter (per value for cameras / tags).
+- **`app.py`**: `_filter_bar` rewritten — search box, then an `sp-toolgroup` of icon-only
+  `_filter_button`s (★ rating chips, camera checkboxes, date range, folder select, tag select +
+  any/all, ⋯ more) tinted with a count badge when active; `_group_by_control` menu button
+  (Month / Day / Folder + section sort / Camera / Flat, plus collapse/expand-all; disabled with
+  a tooltip during a text search); saved searches + clear. Counter row now also holds the
+  removable filter chips (`_filter_chips`). Tooltips sit above buttons (`_tip_above`) so they
+  don't cover the popover. NiceGUI buttons default to `color=primary` — pass `color=None` for
+  an untinted one.
+- User-requested wording: "Detected duplicates" + "Show missing files" with explanatory hints;
+  "Posted with {SERVICE_NAME}" where `robopost.SERVICE_NAME = "Robopost"` (more posting APIs
+  planned — keep the service name a variable).
+- Tests: default Month / `group=flat` round-trip, chips.
 
 ---
 

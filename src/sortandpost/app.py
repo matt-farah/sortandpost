@@ -114,6 +114,8 @@ from sortandpost.library_roots import (
     to_host_path,
 )
 from sortandpost.library_view import (
+    DEFAULT_GROUP,
+    FLAT,
     UNRATED,
     LibraryQuery,
     LibraryView,
@@ -154,6 +156,7 @@ from sortandpost.reveal import (
     reveal_multiple_in_file_manager,
     reveal_supported,
 )
+from sortandpost.robopost import SERVICE_NAME as POSTING_SERVICE
 from sortandpost.searches import (
     SavedSearch,
     add_search,
@@ -422,6 +425,21 @@ body, .q-page, .nicegui-content {
   color: var(--sp-text-dim) !important;
 }
 .q-btn-toggle .q-btn.bg-primary { background-color: var(--q-primary) !important; }
+
+/* library toolbar: icon groups ------------------------------------------- */
+.sp-toolgroup {
+  border: 1px solid var(--sp-border);
+  background-color: var(--sp-surface);
+  border-radius: .6rem;
+  padding: .1rem .2rem;
+  min-height: 40px;
+}
+.sp-toolbtn { color: var(--sp-text-dim); }
+.sp-toolbtn.text-primary {
+  background-color: color-mix(in srgb, var(--q-primary) 12%, transparent);
+}
+.sp-toolbadge { font-size: .6rem; min-height: 14px; padding: 1px 4px; top: -2px; right: -4px; }
+.sp-filterchip { margin: 0; }
 
 /* empty states --------------------------------------------------------------- */
 .sp-empty {
@@ -778,7 +796,6 @@ def build_ui(settings: Settings) -> None:
         stack_cfg = settings.config.stacking
         lq = LibraryQuery.from_pairs(request.query_params.multi_items())
         mode = lq.mode
-        fsort = parse_folder_sort(lq.folder_sort)
         data = await nicegui_run.io_bound(_load_library, settings, engine, lq)
         if data is None:  # io_bound cancelled / app shutting down
             return
@@ -828,60 +845,18 @@ def build_ui(settings: Settings) -> None:
         flag_toggles: dict[str, Callable[[], Any]] = {}
         writable = State.write_mode == WriteMode.writable
 
-        search_box = _filter_bar(settings, lq, data)
+        search_box = _filter_bar(
+            settings, lq, data, on_collapse_all=lambda c: _set_all_collapsed(c)
+        )
 
-        with ui.row().classes("w-full items-center justify-between px-4 pt-2"):
-            with ui.row().classes("items-center gap-3"):
+        # count · active-filter chips (each removable) · ⚑ marked link
+        with ui.row().classes("w-full items-center justify-between px-4 pt-2 gap-2 no-wrap"):
+            with ui.row().classes("items-center gap-2 flex-wrap min-w-0"):
                 counter = ui.label(f"{total} {noun}").classes("text-sm sp-muted")
                 if lq.has_filters():
                     ui.label(f"matching · {view.total} in library").classes("text-xs sp-faint")
-                if lq.q:
-                    ui.label("best match first").classes("text-xs sp-faint").tooltip(
-                        "A text search is ordered by relevance, so grouping is off"
-                    )
-                else:
-                    group_toggle = (
-                        ui.toggle(
-                            {
-                                "": "Flat",
-                                "day": "Day",
-                                "month": "Month",
-                                "folder": "Folder",
-                                "camera": "Camera",
-                            },
-                            value=mode or "",
-                        )
-                        .props("no-caps dense")
-                        .tooltip("Group the library into sections")
-                    )
-                    group_toggle.on_value_change(
-                        lambda e: ui.navigate.to(replace(lq, group=e.value or "").url())
-                    )
-                if mode == "folder":
-                    fsort_toggle = (
-                        ui.toggle(
-                            {
-                                "newest": "Newest",
-                                "oldest": "Oldest",
-                                "az": "A-Z",
-                                "za": "Z-A",
-                            },
-                            value=fsort,
-                        )
-                        .props("no-caps dense")
-                        .tooltip("Order the folder sections")
-                    )
-                    fsort_toggle.on_value_change(
-                        lambda e: ui.navigate.to(replace(lq, folder_sort=e.value or "newest").url())
-                    )
-                if mode is not None:
-                    ui.button(icon="unfold_less", on_click=lambda: _set_all_collapsed(True)).props(
-                        "flat dense"
-                    ).tooltip("Collapse every section")
-                    ui.button(icon="unfold_more", on_click=lambda: _set_all_collapsed(False)).props(
-                        "flat dense"
-                    ).tooltip("Expand every section")
-            flag_box = ui.row().classes("items-center gap-2")
+                _filter_chips(lq)
+            flag_box = ui.row().classes("items-center gap-2 no-wrap")
 
         def _refresh_flag_link(n: int) -> None:
             flag_link.text = f"⚑ {n} marked for editing" if n else ""
@@ -4020,10 +3995,117 @@ def _with_flag(lq: LibraryQuery, key: str, on: bool) -> LibraryQuery:
     )
 
 
-def _filter_bar(settings: Settings, lq: LibraryQuery, data: _LibraryData) -> ui.input:
-    """The library's search + filter row. Every change navigates to the new
-    view's URL -- all state lives there (see :mod:`sortandpost.library_view`) --
-    keeping the group-by view as it is. Returns the search box (``/`` focuses it)."""
+@contextmanager
+def _filter_button(icon: str, tip: str, active: int, *, error: bool = False) -> Iterator[None]:
+    """An icon-only filter-bar button whose popover the ``with`` body fills.
+    Tinted + a count badge while its filter is on; red when it can't be read."""
+    color = "negative" if error else ("primary" if active else None)
+    btn = ui.button(icon=icon, color=color).props("flat dense round").classes("sp-toolbtn")
+    with btn:
+        _tip_above(tip)
+        if active:
+            ui.badge(str(active)).props("floating rounded color=primary").classes("sp-toolbadge")
+        with ui.menu(), ui.column().classes("gap-1 p-2 min-w-56"):
+            ui.label(tip).classes("text-xs sp-faint")
+            yield
+
+
+def _tip_above(text: str) -> None:
+    """A tooltip above its element, so it never covers the menu that opens below."""
+    ui.tooltip(text).props("anchor='top middle' self='bottom middle' :offset='[0, 6]'")
+
+
+_GROUP_CHOICES: list[tuple[str, str, str]] = [  # (group param, label, icon)
+    ("", "Month", "calendar_view_month"),  # DEFAULT_GROUP: no URL param
+    ("day", "Day", "today"),
+    ("folder", "Folder", "folder"),
+    ("camera", "Camera", "photo_camera"),
+    (FLAT, "Flat", "grid_view"),
+]
+_FOLDER_SORTS: list[tuple[str, str]] = [
+    ("newest", "Newest first"),
+    ("oldest", "Oldest first"),
+    ("az", "A-Z"),
+    ("za", "Z-A"),
+]
+
+
+def _group_by_control(lq: LibraryQuery, on_collapse_all: Callable[[bool], None]) -> None:
+    """The toolbar's group-by menu button (+ collapse / expand all while grouped)."""
+    current = "" if lq.group in ("", DEFAULT_GROUP) else lq.group
+    _, label, icon = next((c for c in _GROUP_CHOICES if c[0] == current), _GROUP_CHOICES[0])
+
+    def _to(group: str, folder_sort: str = "") -> None:
+        ui.navigate.to(replace(lq, group=group, folder_sort=folder_sort).url())
+
+    with ui.row().classes("sp-toolgroup items-center gap-0 no-wrap"):
+        btn = ui.button(label, icon=icon, color=None)
+        btn.props("flat dense no-caps icon-right=arrow_drop_down").classes("sp-toolbtn px-2")
+        if lq.q:  # relevance order: sections would scatter the best matches
+            btn.props("disable")
+            with btn:
+                _tip_above("Best match first — grouping is off for a text search")
+            return
+        with btn, ui.menu().classes("min-w-48"):
+            for key, text, ic in _GROUP_CHOICES:
+                with (
+                    ui.menu_item(on_click=lambda k=key: _to(k)),
+                    ui.row().classes("items-center gap-2 no-wrap w-full"),
+                ):
+                    ui.icon(ic).classes("text-lg sp-muted")
+                    ui.label(text).classes("flex-1")
+                    if key == current:
+                        ui.icon("check").classes("text-primary")
+            if current == "folder":
+                fsort = parse_folder_sort(lq.folder_sort)
+                ui.separator()
+                ui.label("Sort sections").classes("text-xs sp-faint px-4 pt-1")
+                for key, text in _FOLDER_SORTS:
+                    with (
+                        ui.menu_item(on_click=lambda k=key: _to("folder", k)),
+                        ui.row().classes("items-center gap-2 no-wrap w-full"),
+                    ):
+                        ui.label(text).classes("flex-1 pl-7")
+                        if key == fsort:
+                            ui.icon("check").classes("text-primary")
+        if lq.mode is not None:
+            for ic, collapse, tip in (
+                ("unfold_less", True, "Collapse every section"),
+                ("unfold_more", False, "Expand every section"),
+            ):
+                with (
+                    ui.button(icon=ic, color=None, on_click=lambda c=collapse: on_collapse_all(c))
+                    .props("flat dense round")
+                    .classes("sp-toolbtn")
+                ):
+                    _tip_above(tip)
+
+
+def _filter_chips(lq: LibraryQuery) -> None:
+    """The active filters as removable chips; removing one drops just it."""
+    for chip in lq.chips():
+        ui.chip(
+            chip.label,
+            icon=chip.icon,
+            removable=True,
+            on_value_change=lambda e, q=chip.without: (
+                ui.navigate.to(q.url()) if not e.value else None
+            ),
+        ).props("dense outline color=primary").classes("sp-filterchip")
+
+
+def _filter_bar(
+    settings: Settings,
+    lq: LibraryQuery,
+    data: _LibraryData,
+    *,
+    on_collapse_all: Callable[[bool], None],
+) -> ui.input:
+    """The library's search + filter toolbar: a search box, then icon buttons
+    whose popovers hold each filter, the group-by menu, saved searches and
+    clear. Every change navigates to the new view's URL -- all state lives
+    there (see :mod:`sortandpost.library_view`) -- keeping the group-by view as
+    it is. Returns the search box (``/`` focuses it)."""
     sent = [False]
 
     def _go(new: LibraryQuery) -> None:
@@ -4046,97 +4128,126 @@ def _filter_bar(settings: Settings, lq: LibraryQuery, data: _LibraryData) -> ui.
         box.on("keydown.enter", lambda: _go(replace(lq, q=(box.value or "").strip())))
         box.on("clear", lambda: _go(replace(lq, q="")))
 
-        _multi_select(
-            _STAR_CHOICES,
-            sorted(lq.stars),
-            "Stars",
-            lambda v: _go(replace(lq, stars=frozenset(int(x) for x in v))),
-            classes="w-36",
-        )
-        _multi_select(
-            {c: f"{c or 'Unknown camera'} ({n})" for c, n in data.cameras},
-            list(lq.cameras),
-            "Camera",
-            lambda v: _go(replace(lq, cameras=tuple(v))),
-            classes="w-44",
-        )
+        with ui.row().classes("sp-toolgroup items-center gap-0 no-wrap"):
+            with (
+                _filter_button("star", "Rating", len(lq.stars)),
+                ui.row().classes("gap-1 no-wrap"),
+            ):
+                for value, text in _STAR_CHOICES.items():
+                    on = value in lq.stars
+                    ui.button(
+                        text,
+                        color="primary" if on else None,
+                        on_click=lambda v=value: _go(replace(lq, stars=lq.stars ^ {v})),
+                    ).props("dense no-caps unelevated" + ("" if on else " flat"))
 
-        # Dates: a range calendar (click the first day, then the last; click one
-        # day twice for a single day). Picks apply at once, like the selects.
-        dates_btn = (
-            ui.button(dates_label(lq) or "Any date", icon="event")
-            .props("outline dense no-caps" + ("" if lq.dates else " color=grey-7"))
-            .classes("px-2")
-        )
-        if lq.date_error():
-            dates_btn.props("color=negative").tooltip(lq.date_error() or "")
-        with dates_btn, ui.menu(), ui.column().classes("gap-1 p-1"):
-            picker = ui.date(value=dates_to_picker(lq)).props("range today-btn minimal")
-            picker.on_value_change(lambda e: _go(replace(lq, dates=picker_to_dates(e.value))))
-            if lq.dates:
-                ui.button(
-                    "Any date", icon="event_busy", on_click=lambda: _go(replace(lq, dates=""))
-                ).props("flat dense no-caps")
+            with _filter_button("photo_camera", "Camera", len(lq.cameras)):
+                if not data.cameras:
+                    ui.label("No camera info yet.").classes("text-xs sp-muted")
+                for cam, n in data.cameras:
+                    on = cam in lq.cameras
+                    picked = tuple(c for c in lq.cameras if c != cam) if on else (*lq.cameras, cam)
+                    ui.checkbox(
+                        f"{cam or 'Unknown camera'} ({n})",
+                        value=on,
+                        on_change=lambda _, p=picked: _go(replace(lq, cameras=p)),
+                    ).props("dense")
 
-        folder = (
-            ui.select(
-                _with_selected(dict(data.folders), lq.folder or None),
-                value=lq.folder or None,
-                label="Folder",
-                with_input=True,
-                clearable=True,
-            )
-            .props("dense outlined options-dense")
-            .classes("w-52")
-        )
-        folder.on_value_change(lambda e: _go(replace(lq, folder=e.value or "")))
+            # Dates: a range calendar (click the first day, then the last; click one
+            # day twice for a single day). Picks apply at once.
+            date_tip = dates_label(lq) or "Date taken"
+            with _filter_button(
+                "event", date_tip, int(bool(lq.dates)), error=bool(lq.date_error())
+            ):
+                if lq.date_error():
+                    ui.label(lq.date_error() or "").classes("text-xs text-red-600 max-w-xs")
+                picker = ui.date(value=dates_to_picker(lq)).props("range today-btn minimal")
+                picker.on_value_change(lambda e: _go(replace(lq, dates=picker_to_dates(e.value))))
+                if lq.dates:
+                    ui.button(
+                        "Any date", icon="event_busy", on_click=lambda: _go(replace(lq, dates=""))
+                    ).props("flat dense no-caps")
 
-        tag_opts = {
-            name: f"{name} · {facet}" for facet, names in data.tags.items() for name in names
-        }
-        _multi_select(
-            tag_opts,
-            list(lq.tags),
-            "Subject / tag",
-            lambda v: _go(replace(lq, tags=tuple(v))),
-            classes="w-52",
-            with_input=True,
-        )
-        if len(lq.tags) > 1:
-            ui.toggle({"any": "any", "all": "all"}, value=lq.tagmode).props(
-                "no-caps dense"
-            ).tooltip("Match any of the tags, or all of them").on_value_change(
-                lambda e: _go(replace(lq, tagmode=e.value or "any"))
-            )
+            with _filter_button("folder", "Folder", int(bool(lq.folder))):
+                folder = (
+                    ui.select(
+                        _with_selected(dict(data.folders), lq.folder or None),
+                        value=lq.folder or None,
+                        label="Folder",
+                        with_input=True,
+                        clearable=True,
+                    )
+                    .props("dense outlined options-dense")
+                    .classes("w-72")
+                )
+                folder.on_value_change(lambda e: _go(replace(lq, folder=e.value or "")))
 
-        extras = sum(bool(x) for x in (lq.gps, lq.dups, lq.missing, lq.mark, lq.posted))
-        with ui.button(icon="tune").props("flat dense").tooltip("More filters"):
-            if extras:
-                ui.badge(str(extras)).props("floating color=primary")
-            with ui.menu(), ui.column().classes("gap-0 p-2"):
-                for key, text in (
-                    ("gps", "Has GPS location"),
-                    ("dups", "Duplicates only"),
-                    ("mark", "⚑ Marked for editing"),
-                    ("missing", "Include missing files"),
+            with _filter_button("sell", "Subject / tag", len(lq.tags)):
+                tag_opts = {
+                    name: f"{name} · {facet}"
+                    for facet, names in data.tags.items()
+                    for name in names
+                }
+                _multi_select(
+                    tag_opts,
+                    list(lq.tags),
+                    "Subject / tag",
+                    lambda v: _go(replace(lq, tags=tuple(v))),
+                    classes="w-72",
+                    with_input=True,
+                )
+                if len(lq.tags) > 1:
+                    ui.toggle({"any": "Match any", "all": "Match all"}, value=lq.tagmode).props(
+                        "no-caps dense"
+                    ).on_value_change(lambda e: _go(replace(lq, tagmode=e.value or "any")))
+
+            extras = sum(bool(x) for x in (lq.gps, lq.dups, lq.missing, lq.mark, lq.posted))
+            with _filter_button("tune", "More filters", extras):
+                for key, text, hint in (
+                    ("gps", "Has GPS location", ""),
+                    (
+                        "dups",
+                        "Detected duplicates",
+                        "Photos that look almost identical to another "
+                        "(resized, re-exported, lightly cropped copies)",
+                    ),
+                    ("mark", "⚑ Marked for editing", ""),
+                    (
+                        "missing",
+                        "Show missing files",
+                        "Also show photos whose file can't be found right now "
+                        "(moved, deleted, or on a disconnected drive)",
+                    ),
                 ):
                     ui.checkbox(
                         text,
                         value=bool(getattr(lq, key)),
                         on_change=lambda e, k=key: _go(_with_flag(lq, k, bool(e.value))),
-                    )
-                ui.label("Sent to robopost").classes("text-xs sp-faint pt-2")
+                    ).props("dense")
+                    if hint:
+                        ui.label(hint).classes("text-xs sp-faint pl-7 max-w-xs")
+                ui.label(f"Posted with {POSTING_SERVICE}").classes("text-xs sp-faint pt-2")
                 ui.toggle({"": "Any", "1": "Posted", "0": "Not posted"}, value=lq.posted).props(
                     "dense no-caps"
                 ).on_value_change(lambda e: _go(replace(lq, posted=str(e.value or ""))))
 
-        _saved_searches_menu(settings, lq, _go, _keep_view)
+        _group_by_control(lq, on_collapse_all)
 
-        if lq.has_filters():
-            ui.button(
-                icon="filter_alt_off",
-                on_click=lambda: _go(LibraryQuery(group=lq.group, folder_sort=lq.folder_sort)),
-            ).props("flat dense").tooltip("Clear search and filters")
+        with ui.row().classes("sp-toolgroup items-center gap-0 no-wrap"):
+            _saved_searches_menu(settings, lq, _go, _keep_view)
+            clear = (
+                ui.button(
+                    icon="filter_alt_off",
+                    color=None,
+                    on_click=lambda: _go(LibraryQuery(group=lq.group, folder_sort=lq.folder_sort)),
+                )
+                .props("flat dense round")
+                .classes("sp-toolbtn")
+            )
+            with clear:
+                _tip_above("Clear search and filters")
+            if not lq.has_filters():
+                clear.props("disable")
     return box
 
 
@@ -4148,7 +4259,10 @@ def _saved_searches_menu(
 ) -> None:
     """The filter bar's "Saved" dropdown: open / delete saved searches, and save
     the current search + filters under a name."""
-    with ui.button(icon="bookmarks").props("flat dense").tooltip("Saved searches"):
+    btn = ui.button(icon="bookmarks", color=None).props("flat dense round").classes("sp-toolbtn")
+    with btn:
+        _tip_above("Saved searches")
+    with btn:
         menu = ui.menu()
 
     def _save_dialog() -> None:
