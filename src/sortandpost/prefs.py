@@ -11,6 +11,7 @@ import logging
 from typing import Literal
 
 from sortandpost.paths import Paths
+from sortandpost.themes import SEASON_CHOICES, SeasonChoice
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,22 @@ def get_theme(paths: Paths) -> Theme:
 def set_theme(paths: Paths, theme: Theme) -> None:
     prefs = load_prefs(paths)
     prefs["theme"] = theme if theme in _THEMES else _DEFAULT_THEME
+    save_prefs(paths, prefs)
+
+
+def get_season(paths: Paths) -> SeasonChoice:
+    """The seasonal color theme (see :mod:`sortandpost.themes`); ``"auto"``
+    follows today's date."""
+    value = load_prefs(paths).get("season")
+    for season in SEASON_CHOICES:
+        if value == season:
+            return season
+    return "auto"
+
+
+def set_season(paths: Paths, season: SeasonChoice) -> None:
+    prefs = load_prefs(paths)
+    prefs["season"] = season if season in SEASON_CHOICES else "auto"
     save_prefs(paths, prefs)
 
 

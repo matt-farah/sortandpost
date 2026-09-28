@@ -512,6 +512,44 @@ The **only** module allowed to write under a library root. Wraps a persistent
 
 ---
 
+## Theming (seasonal palettes)
+
+Two independent **per-machine** appearance prefs in `local/ui_prefs.json` (never synced,
+`sortandpost.prefs`): **mode** Light / Dark / System, and **season** Spring / Summer / Fall /
+Winter / **Auto** (default — follows today's date, northern-hemisphere meteorological seasons:
+Mar–May Spring, Jun–Aug Summer, Sep–Nov Fall, Dec–Feb Winter). Season × mode = 8 looks, picked
+in `/settings` → Appearance (swatch cards show each palette).
+
+The palettes (user-chosen — keep verbatim; source of truth is `sortandpost.themes.PALETTES`):
+
+| Season | Palette |
+|---|---|
+| Spring | `#fec5bb #fcd5ce #fae1dd #f8edeb #e8e8e4 #d8e2dc #ece4db #ffe5d9 #ffd7ba #fec89a` |
+| Summer | `#f7b267 #f79d65 #f4845f #f27059 #f25c54` |
+| Fall   | `#003049 #d62828 #f77f00 #fcbf49 #eae2b7` |
+| Winter | `#10002b #240046 #3c096c #5a189a #7b2cbf #9d4edd #c77dff #e0aaff` |
+
+How they're applied:
+- `sortandpost.themes.TOKENS[(season, dark)]` maps each look to CSS design tokens
+  (`--sp-bg`, `--sp-surface`, `--sp-surface-2`, `--sp-border`, `--sp-text`, `--sp-text-dim`,
+  `--sp-text-faint`, `--sp-primary`, `--sp-on-primary`, `--sp-secondary`, `--sp-accent`,
+  `--sp-focus`, `--sp-statusbar-*`) plus Quasar's `--q-primary/secondary/accent`.
+  `theme_css()` emits them keyed on `<body>` classes `sp-season-<s>` (+ Quasar's `body--dark`);
+  the palette also shows as a hairline stripe under the app bar.
+- Palette colors are used as-is where they read well; where a role needs more contrast
+  (body text, a pastel primary used as text) the value is a **derived** shade, commented as such.
+  Rough roles: Spring — blush bg, peach status bar, deepened coral primary (pastel `#fec5bb` as
+  primary in dark). Summer — apricot tint bg, coral status bar, deepened `#f25c54` primary
+  (`#f79d65` in dark). Fall — parchment bg, navy text + status bar, `#d62828` primary
+  (`#f77f00` in dark). Winter — lavender tint bg, `#240046` status bar, `#5a189a` primary
+  (midnight `#10002b` bg with `#c77dff` primary in dark).
+- `tests/test_themes.py` enforces WCAG contrast for every look (text ≥ 7, dim ≥ 4.5, faint ≥ 3,
+  primary ≥ 3 on bg/surface, on-primary ≥ 4.5, status bar ≥ 4.5).
+- Use the tokens (`sp-muted`, `sp-faint`, `sp-placeholder`, `color=primary`) — not hard-coded
+  Tailwind grays / hex colors — so new UI follows the season. Amber stays for warnings / the
+  edit flag. Quasar's `!important` color utilities live in NiceGUI's `quasar_importants` cascade
+  layer; to override one, put the `!important` rule in `@layer theme` (earliest layer wins).
+
 ## Posting (robopost.app)
 
 `sortandpost.robopost` (HTTP client), `posts` (records, validation, payload),

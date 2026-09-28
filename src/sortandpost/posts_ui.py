@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _STATUS_LABEL = {
-    "draft": ("Draft", "text-gray-500"),
+    "draft": ("Draft", "sp-muted"),
     "sending": ("Sending…", "text-sky-600 dark:text-sky-400"),
     "sent_draft": ("Draft in robopost", "text-emerald-600 dark:text-emerald-400"),
     "scheduled": ("Scheduled", "text-emerald-600 dark:text-emerald-400"),
@@ -177,7 +177,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     cover = p.cover()
                     if cover:
                         ui.image(A._thumb_src(cover, thumb_small)).classes(
-                            "w-16 h-16 rounded object-cover bg-gray-100"
+                            "w-16 h-16 rounded object-cover sp-placeholder"
                         )
                     else:
                         ui.icon("image_not_supported", size="2rem").classes("w-16 sp-faint")
@@ -371,7 +371,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     missing = h in names and names[h] is None
                     with ui.element("div").classes("group relative w-32"):
                         ui.image(A._thumb_src(h, thumb_small)).classes(
-                            "w-32 h-32 rounded object-cover bg-gray-100"
+                            "w-32 h-32 rounded object-cover sp-placeholder"
                             + (" opacity-40" if missing else "")
                         )
                         ui.label(str(i + 1)).classes(
@@ -778,7 +778,7 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
     ui.label(
         "sortandpost uploads clean JPEG copies of your photos to robopost.app and creates a "
         "draft or scheduled post. Get an API key in robopost → Team → Manage API Keys."
-    ).classes("text-xs text-gray-400 max-w-xl")
+    ).classes("text-xs sp-faint max-w-xl")
 
     @ui.refreshable
     def _key_row() -> None:

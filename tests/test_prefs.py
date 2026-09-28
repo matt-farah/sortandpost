@@ -7,10 +7,12 @@ from pathlib import Path
 from sortandpost.paths import Paths
 from sortandpost.prefs import (
     get_open_with_app,
+    get_season,
     get_theme,
     load_prefs,
     save_prefs,
     set_open_with_app,
+    set_season,
     set_theme,
 )
 
@@ -55,6 +57,21 @@ def test_bootstrapped_tree_has_no_prefs_file(bootstrapped: Paths) -> None:
     # bootstrap seeds config/tags/device but not ui_prefs -- it's written lazily
     assert not (Path(bootstrapped.local) / "ui_prefs.json").exists()
     assert get_theme(bootstrapped) == "system"
+
+
+def test_season_defaults_to_auto_and_round_trips(paths: Paths) -> None:
+    assert get_season(paths) == "auto"
+    set_theme(paths, "dark")
+    set_season(paths, "winter")
+    assert get_season(paths) == "winter"
+    assert get_theme(paths) == "dark"  # independent prefs
+
+
+def test_unknown_season_falls_back_to_auto(paths: Paths) -> None:
+    save_prefs(paths, {"season": "monsoon"})
+    assert get_season(paths) == "auto"
+    set_season(paths, "bogus")  # type: ignore[arg-type]
+    assert get_season(paths) == "auto"
 
 
 def test_default_open_with_app_is_none(paths: Paths) -> None:

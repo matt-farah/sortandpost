@@ -1,11 +1,34 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-28 (V2 P2 — choose the "open with" app)._
+_Last updated: 2026-09-28 (V2 P3-A — seasonal themes)._
 _Working branch: `main` (tag `v1.1.0`, GitHub release published)._
 
-> **▶️ Next session:** V2 P0–P2 done. Next up per `V2Plan.md` is **P3 — design pass round 2
-> (`V2.md` #10)** (Sonnet), blocked on the user's detailed feedback — if that isn't ready yet,
-> skip to **P4 — user onboarding** (Opus). See "NEXT SESSION — start here" below.
+> **▶️ Next session:** V2 P0–P2 done; P3 (design pass round 2) in progress — **A (seasonal
+> themes) done**; next **B** compact icon filter bar + group-by in the toolbar, defaulting to
+> Month (`group=flat` for the flat grid), then **C** `/settings` in categories. See `V2Plan.md` P3.
+
+---
+
+## 📋 2026-09-28 — V2 P3-A: seasonal themes (`V2.md` #10, part A)
+
+User browser-tested (dev on :8081) + signed off. All tests pass; ruff / format / mypy clean;
+no schema change.
+
+- **`themes.py`** (new): the user's four palettes verbatim (`PALETTES`), per season × light/dark
+  design tokens (`TOKENS`, derived shades commented), `season_for` (meteorological, N.
+  hemisphere), `resolve_season`, `theme_css()` keyed on `<body>` class `sp-season-<s>`.
+- **`prefs.py`**: `get_season` / `set_season` — per-machine, default `"auto"`.
+- **`app.py`**: color values moved out of `_THEME_CSS` into tokens (fallback kept on `:root`);
+  `_header` applies the season class + season glyph, nav links get icons, status bar / focus
+  ring / toggles follow the season; `/settings` → Appearance gets five swatch cards (live).
+  Hard-coded `text-gray-*` / `bg-gray-*` swept to `sp-muted` / `sp-faint` / `sp-placeholder`.
+- **Gotcha:** Quasar's `.text-white !important` lives in NiceGUI's `quasar_importants` cascade
+  layer, which beats unlayered `!important`; the on-primary override sits in `@layer theme`
+  (for `!important`, the earliest layer wins). Also `--q-primary` is set inline on `<body>` by
+  Quasar, so the season's override needs `!important`.
+- **`tests/test_themes.py`**: season boundaries, palettes verbatim, WCAG contrast for all 8 looks.
+- Docs: CLAUDE.md "Theming" section.
+- Known nit: the header's season glyph updates on the next page load, not on the swatch click.
 
 ---
 
