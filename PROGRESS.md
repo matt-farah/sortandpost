@@ -1,10 +1,41 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-28 (V2 P1 — bulk reveal/open in the library toolbar)._
+_Last updated: 2026-09-28 (V2 P2 — choose the "open with" app)._
 _Working branch: `main` (tag `v1.1.0`, GitHub release published)._
 
-> **▶️ Next session:** V2 is underway (`V2Plan.md`, P0 + P1 done). Next up is **P2 — choose
-> the "open with" app** (Sonnet). See "NEXT SESSION — start here" below.
+> **▶️ Next session:** V2 P0–P2 done. Next up per `V2Plan.md` is **P3 — design pass round 2
+> (`V2.md` #10)** (Sonnet), blocked on the user's detailed feedback — if that isn't ready yet,
+> skip to **P4 — user onboarding** (Opus). See "NEXT SESSION — start here" below.
+
+---
+
+## 📋 2026-09-28 — V2 P2: choose the "open with" app (`V2.md` #22)
+
+User browser-tested on macOS native + signed off. 564 tests pass; ruff / format / mypy clean;
+no schema change.
+
+- **`prefs.py`**: `get_open_with_app` / `set_open_with_app` — per-machine app path in
+  `local/ui_prefs.json` (never synced; app paths differ across machines).
+- **`/settings` → "Open with"**: an input + "Browse…" that fills it from a real directory+file
+  listing (`_list_local` in `app.py`) — a macOS `.app` bundle shows as a selectable leaf, not
+  something you navigate into. "Save" / "Use system default" round-trip through `prefs.py`.
+- **One click, no menu**: `_open_with_button` (shared by the library's bulk toolbar and the
+  photo page's Paths list) opens with the saved app when one is set, the OS default otherwise —
+  no extra confirmation step. (First cut showed a menu offering both, every time; dropped after
+  user feedback — picking a custom app should just work.)
+- **`reveal.py`**: `open_with_app` / `open_multiple_with_app` (macOS: `open -a <app> …`;
+  Windows/Linux: run the app with the paths as argv).
+- **`tools/sortandpost_helper.py`**: `/reveal` + `/open` accept an optional `app` field;
+  `/listdir` accepts `?files=1` to also list files (not just directories), plus `/Applications`
+  (macOS) / Program Files (Windows) as extra starting points — Docker gets the same picker.
+- **Considered and reverted:** a real native OS "choose an application" dialog (`osascript` /
+  PowerShell `OpenFileDialog` / zenity-kdialog, plus a `/pick_app` helper endpoint) — it worked,
+  but the user asked to go back to the in-app web-based browser for consistency across
+  native/Docker and simpler docs. Don't re-propose a native file-picker dialog here without
+  asking first.
+- **Bonus, from hands-on testing feedback:** the library's "marked for editing" filtered view
+  (`mark=1`) now pre-selects every flagged photo on load (`library()` in `app.py`), so bulk
+  actions need no manual checkbox clicking first.
 
 ---
 

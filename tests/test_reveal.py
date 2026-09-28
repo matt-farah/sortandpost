@@ -165,3 +165,58 @@ def test_open_multiple_in_default_app_linux_opens_each(
     monkeypatch.setattr(reveal, "_os", lambda: "linux")
     reveal.open_multiple_in_default_app([Path("/photos/a.jpg"), Path("/photos/b.jpg")])
     assert spawned == [["xdg-open", "/photos/a.jpg"], ["xdg-open", "/photos/b.jpg"]]
+
+
+# --- open with a specific app -------------------------------------------------
+
+
+def test_open_with_app_macos_uses_open_dash_a(
+    monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
+) -> None:
+    monkeypatch.setattr(reveal, "_os", lambda: "darwin")
+    reveal.open_with_app(Path("/photos/a.jpg"), "/Applications/Preview.app")
+    assert spawned == [["open", "-a", "/Applications/Preview.app", "/photos/a.jpg"]]
+
+
+def test_open_with_app_windows_runs_the_exe_directly(
+    monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
+) -> None:
+    monkeypatch.setattr(reveal, "_os", lambda: "win")
+    reveal.open_with_app(Path("/photos/a.jpg"), "C:\\Apps\\Viewer.exe")
+    assert spawned == [["C:\\Apps\\Viewer.exe", "/photos/a.jpg"]]
+
+
+def test_open_with_app_linux_runs_the_command_directly(
+    monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
+) -> None:
+    monkeypatch.setattr(reveal, "_os", lambda: "linux")
+    reveal.open_with_app(Path("/photos/a.jpg"), "/usr/bin/gimp")
+    assert spawned == [["/usr/bin/gimp", "/photos/a.jpg"]]
+
+
+def test_open_multiple_with_app_empty_is_a_noop(
+    monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
+) -> None:
+    monkeypatch.setattr(reveal, "_os", lambda: "darwin")
+    reveal.open_multiple_with_app([], "/Applications/Preview.app")
+    assert spawned == []
+
+
+def test_open_multiple_with_app_macos_opens_all_in_one_call(
+    monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
+) -> None:
+    monkeypatch.setattr(reveal, "_os", lambda: "darwin")
+    reveal.open_multiple_with_app(
+        [Path("/photos/a.jpg"), Path("/photos/b.jpg")], "/Applications/Preview.app"
+    )
+    assert spawned == [
+        ["open", "-a", "/Applications/Preview.app", "/photos/a.jpg", "/photos/b.jpg"]
+    ]
+
+
+def test_open_multiple_with_app_linux_passes_all_paths_to_one_process(
+    monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
+) -> None:
+    monkeypatch.setattr(reveal, "_os", lambda: "linux")
+    reveal.open_multiple_with_app([Path("/photos/a.jpg"), Path("/photos/b.jpg")], "/usr/bin/gimp")
+    assert spawned == [["/usr/bin/gimp", "/photos/a.jpg", "/photos/b.jpg"]]

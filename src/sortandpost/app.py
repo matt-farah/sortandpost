@@ -16,7 +16,9 @@ import bisect
 import hashlib
 import json
 import logging
+import os
 import re
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -134,10 +136,18 @@ from sortandpost.posts_ui import (
     posting_settings_panel,
     register_post_pages,
 )
-from sortandpost.prefs import Theme, get_theme, set_theme
+from sortandpost.prefs import (
+    Theme,
+    get_open_with_app,
+    get_theme,
+    set_open_with_app,
+    set_theme,
+)
 from sortandpost.reveal import (
     open_in_default_app,
     open_multiple_in_default_app,
+    open_multiple_with_app,
+    open_with_app,
     reveal_in_file_manager,
     reveal_multiple_in_file_manager,
     reveal_supported,
@@ -1056,10 +1066,11 @@ def build_ui(settings: Settings) -> None:
                     ui.button("Delete", on_click=_go).props("color=negative")
             dialog.open()
 
-        async def _do_bulk_reveal_or_open(open_mode: bool) -> None:
+        async def _do_bulk_reveal_or_open(open_mode: bool, app: str | None = None) -> None:
             """Reveal every selected photo in the host file manager, or open it
-            in the OS default app -- via the native openers, or the host helper
-            agent under Docker. Works read-only: it doesn't touch the DB."""
+            in *app* (or the OS default app when ``app`` is ``None``) -- via
+            the native openers, or the host helper agent under Docker. Works
+            read-only: it doesn't touch the DB."""
             hashes = list(sel.ordered())
             if not hashes:
                 return
@@ -1074,17 +1085,21 @@ def build_ui(settings: Settings) -> None:
                 return
             helper = _current_helper()
             endpoint = "open" if open_mode else "reveal"
+            app_for = app if open_mode else None
             if helper is not None:
                 res = await ui.run_javascript(
-                    _helper_action_js_multi(endpoint, host_paths), timeout=8.0
+                    _helper_action_js_multi(endpoint, host_paths, app_for), timeout=8.0
                 )
                 if not (res or {}).get("ok"):
                     ui.notify((res or {}).get("error") or "helper error", type="warning")
             elif reveal_supported():
                 path_objs = [Path(p) for p in host_paths]
-                (open_multiple_in_default_app if open_mode else reveal_multiple_in_file_manager)(
-                    path_objs
-                )
+                if not open_mode:
+                    reveal_multiple_in_file_manager(path_objs)
+                elif app_for:
+                    open_multiple_with_app(path_objs, app_for)
+                else:
+                    open_multiple_in_default_app(path_objs)
             else:
                 ui.notify("Reveal/open isn't available in this environment.", type="warning")
                 return
@@ -1093,7 +1108,7 @@ def build_ui(settings: Settings) -> None:
                     f"{missing} photo(s) have no present copy on this machine.", type="warning"
                 )
 
-        async def _bulk_reveal_or_open(open_mode: bool) -> None:
+        async def _bulk_reveal_or_open(open_mode: bool, app: str | None = None) -> None:
             count = len(sel.selected)
             if not count:
                 return
@@ -1101,7 +1116,7 @@ def build_ui(settings: Settings) -> None:
                 _BULK_OPEN_CONFIRM_THRESHOLD if open_mode else _BULK_REVEAL_CONFIRM_THRESHOLD
             )
             if count <= threshold:
-                await _do_bulk_reveal_or_open(open_mode)
+                await _do_bulk_reveal_or_open(open_mode, app)
                 return
             verb = "Open" if open_mode else "Reveal"
             with ui.dialog() as dialog, ui.card().classes("gap-2"):
@@ -1114,7 +1129,7 @@ def build_ui(settings: Settings) -> None:
 
                     async def _go() -> None:
                         dialog.close()
-                        await _do_bulk_reveal_or_open(open_mode)
+                        await _do_bulk_reveal_or_open(open_mode, app)
 
                     ui.button(verb, on_click=_go).props("color=primary")
             dialog.open()
@@ -1154,9 +1169,7 @@ def build_ui(settings: Settings) -> None:
                 ui.button(icon="folder_open", on_click=lambda: _bulk_reveal_or_open(False)).props(
                     "flat dense round"
                 ).tooltip("reveal in file manager")
-                ui.button(icon="open_in_new", on_click=lambda: _bulk_reveal_or_open(True)).props(
-                    "flat dense round"
-                ).tooltip("open in default app")
+                _open_with_button(lambda app: _bulk_reveal_or_open(True, app))
                 _collection_add_button(
                     settings, lambda: list(sel.selected), label=None, on_added=sel.clear
                 )
@@ -1169,6 +1182,13 @@ def build_ui(settings: Settings) -> None:
                 ui.button(icon="close", on_click=sel.clear).props("flat dense round").tooltip(
                     "deselect all"
                 )
+
+        if lq.mark and rep_ids:
+            # the "marked for editing" view IS the flagged set -- pre-select
+            # everything so bulk actions (rate, tag, open, delete, …) need no
+            # manual checkbox clicking first.
+            sel.selected = set(rep_ids)
+            _render_toolbar()
 
         def _render_tiles(container: ui.element, hashes: list[str]) -> None:
             """Draw the tiles for *hashes* into *container* (one grid). Shared by
@@ -2525,6 +2545,9 @@ def build_ui(settings: Settings) -> None:
             _theme_editor(settings, dark)
 
             ui.separator()
+            _open_with_app_editor(settings)
+
+            ui.separator()
             _app_data_editor(settings)
 
             ui.separator()
@@ -3006,6 +3029,48 @@ def _theme_editor(settings: Settings, dark: ui.dark_mode) -> None:
     choice.on_value_change(_on_change)
 
 
+def _open_with_app_editor(settings: Settings) -> None:
+    """`/settings` control for the app the "Open" button launches instead of
+    the OS default (#22). Per-machine (``local/ui_prefs.json``), never synced
+    -- app paths differ across machines -- and doesn't touch the system's own
+    file-type association, only what sortandpost itself launches."""
+    ui.label("Open with").classes("font-bold mt-4")
+    ui.label(
+        "The app sortandpost's Open button launches, instead of the "
+        "operating system default. Saved on this machine only."
+    ).classes("text-xs text-gray-400 max-w-xl")
+
+    with ui.row().classes("w-full items-end gap-2 no-wrap"):
+        app_in = (
+            ui.input("App path", value=get_open_with_app(settings.paths) or "")
+            .props("dense")
+            .classes("flex-1")
+        )
+        if _app_browse_available():
+            ui.button("Browse…", icon="folder_open", on_click=lambda: _browse_app(app_in)).props(
+                "flat dense"
+            )
+        else:
+            ui.label(
+                "macOS: the .app in /Applications.  Windows: the .exe path.  "
+                "Linux: an executable or .desktop file path."
+            ).classes("text-xs sp-faint")
+
+    def _save() -> None:
+        value = clean_path(app_in.value or "")
+        set_open_with_app(settings.paths, value or None)
+        ui.notify("saved" if value else "cleared — using system default", type="positive")
+
+    def _clear() -> None:
+        app_in.value = ""
+        set_open_with_app(settings.paths, None)
+        ui.notify("cleared — using system default")
+
+    with ui.row().classes("gap-2"):
+        ui.button("Save", on_click=_save).props("color=primary")
+        ui.button("Use system default", on_click=_clear).props("flat")
+
+
 def _cpu_speed_editor(settings: Settings) -> None:
     """`/settings` control for ``clip.speed``: how much CPU indexing + CLIP may
     use. Applies from the next pass (the running one keeps its budget)."""
@@ -3341,6 +3406,136 @@ async def _browse_folder(target: ui.input) -> None:
 
             ui.button("Use this folder", on_click=_use).props("color=primary")
         await _load(state["path"])
+    dlg.open()
+
+
+def _list_local(path: Path | None, *, include_files: bool) -> dict[str, object]:
+    """Directories (and, when *include_files*, files) under *path* on *this
+    process's own* filesystem. Only meaningful on a native run -- a
+    container can't see the host, which is what the helper agent's
+    ``/listdir`` is for. Deliberately duplicates
+    ``tools/sortandpost_helper.py``'s ``list_dir``: that script must stay
+    stdlib-only and importable without the ``sortandpost`` package
+    installed, so it can't import this module either."""
+    if path is None:
+        starts: list[Path] = [Path.home()]
+        if sys.platform == "darwin":
+            apps = Path("/Applications")
+            if apps.is_dir():
+                starts.append(apps)
+        elif sys.platform.startswith("win"):
+            for letter in "CDEFGH":
+                drive = Path(f"{letter}:\\")
+                if drive.exists():
+                    starts.append(drive)
+            for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+                pf = os.environ.get(env_var)
+                if pf and Path(pf).is_dir():
+                    starts.append(Path(pf))
+        else:
+            starts.append(Path("/"))
+        return {
+            "path": None,
+            "parent": None,
+            "entries": [
+                {"name": str(p), "path": str(p), "dir": True} for p in dict.fromkeys(starts)
+            ],
+        }
+    entries: list[dict[str, object]] = []
+    try:
+        for child in sorted(path.iterdir(), key=lambda c: c.name.casefold()):
+            if child.name.startswith("."):
+                continue
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                entries.append({"name": child.name, "path": str(child), "dir": True})
+            elif include_files:
+                entries.append({"name": child.name, "path": str(child), "dir": False})
+    except (OSError, PermissionError):
+        entries = []
+    parent = str(path.parent) if path.parent != path else None
+    return {"path": str(path), "parent": parent, "entries": entries}
+
+
+def _app_browse_available() -> bool:
+    """Can :func:`_browse_app` show a real listing? Either the host helper
+    agent is connected (Docker), or this process itself runs natively on the
+    user's machine and can list its own filesystem directly."""
+    return _current_helper() is not None or not running_in_docker()
+
+
+async def _browse_app(target: ui.input) -> None:
+    """Picker for the "Open with" app: like :func:`_browse_folder` but also
+    lists files (an app is often a single file -- an ``.exe`` on Windows, an
+    executable or ``.desktop`` on Linux) and treats a macOS ``.app`` bundle as
+    a selectable leaf rather than a folder to open. Goes through the host
+    helper agent's ``/listdir`` under Docker, same as :func:`_browse_folder`;
+    otherwise lists this (native) process's own filesystem directly -- no
+    external helper needed on a native run."""
+    helper = _current_helper()
+
+    async def _list(path: str | None) -> dict[str, Any]:
+        if helper is not None:
+            js = (
+                "(async () => { const h = window.__spHelper; if (!h) return {entries: []};"
+                " const u = new URL('http://127.0.0.1:' + h.port + '/listdir');"
+                f" const p = {json.dumps(path)}; if (p) u.searchParams.set('path', p);"
+                " u.searchParams.set('files', '1');"
+                " const r = await fetch(u, {headers: {'X-SP-Token': h.token}});"
+                " return await r.json(); })()"
+            )
+            try:
+                data = await ui.run_javascript(js, timeout=6.0)
+            except Exception:  # helper stopped mid-browse
+                data = None
+        else:
+            data = await nicegui_run.io_bound(
+                _list_local, Path(path) if path else None, include_files=True
+            )
+        return data if isinstance(data, dict) else {"entries": [], "parent": None}
+
+    with (
+        ui.dialog() as dlg,
+        ui.card().classes("flex h-[70vh] w-[42rem] max-w-full flex-col gap-2"),
+    ):
+        crumb = ui.label("…").classes("truncate text-xs sp-faint")
+        listing = ui.column().classes("w-full flex-1 gap-0 overflow-y-auto")
+
+        def _pick(path: str) -> None:
+            target.value = path
+            dlg.close()
+
+        async def _load(path: str | None) -> None:
+            data = await _list(path)
+            crumb.text = path or "Pick a starting point"
+            listing.clear()
+            with listing:
+                if data.get("parent"):
+                    ui.button("⬆  parent", on_click=lambda p=data["parent"]: _load(p)).props(
+                        "flat dense align=left"
+                    ).classes("w-full justify-start")
+                for entry in data.get("entries", []):
+                    name = str(entry["name"])
+                    is_app = bool(entry.get("dir")) and name.endswith(".app")
+                    if entry.get("dir") and not is_app:
+                        ui.button(
+                            name,
+                            icon="folder",
+                            on_click=lambda p=entry["path"]: _load(p),
+                        ).props("flat dense align=left").classes("w-full justify-start")
+                    else:
+                        ui.button(
+                            name,
+                            icon="apps" if is_app else "insert_drive_file",
+                            on_click=lambda p=entry["path"]: _pick(p),
+                        ).props("flat dense align=left").classes("w-full justify-start")
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dlg.close).props("flat")
+        await _load((target.value or "").strip() or None)
     dlg.open()
 
 
@@ -3924,34 +4119,59 @@ def _copy_path(path: str) -> None:
     ui.notify("path copied")
 
 
-def _helper_action_js(endpoint: str, host_path: str) -> str:
+def _helper_action_js(endpoint: str, host_path: str, app: str | None = None) -> str:
     """Client-side ``fetch`` of the host helper agent, returning ``{ok, error}``
-    so the Python handler can ``ui.notify`` the outcome."""
+    so the Python handler can ``ui.notify`` the outcome. ``app`` (``/open``
+    only) picks a specific app instead of the OS default -- see
+    ``sortandpost.prefs.get_open_with_app``."""
+    body: dict[str, object] = {"path": host_path}
+    if app:
+        body["app"] = app
     return (
         "(async () => { const h = window.__spHelper;"
         " if (!h) return {ok: false, error: 'helper not running'};"
         f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
         "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
-        f"   body: JSON.stringify({{path: {json.dumps(host_path)}}})}});"
+        f"   body: JSON.stringify({json.dumps(body)})}});"
         "   const j = await r.json().catch(() => ({}));"
         "   return {ok: r.ok, error: j.error}; }"
         " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
     )
 
 
-def _helper_action_js_multi(endpoint: str, host_paths: list[str]) -> str:
+def _helper_action_js_multi(endpoint: str, host_paths: list[str], app: str | None = None) -> str:
     """Same as :func:`_helper_action_js` but for the bulk ``{paths: [...]}}``
     form of ``/reveal`` and ``/open``."""
+    body: dict[str, object] = {"paths": host_paths}
+    if app:
+        body["app"] = app
     return (
         "(async () => { const h = window.__spHelper;"
         " if (!h) return {ok: false, error: 'helper not running'};"
         f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
         "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
-        f"   body: JSON.stringify({{paths: {json.dumps(host_paths)}}})}});"
+        f"   body: JSON.stringify({json.dumps(body)})}});"
         "   const j = await r.json().catch(() => ({}));"
         "   return {ok: r.ok, error: j.error}; }"
         " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
     )
+
+
+def _app_label(app: str) -> str:
+    """Short display name for a saved "open with" app path."""
+    return Path(app).stem or app
+
+
+def _open_with_button(on_pick: Callable[[str | None], object], *, size: str = "") -> None:
+    """The "open" button shared by the bulk toolbar and the photo page's Paths
+    list. One click: opens with the app saved in Settings -> Open with, or the
+    OS default when none is saved -- no extra menu step. Change or clear the
+    app from Settings."""
+    settings = State.settings
+    saved = get_open_with_app(settings.paths) if settings is not None else None
+    props = f"flat dense round{f' size={size}' if size else ''}"
+    tooltip = f'open with "{_app_label(saved)}"' if saved else "open in default app"
+    ui.button(icon="open_in_new", on_click=lambda: on_pick(saved)).props(props).tooltip(tooltip)
 
 
 def _path_row(
@@ -3981,24 +4201,29 @@ def _path_row(
             return
         if helper is not None:
 
-            async def _act(endpoint: str) -> None:
-                res = await ui.run_javascript(_helper_action_js(endpoint, host_path), timeout=6.0)
+            async def _act(endpoint: str, app: str | None = None) -> None:
+                res = await ui.run_javascript(
+                    _helper_action_js(endpoint, host_path, app), timeout=6.0
+                )
                 if not (res or {}).get("ok"):
                     ui.notify((res or {}).get("error") or "helper error", type="warning")
 
             ui.button(icon="folder_open", on_click=lambda: _act("reveal")).props(
                 "flat dense round size=xs"
             ).tooltip("Reveal in file manager")
-            ui.button(icon="open_in_new", on_click=lambda: _act("open")).props(
-                "flat dense round size=xs"
-            ).tooltip("Open in default app")
+            _open_with_button(lambda app: _act("open", app), size="xs")
         elif native_reveal:
             ui.button(
                 icon="folder_open", on_click=lambda: reveal_in_file_manager(Path(path))
             ).props("flat dense round size=xs").tooltip("Reveal in file manager")
-            ui.button(icon="open_in_new", on_click=lambda: open_in_default_app(Path(path))).props(
-                "flat dense round size=xs"
-            ).tooltip("Open in default app")
+
+            def _open_native(app: str | None) -> None:
+                if app:
+                    open_with_app(Path(path), app)
+                else:
+                    open_in_default_app(Path(path))
+
+            _open_with_button(_open_native, size="xs")
 
 
 def _stack_filmstrip(current: str, members: list[str], size: int, link_query: str = "") -> None:

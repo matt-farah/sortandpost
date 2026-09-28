@@ -69,6 +69,17 @@ def open_in_default_app(path: Path) -> None:
             _spawn(["xdg-open", str(path)])
 
 
+def open_with_app(path: Path, app: str) -> None:
+    """Open *path* in a specific app (``open_with_app`` pref), not the OS
+    default. ``app`` is a ``.app`` bundle path on macOS, an ``.exe`` path on
+    Windows, or an executable/``.desktop`` path on Linux."""
+    path = Path(path).resolve()
+    if _os() == "darwin":
+        _spawn(["open", "-a", app, str(path)])
+    else:
+        _spawn([app, str(path)])
+
+
 def _applescript_posix_literal(path: Path) -> str:
     escaped = str(path).replace("\\", "\\\\").replace('"', '\\"')
     return f'POSIX file "{escaped}"'
@@ -196,3 +207,17 @@ def open_multiple_in_default_app(paths: list[Path]) -> None:
         case _:
             for p in resolved:
                 _spawn(["xdg-open", str(p)])
+
+
+def open_multiple_with_app(paths: list[Path], app: str) -> None:
+    """Open every path in *paths* in a specific app -- see :func:`open_with_app`.
+    One process for the whole batch (most apps accept several file args and
+    open them as tabs/windows); macOS uses ``open -a`` the same way the OS
+    default opener does."""
+    resolved = [Path(p).resolve() for p in paths]
+    if not resolved:
+        return
+    if _os() == "darwin":
+        _spawn(["open", "-a", app, *(str(p) for p in resolved)])
+    else:
+        _spawn([app, *(str(p) for p in resolved)])
