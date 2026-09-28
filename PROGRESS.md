@@ -1,11 +1,39 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-28 (V2 P3-B — compact filter bar + group-by)._
-_Working branch: `main` (tag `v1.1.0`, GitHub release published)._
+_Last updated: 2026-09-28 (V2 P3 — design pass round 2 done: A themes, B filter bar, C settings)._
+_Working branch: `main` (tag `v1.1.0`, GitHub release published). P3 is three **stacked** PRs:
+#28 (A, → `main`), #29 (B, → A's branch), C (`ui-redesign-c-settings`, → B's branch) — merge
+in order A → B → C; each later PR retargets to `main` as the one below merges._
 
-> **▶️ Next session:** V2 P0–P2 done; P3 (design pass round 2) in progress — **A (seasonal
-> themes) and B (compact filter bar + group-by) done**; next **C** `/settings` in categories
-> (side rail + 2-col cards). See `V2Plan.md` P3.
+> **▶️ Next session:** V2 P0–P3 done (P3 pending merge of the stacked PRs above). Next up per
+> `V2Plan.md` is **P4 — user onboarding** (`V2.md` #23, **Opus**): first-run wizard (library
+> folders, app-data location, scan speed, stacking, excluded folders, theme **incl. season**,
+> delete behaviour); indexer waits until it's finished. Build it in the P3 style (`sp-card`,
+> `_settings_card`-like panels, theme tokens — see CLAUDE.md "Theming").
+
+---
+
+## 📋 2026-09-28 — V2 P3-C: `/settings` in categories (`V2.md` #10, part C)
+
+User browser-tested (dev on :8081) + signed off. All tests pass; ruff / format / mypy clean;
+no schema change. Branch stacked on P3-B.
+
+- **Layout** (`settings_page` in `app.py`): sticky left rail of anchor links (hidden under
+  900px wide) + a content column of categories, each `_settings_section(key)` — an anchored
+  heading + an auto-fit 2-column grid (`sp-settings-grid`) of `_settings_card(title, icon,
+  wide=)` panels. Categories (`_SETTINGS_SECTIONS`): Overview (stat tiles + Indexing progress /
+  "Run indexer pass now"), Library, Indexing & AI, Appearance & apps, Posting, Deleting,
+  Sync & storage.
+- **Editors** no longer render their own bold title (the card does); the descriptions stay.
+  Posting card is "Posting with {SERVICE_NAME}". Appearance gets a "Mode" label over the
+  Light/Dark/System toggle.
+- **Read-only mode:** lock-gated panels (excluded folders, online-only, indexing speed,
+  stacking, deletion scope, recently deleted) now render their card with a "Read-only — X
+  holds the write lock" note instead of vanishing. Not browser-tested in read-only mode yet.
+- Sync status drops the rows now shown elsewhere (library roots, photo counts, CLIP model /
+  embeddings / predictions) and sizes its label column to content.
+- Not built (from the plan): a horizontal category chip row for narrow windows — the rail just
+  hides and the page is one column. Add it if narrow use comes up.
 
 ---
 

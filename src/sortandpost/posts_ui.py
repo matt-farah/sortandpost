@@ -774,7 +774,6 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
     """API key (write-only, OS keychain), connection test, channels, and the
     upload export size/quality."""
     client = ui.context.client
-    ui.label("Posting (robopost)").classes("font-bold mt-4")
     ui.label(
         "sortandpost uploads clean JPEG copies of your photos to robopost.app and creates a "
         "draft or scheduled post. Get an API key in robopost → Team → Manage API Keys."

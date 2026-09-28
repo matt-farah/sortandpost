@@ -441,6 +441,26 @@ body, .q-page, .nicegui-content {
 .sp-toolbadge { font-size: .6rem; min-height: 14px; padding: 1px 4px; top: -2px; right: -4px; }
 .sp-filterchip { margin: 0; }
 
+/* settings: side rail + category grids ----------------------------------- */
+.sp-settings-rail { position: sticky; top: 5rem; min-width: 12rem; }
+.sp-settings-section { scroll-margin-top: 5rem; }
+.sp-settings-grid {
+  display: grid; gap: 1rem; width: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+}
+.sp-settings-grid > .sp-wide { grid-column: 1 / -1; }
+.sp-settings-card { padding: 1rem 1.1rem; min-width: 0; }
+.sp-settings-card:hover { transform: none; box-shadow: var(--sp-shadow); }
+.sp-tiles {
+  grid-column: 1 / -1; display: grid; gap: .75rem;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+}
+.sp-tile { padding: .75rem .9rem; }
+.sp-tile:hover { transform: none; }
+@media (max-width: 900px) {
+  .sp-settings-rail { display: none; }
+}
+
 /* empty states --------------------------------------------------------------- */
 .sp-empty {
   display: flex; flex-direction: column; align-items: center; gap: .5rem;
@@ -2515,7 +2535,6 @@ def build_ui(settings: Settings) -> None:
     @ui.page("/settings")
     async def settings_page() -> None:
         dark = _header("/settings")
-        ccfg = settings.config.clip
         with _session() as session:
             gen = get_generation(session)
             embeddings = int(session.exec(select(func.count()).select_from(EmbeddingRow)).one())
@@ -2553,72 +2572,164 @@ def build_ui(settings: Settings) -> None:
             ),
             ("Publishes this session", str(getattr(manager, "_publish_count", 0))),
             ("Snapshots", f"{len(snaps)} (newest {snaps[-1].name})" if snaps else "0"),
-            (
-                "Library roots",
-                ", ".join(r.container for r in settings.library_roots) or "— none set —",
-            ),
-            ("Photos", f"{present} indexed · {total - present} missing"),
-            ("Online-only", f"{cloud_n} not downloaded" if cloud_n else "0"),
-            ("CLIP model", f"{ccfg.model} / {ccfg.pretrained} on {ccfg.device}"),
-            ("CLIP embeddings", str(embeddings)),
-            ("Predictions", f"{pending} pending · {approved} approved"),
         ]
         if manager.last_merge is not None:
             rows.append(("Last merge", str(manager.last_merge)))
         if manager.restored_from_snapshot is not None:
             rows.append(("Restored from", manager.restored_from_snapshot.name))
 
-        with ui.column().classes("p-4 gap-4 max-w-3xl"):
-            ui.label("Settings").classes("sp-display text-2xl font-semibold")
-            with ui.grid(columns=2).classes("gap-x-6 gap-y-1 text-sm"):
-                for key, value in rows:
-                    ui.label(key).classes("sp-faint")
-                    ui.label(value)
+        writable = State.write_mode == WriteMode.writable
+        tiles: list[tuple[str, str, str]] = [  # (icon, value, caption)
+            ("photo_library", f"{present:,}", "photos indexed"),
+            ("help_outline", f"{total - present:,}", "missing"),
+            ("cloud_off", f"{cloud_n:,}", "online-only"),
+            ("memory", f"{embeddings:,}", "CLIP embeddings"),
+            ("rate_review", f"{pending:,}", "suggestions pending"),
+            ("task_alt", f"{approved:,}", "suggestions approved"),
+        ]
 
-            ui.separator()
-            _library_roots_editor(settings, engine)
+        def _needs_lock() -> None:
+            ui.label(f"Read-only — {State.lock_holder or 'another machine'} holds the write lock.")
+            ui.label("These settings unlock once this machine can write.").classes(
+                "text-xs sp-faint"
+            )
 
-            ui.separator()
-            _theme_editor(settings, dark)
+        with ui.row().classes("w-full max-w-7xl mx-auto p-4 gap-8 no-wrap items-start"):
+            with ui.column().classes("sp-settings-rail gap-0.5 shrink-0"):
+                ui.label("Settings").classes("sp-display text-2xl font-semibold pb-2 px-2")
+                for key, title, icon in _SETTINGS_SECTIONS:
+                    link = ui.link("", f"#sp-{key}").classes("sp-nav flex items-center gap-2")
+                    with link:
+                        ui.icon(icon)
+                        ui.label(title)
 
-            ui.separator()
-            _open_with_app_editor(settings)
+            with ui.column().classes("flex-1 min-w-0 gap-10 pb-16"):
+                with _settings_section("overview"):
+                    tile_grid = ui.element("div").classes("sp-tiles w-full")
+                    for icon, value, caption in tiles:
+                        with tile_grid, ui.column().classes("sp-card sp-tile gap-0"):
+                            ui.icon(icon).classes("text-lg text-primary")
+                            ui.label(value).classes("sp-display text-2xl font-semibold")
+                            ui.label(caption).classes("text-xs sp-muted")
+                    with _settings_card("Indexing", "sync", wide=True):
+                        _progress_panel()
+                        if writable:
+                            client = ui.context.client  # a real scan outlasts the page
 
-            ui.separator()
-            _app_data_editor(settings)
+                            async def _scan_now() -> None:
+                                ui.notify("indexer pass started…")
+                                result = await nicegui_run.io_bound(
+                                    _run_index_pass, settings, engine
+                                )
+                                with client:  # the awaited gap can invalidate the slot
+                                    ui.notify(result)
 
-            ui.separator()
-            _clip_model_editor(settings)
+                            ui.button("Run indexer pass now", icon="play_arrow", on_click=_scan_now)
+                        else:
+                            ui.label("Read-only — indexer actions are disabled.").classes(
+                                "text-amber-600 text-sm"
+                            )
 
-            ui.separator()
-            posting_settings_panel(settings, writable=State.write_mode == WriteMode.writable)
+                with _settings_section("library"):
+                    with _settings_card("Library folders", "folder_open", wide=True):
+                        _library_roots_editor(settings, engine)
+                    with _settings_card("Excluded folders", "folder_off"):
+                        if writable:
+                            _exclude_editor(settings, engine)
+                        else:
+                            _needs_lock()
+                    with _settings_card("Online-only files", "cloud_download"):
+                        if writable:
+                            _online_only_editor(settings, engine, cloud_n)
+                        else:
+                            _needs_lock()
 
-            ui.separator()
-            ui.label("Indexing progress").classes("font-bold")
-            _progress_panel()
-            if State.write_mode == WriteMode.writable:
-                client = ui.context.client  # a real scan outlasts the page; see _scan_now
+                with _settings_section("indexing"):
+                    with _settings_card("Indexing speed", "speed"):
+                        if writable:
+                            _cpu_speed_editor(settings)
+                        else:
+                            _needs_lock()
+                    with _settings_card("CLIP model files", "model_training"):
+                        _clip_model_editor(settings)
+                        ui.label(
+                            "Rebuild the CLIP matrix from the CLI:  "
+                            "python -m sortandpost.indexer --reembed"
+                        ).classes("text-xs sp-faint")
+                    with _settings_card("Image stacking", "layers"):
+                        if writable:
+                            _stacking_editor(settings)
+                        else:
+                            _needs_lock()
 
-                async def _scan_now() -> None:
-                    ui.notify("indexer pass started…")
-                    result = await nicegui_run.io_bound(_run_index_pass, settings, engine)
-                    with client:  # the awaited gap can invalidate the ambient slot
-                        ui.notify(result)
+                with _settings_section("appearance"):
+                    with _settings_card("Appearance", "palette", wide=True):
+                        _theme_editor(settings, dark)
+                    with _settings_card("Open with", "open_in_new"):
+                        _open_with_app_editor(settings)
 
-                ui.button("Run indexer pass now", on_click=_scan_now)
-                _exclude_editor(settings, engine)
-                _online_only_editor(settings, engine, cloud_n)
-                _cpu_speed_editor(settings)
-                _stacking_editor(settings)
-                _deletion_editor(settings)
-                _trash_panel(settings, engine)
-            else:
-                ui.label("Read-only — indexer actions are disabled.").classes(
-                    "text-amber-600 text-sm"
-                )
-            ui.label(
-                "Rebuild the CLIP matrix from the CLI:  python -m sortandpost.indexer --reembed"
-            ).classes("text-xs sp-faint")
+                with (
+                    _settings_section("posting"),
+                    _settings_card(f"Posting with {POSTING_SERVICE}", "send", wide=True),
+                ):
+                    posting_settings_panel(settings, writable=writable)
+
+                with _settings_section("deleting"):
+                    with _settings_card("Deleting photos", "delete_outline"):
+                        if writable:
+                            _deletion_editor(settings)
+                        else:
+                            _needs_lock()
+                    with _settings_card("Recently deleted", "restore_from_trash", wide=True):
+                        if writable:
+                            _trash_panel(settings, engine)
+                        else:
+                            _needs_lock()
+
+                with _settings_section("sync"):
+                    with (
+                        _settings_card("Sync status", "cloud_sync"),
+                        ui.grid(columns="auto 1fr").classes("gap-x-6 gap-y-1 text-sm"),
+                    ):
+                        for key, value in rows:
+                            ui.label(key).classes("sp-faint")
+                            ui.label(value).classes("break-all")
+                    with _settings_card("App-data folder", "storage"):
+                        _app_data_editor(settings)
+
+
+_SETTINGS_SECTIONS: list[tuple[str, str, str]] = [  # (anchor key, title, icon)
+    ("overview", "Overview", "dashboard"),
+    ("library", "Library", "photo_library"),
+    ("indexing", "Indexing & AI", "memory"),
+    ("appearance", "Appearance & apps", "palette"),
+    ("posting", "Posting", "send"),
+    ("deleting", "Deleting", "delete"),
+    ("sync", "Sync & storage", "cloud_sync"),
+]
+
+
+@contextmanager
+def _settings_section(key: str) -> Iterator[None]:
+    """One `/settings` category: an anchored heading + a 2-column card grid
+    (a single column on narrow windows)."""
+    _, title, icon = next(s for s in _SETTINGS_SECTIONS if s[0] == key)
+    with ui.element("section").props(f"id=sp-{key}").classes("sp-settings-section w-full"):
+        with ui.row().classes("items-center gap-2 pb-3"):
+            ui.icon(icon).classes("text-2xl text-primary")
+            ui.label(title).classes("sp-display text-xl font-semibold")
+        with ui.element("div").classes("sp-settings-grid"):
+            yield
+
+
+@contextmanager
+def _settings_card(title: str, icon: str, *, wide: bool = False) -> Iterator[None]:
+    """A titled `/settings` panel; ``wide`` spans both grid columns."""
+    with ui.column().classes("sp-card sp-settings-card gap-2" + (" sp-wide" if wide else "")):
+        with ui.row().classes("items-center gap-2 no-wrap"):
+            ui.icon(icon).classes("text-lg sp-muted")
+            ui.label(title).classes("font-semibold")
+        yield
 
 
 def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
@@ -3020,7 +3131,6 @@ def _stacking_editor(settings: Settings) -> None:
     to ``config.yaml`` + updates the live config -- no re-index; the next library
     or search view reflects it."""
     cfg = settings.config.stacking
-    ui.label("Image stacking").classes("font-bold mt-4")
     ui.label(
         "Group near-duplicate photos in the same folder into one entry (the "
         "newest by modified time is shown). Ratings apply to the whole stack."
@@ -3047,11 +3157,11 @@ def _theme_editor(settings: Settings, dark: ui.dark_mode) -> None:
     """Light / Dark / System theme. Per-machine (``local/ui_prefs.json``), never
     synced -- each machine keeps its own. Applies to the current tab immediately;
     other open tabs pick it up on their next load."""
-    ui.label("Appearance").classes("font-bold mt-4")
     ui.label("Light, Dark, or follow the operating system. Saved on this machine only.").classes(
         "text-xs sp-faint max-w-xl"
     )
 
+    ui.label("Mode").classes("text-sm font-medium pt-1")
     choice = ui.toggle(
         {"system": "System", "light": "Light", "dark": "Dark"},
         value=State.theme,
@@ -3106,7 +3216,6 @@ def _open_with_app_editor(settings: Settings) -> None:
     the OS default (#22). Per-machine (``local/ui_prefs.json``), never synced
     -- app paths differ across machines -- and doesn't touch the system's own
     file-type association, only what sortandpost itself launches."""
-    ui.label("Open with").classes("font-bold mt-4")
     ui.label(
         "The app sortandpost's Open button launches, instead of the "
         "operating system default. Saved on this machine only."
@@ -3149,7 +3258,6 @@ def _cpu_speed_editor(settings: Settings) -> None:
     ccfg = settings.config.clip
     slow_w = default_workers("slow")
 
-    ui.label("Indexing speed").classes("font-bold mt-4")
     ui.label(
         "Indexing gathers your photos, stacks photos together that are the same, and "
         "uses machine learning to determine the contents of the photos without using "
@@ -3183,7 +3291,6 @@ def _deletion_editor(settings: Settings) -> None:
     """`/settings` control for the "Delete photos" action (CLAUDE.md constraint
     #1, exception 2). Only the stack scope is user-configurable."""
     cfg = settings.config.deletion
-    ui.label("Deleting photos").classes("font-bold mt-4")
     ui.label(
         "The bulk toolbar's Delete and the photo page's “Delete photo” move the "
         "files into the app's trash on this computer (see Recently deleted below) and "
@@ -3216,7 +3323,6 @@ def _trash_panel(settings: Settings, engine: Engine) -> None:
     machine, each with "Put back", plus "Move all to system Trash" (macOS /
     Windows) -- after which only the OS Trash's own Put Back can recover them."""
     client = ui.context.client
-    ui.label("Recently deleted").classes("font-bold mt-4")
     ui.label(
         f"Deleted photos wait here, on this computer only, until you move them to the "
         f"system Trash. Put back returns the files to their original folders with their "
@@ -3332,7 +3438,6 @@ def _app_data_editor(settings: Settings) -> None:
     current = settings.paths.app_data
     helper = read_helper_info(settings.paths)
 
-    ui.label("App-data folder").classes("font-bold mt-4")
     ui.label(
         "Where the database, thumbnails, and CLIP embeddings live. Point your "
         "file-sync tool (OneDrive, Google Drive, Synology Drive, Dropbox, …) at "
@@ -3391,7 +3496,6 @@ def _clip_model_editor(settings: Settings) -> None:
     ccfg = settings.config.clip
     client = ui.context.client  # a real download outlasts the page; see _download
 
-    ui.label("CLIP model files").classes("font-bold mt-4")
     ui.label(
         f"{ccfg.model} / {ccfg.pretrained} — cached under {settings.paths.models_dir}"
     ).classes("text-xs sp-faint max-w-xl")
@@ -3626,7 +3730,6 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
     in_docker = running_in_docker()
     client = ui.context.client  # a real rescan outlasts the page; see _save_rescan
 
-    ui.label("Library folders").classes("font-bold mt-4")
     ui.label(
         "Folders scanned for photos — specific to this computer. Under Docker a "
         "new folder only becomes active after you add its line to "
@@ -3779,7 +3882,6 @@ def _exclude_editor(settings: Settings, engine: Engine) -> None:
     names: list[str] = list(settings.config.indexer.exclude_dir_names)
     client = ui.context.client  # a real rescan outlasts the page; see _save
 
-    ui.label("Excluded folders").classes("font-bold mt-4")
     ui.label(
         "Folder names skipped while scanning — case-insensitive, matched at any "
         "depth. Photos already indexed from an excluded folder drop out on the "
@@ -3832,7 +3934,6 @@ def _online_only_editor(settings: Settings, engine: Engine, cloud_n: int) -> Non
     icfg = settings.config.indexer
     client = ui.context.client  # a real hydrate+rescan outlasts the page; see _download_now
 
-    ui.label("Online-only files").classes("font-bold mt-4")
     ui.label(
         "Cloud sync tools (OneDrive, Google Drive, Dropbox, iCloud) can leave "
         "placeholder stubs whose real bytes download only when opened. “Skip” "
