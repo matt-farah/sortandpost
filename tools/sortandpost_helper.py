@@ -25,6 +25,7 @@ import glob
 import json
 import os
 import secrets
+import shutil
 import socketserver
 import subprocess
 import sys
@@ -32,10 +33,11 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 HELPER_VERSION = "1"
 _HEARTBEAT_SEC = 60
+_MAX_MULTI_PATHS = 100
 
 
 def _platform() -> str:
@@ -118,6 +120,79 @@ def open_default(path: Path) -> None:
             os.startfile(str(path))  # type: ignore[attr-defined]  # win only
         case _:
             _spawn(["xdg-open", str(path)])
+
+
+def _applescript_posix_literal(path: Path) -> str:
+    escaped = str(path).replace("\\", "\\\\").replace('"', '\\"')
+    return f'POSIX file "{escaped}"'
+
+
+def reveal_multiple(paths: list[Path]) -> None:
+    """Same behaviour as :func:`reveal` for a list -- see ``sortandpost.reveal``
+    (the in-process twin used on a native run) for the platform notes."""
+    if len(paths) == 1:
+        reveal(paths[0])
+        return
+    match _platform():
+        case "darwin":
+            items = ", ".join(_applescript_posix_literal(p) for p in paths)
+            _spawn(
+                [
+                    "osascript",
+                    "-e",
+                    'tell application "Finder"',
+                    "-e",
+                    f"reveal {{{items}}}",
+                    "-e",
+                    "activate",
+                    "-e",
+                    "end tell",
+                ]
+            )
+        case "win":
+            for p in paths:
+                _spawn(["explorer", f"/select,{p}"])
+        case _:
+            if which_dbus_send():
+                uris = ",".join(f'"file://{quote(str(p))}"' for p in paths)
+                _spawn(
+                    [
+                        "dbus-send",
+                        "--session",
+                        "--dest=org.freedesktop.FileManager1",
+                        "--type=method_call",
+                        "/org/freedesktop/FileManager1",
+                        "org.freedesktop.FileManager1.ShowItems",
+                        f"array:string:{uris}",
+                        "string:",
+                    ]
+                )
+                return
+            seen: set[Path] = set()
+            for p in paths:
+                folder = p.parent if p.parent.is_dir() else p
+                if folder not in seen:
+                    seen.add(folder)
+                    _spawn(["xdg-open", str(folder)])
+
+
+def which_dbus_send() -> bool:
+    return shutil.which("dbus-send") is not None
+
+
+def open_multiple(paths: list[Path]) -> None:
+    if len(paths) == 1:
+        open_default(paths[0])
+        return
+    match _platform():
+        case "darwin":
+            _spawn(["open", *(str(p) for p in paths)])
+        case "win":
+            for p in paths:
+                os.startfile(str(p))  # type: ignore[attr-defined]  # win only
+        case _:
+            for p in paths:
+                _spawn(["xdg-open", str(p)])
 
 
 def list_dir(path: Path | None, roots: list[Path]) -> dict[str, object]:
@@ -254,7 +329,12 @@ class Handler(BaseHTTPRequestHandler):
         if route.path not in ("/reveal", "/open"):
             self._send(404, {"error": "not found"})
             return
-        target = _safe_abspath(self._body().get("path"))
+        body = self._body()
+        raw_list = body.get("paths")
+        if raw_list is not None:
+            self._handle_multi(route.path, raw_list)
+            return
+        target = _safe_abspath(body.get("path"))
         if target is None:
             self._send(400, {"error": "bad path"})
             return
@@ -266,6 +346,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         (reveal if route.path == "/reveal" else open_default)(target)
         self._send(200, {"ok": True})
+
+    def _handle_multi(self, route_path: str, raw_list: object) -> None:
+        if not isinstance(raw_list, list) or not raw_list:
+            self._send(400, {"error": "bad paths"})
+            return
+        if len(raw_list) > _MAX_MULTI_PATHS:
+            self._send(400, {"error": f"too many paths (max {_MAX_MULTI_PATHS})"})
+            return
+        targets: list[Path] = []
+        for raw in raw_list:
+            target = _safe_abspath(raw)
+            if target is None:
+                self._send(400, {"error": "bad path"})
+                return
+            if not _under_allowed(target, self.config.allowed_roots()):
+                self._send(403, {"error": "path is not inside a registered library folder"})
+                return
+            if target.exists():
+                targets.append(target)
+        if not targets:
+            self._send(404, {"error": "no such file"})
+            return
+        (reveal_multiple if route_path == "/reveal" else open_multiple)(targets)
+        self._send(200, {"ok": True, "count": len(targets)})
 
 
 # --------------------------------------------------------------------------- #

@@ -1,10 +1,43 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-28 (V2 P0 — docs housekeeping in `V2.md`)._
+_Last updated: 2026-09-28 (V2 P1 — bulk reveal/open in the library toolbar)._
 _Working branch: `main` (tag `v1.1.0`, GitHub release published)._
 
-> **▶️ Next session:** V2 is underway (`V2Plan.md`, P0 done). Next up is **P1 — open/reveal
-> multiple selected/flagged photos** (Sonnet). See "NEXT SESSION — start here" below.
+> **▶️ Next session:** V2 is underway (`V2Plan.md`, P0 + P1 done). Next up is **P2 — choose
+> the "open with" app** (Sonnet). See "NEXT SESSION — start here" below.
+
+---
+
+## 📋 2026-09-28 — V2 P1: bulk reveal / open selected photos (`V2.md` #21)
+
+User browser-tested on macOS native + signed off. 548 tests pass; ruff / format / mypy clean;
+alembic autogenerate empty (no schema change).
+
+- **Library bulk toolbar** (`app.py`) gets two new buttons for the current selection —
+  reveal in file manager, open in default app — working on any selected photos including ones
+  reached by filtering to the "marked for editing" tag. Read-only sessions get them too (no DB
+  write involved).
+- **`reveal.py`**: `reveal_multiple_in_file_manager` / `open_multiple_in_default_app`. macOS
+  batches every path into one AppleScript `tell Finder to reveal {…}` call; Windows groups by
+  parent folder via `SHOpenFolderAndSelectItems` (ctypes, guarded by a literal
+  `sys.platform == "win32"` check so mypy skips it on macOS/Linux, same idiom as
+  `cpu.lower_process_priority`), falling back to one Explorer window per file if that fails;
+  Linux tries the running file manager's D-Bus `org.freedesktop.FileManager1.ShowItems` via
+  `dbus-send` and falls back to opening each distinct parent folder.
+- **`tools/sortandpost_helper.py`** (Docker host agent): `/reveal` and `/open` now also accept
+  a `paths: [...]` body (existing single-`path` form untouched), capped at 100 paths per
+  request, same allowed-roots check per path, skips any that don't exist rather than failing
+  the whole batch.
+- Duplicates resolve to one present path per photo via the existing `post_export.resolve_sources`
+  (reused, not reimplemented).
+- **Confirm-dialog thresholds** (tuned after hands-on testing found 25 too conservative for
+  reveal, which is one OS call regardless of count): reveal confirms above 200 selected; open
+  confirms above 25 (it can spawn one process/window per file on Windows/Linux, no OS batching
+  there the way `open path1 path2 …` gives macOS).
+- **Follow-up logged, not built here:** `V2.md` #24 — the grid's shift-click only range-selects
+  when the click lands on the tile's small checkbox, and Cmd/Ctrl-click opens a new tab instead
+  of adding to the selection (native `<a>` behavior). Needs a JS-level modifier check on the
+  tile's click.
 
 ---
 
@@ -1327,9 +1360,11 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 ## ▶️ NEXT SESSION — start here
 
 **V2 is underway.** Plan + model-per-phase in `V2Plan.md`, feature list in `V2.md`. P0 (docs
-housekeeping) is done — next is **P1: open/reveal multiple selected/flagged photos** (#21 in
-`V2.md`), Sonnet, then **P2: choose the "open with" app** (#22), also Sonnet. See `V2Plan.md`
-for the full phase order and per-phase workflow.
+housekeeping) and P1 (bulk reveal/open, #21) are done — next is **P2: choose the "open with"
+app** (#22 in `V2.md`), Sonnet. See `V2Plan.md` for the full phase order and per-phase workflow.
+
+Small carried-over item from P1 (not a blocker): `V2.md` #24, the grid's shift-click /
+Cmd-Ctrl-click only work correctly from the tile's small checkbox, not the whole tile.
 
 **v1.0.0 is released** (V1 P0–P7, see `V1Plan.md`). Bug fixes / small changes from hands-on
 testing still ship as **1.0.x** (fixes) / **1.x.0** (small features) alongside V2 work.

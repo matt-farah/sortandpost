@@ -126,6 +126,7 @@ from sortandpost.library_view import (
 )
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.metadata.shared import EXIFTOOL
+from sortandpost.post_export import resolve_sources
 from sortandpost.posts import posted_hashes
 from sortandpost.posts_ui import (
     compose_button,
@@ -134,7 +135,13 @@ from sortandpost.posts_ui import (
     register_post_pages,
 )
 from sortandpost.prefs import Theme, get_theme, set_theme
-from sortandpost.reveal import open_in_default_app, reveal_in_file_manager, reveal_supported
+from sortandpost.reveal import (
+    open_in_default_app,
+    open_multiple_in_default_app,
+    reveal_in_file_manager,
+    reveal_multiple_in_file_manager,
+    reveal_supported,
+)
 from sortandpost.searches import (
     SavedSearch,
     add_search,
@@ -167,6 +174,12 @@ _PAGES = [
 _REVIEW_PAGE = 48  # per-photo tiles loaded per /review "Show more" step
 _GRID_BATCH = 80  # thumbnails appended per infinite-scroll step
 _PICKER_CAP = 500  # photos offered at once in the "add photos to collection" picker
+# Reveal is one OS call regardless of count (Finder/Explorer/dbus all batch), so it
+# only needs a confirm well past normal selection sizes. "Open in default app" can
+# spawn one process/window per file on Windows/Linux (no batching there), so it
+# stays more conservative.
+_BULK_REVEAL_CONFIRM_THRESHOLD = 200
+_BULK_OPEN_CONFIRM_THRESHOLD = 25
 _THUMB_URL = "/thumbs"
 _TRASH_THUMB_URL = "/trash-thumb"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -1043,6 +1056,69 @@ def build_ui(settings: Settings) -> None:
                     ui.button("Delete", on_click=_go).props("color=negative")
             dialog.open()
 
+        async def _do_bulk_reveal_or_open(open_mode: bool) -> None:
+            """Reveal every selected photo in the host file manager, or open it
+            in the OS default app -- via the native openers, or the host helper
+            agent under Docker. Works read-only: it doesn't touch the DB."""
+            hashes = list(sel.ordered())
+            if not hashes:
+                return
+            resolved = await nicegui_run.io_bound(resolve_sources, engine, hashes)
+            if resolved is None:  # io_bound cancelled / app shutting down
+                return
+            roots = settings.library_roots
+            host_paths = [to_host_path(p, roots) for p in resolved.values() if p]
+            missing = len(hashes) - len(host_paths)
+            if not host_paths:
+                ui.notify("No present copies to open on this machine.", type="warning")
+                return
+            helper = _current_helper()
+            endpoint = "open" if open_mode else "reveal"
+            if helper is not None:
+                res = await ui.run_javascript(
+                    _helper_action_js_multi(endpoint, host_paths), timeout=8.0
+                )
+                if not (res or {}).get("ok"):
+                    ui.notify((res or {}).get("error") or "helper error", type="warning")
+            elif reveal_supported():
+                path_objs = [Path(p) for p in host_paths]
+                (open_multiple_in_default_app if open_mode else reveal_multiple_in_file_manager)(
+                    path_objs
+                )
+            else:
+                ui.notify("Reveal/open isn't available in this environment.", type="warning")
+                return
+            if missing:
+                ui.notify(
+                    f"{missing} photo(s) have no present copy on this machine.", type="warning"
+                )
+
+        async def _bulk_reveal_or_open(open_mode: bool) -> None:
+            count = len(sel.selected)
+            if not count:
+                return
+            threshold = (
+                _BULK_OPEN_CONFIRM_THRESHOLD if open_mode else _BULK_REVEAL_CONFIRM_THRESHOLD
+            )
+            if count <= threshold:
+                await _do_bulk_reveal_or_open(open_mode)
+                return
+            verb = "Open" if open_mode else "Reveal"
+            with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                ui.label(f"{verb} {count} photos?").classes("font-medium")
+                ui.label(f"This opens {count} windows or apps at once.").classes(
+                    "text-xs text-gray-500"
+                )
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                    async def _go() -> None:
+                        dialog.close()
+                        await _do_bulk_reveal_or_open(open_mode)
+
+                    ui.button(verb, on_click=_go).props("color=primary")
+            dialog.open()
+
         def _render_toolbar() -> None:
             count = len(sel.selected)
             toolbar.set_visibility(count > 0)
@@ -1074,6 +1150,13 @@ def build_ui(settings: Settings) -> None:
                     ).tooltip("delete — move files to trash")
                 else:
                     ui.label("read-only").classes("text-xs text-amber-300")
+                ui.separator().props("vertical dark")
+                ui.button(icon="folder_open", on_click=lambda: _bulk_reveal_or_open(False)).props(
+                    "flat dense round"
+                ).tooltip("reveal in file manager")
+                ui.button(icon="open_in_new", on_click=lambda: _bulk_reveal_or_open(True)).props(
+                    "flat dense round"
+                ).tooltip("open in default app")
                 _collection_add_button(
                     settings, lambda: list(sel.selected), label=None, on_added=sel.clear
                 )
@@ -3850,6 +3933,21 @@ def _helper_action_js(endpoint: str, host_path: str) -> str:
         f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
         "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
         f"   body: JSON.stringify({{path: {json.dumps(host_path)}}})}});"
+        "   const j = await r.json().catch(() => ({}));"
+        "   return {ok: r.ok, error: j.error}; }"
+        " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
+    )
+
+
+def _helper_action_js_multi(endpoint: str, host_paths: list[str]) -> str:
+    """Same as :func:`_helper_action_js` but for the bulk ``{paths: [...]}}``
+    form of ``/reveal`` and ``/open``."""
+    return (
+        "(async () => { const h = window.__spHelper;"
+        " if (!h) return {ok: false, error: 'helper not running'};"
+        f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
+        "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
+        f"   body: JSON.stringify({{paths: {json.dumps(host_paths)}}})}});"
         "   const j = await r.json().catch(() => ({}));"
         "   return {ok: r.ok, error: j.error}; }"
         " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
