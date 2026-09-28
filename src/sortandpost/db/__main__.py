@@ -14,7 +14,7 @@ from pathlib import Path
 
 from sqlmodel import Session
 
-from sortandpost.config import Settings
+from sortandpost.config import NoAppDataFolder, Settings
 from sortandpost.db import make_engine
 from sortandpost.db.meta import get_generation
 from sortandpost.logging_setup import configure
@@ -101,7 +101,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    settings = Settings.resolve()
+    try:
+        settings = Settings.resolve()
+    except NoAppDataFolder as exc:
+        print(exc, file=sys.stderr)
+        return 1
     configure(settings.paths.logs_dir)
 
     if args.command == "snapshot":

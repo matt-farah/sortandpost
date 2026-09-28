@@ -143,6 +143,12 @@ Automated tests + a headless smoke are necessary but not sufficient. After build
 
    (`library_roots` there points at `~/Downloads/sampleImages`; ~300 photos already indexed;
    `.venv` has real torch + CLIP on MPS, and Playwright + Chromium for headless UI checks.)
+
+   To test first-run onboarding as a **brand-new machine** without touching the real
+   `~/.sortandpost` pointer: run from a directory with no `.env`, with no `APP_DATA`, and
+   point `SORTANDPOST_PREF_DIR` + `SORTANDPOST_LOCAL_DIR` at empty scratch folders (symlink
+   `browser_test_data/local/models` into `$SORTANDPOST_LOCAL_DIR/models` to skip the CLIP
+   download). A second "machine" = another pair of scratch dirs picking the same shared folder.
 3. Tell the user exactly which keys / buttons / flows to exercise, and what each should do.
 4. Wait for their sign-off. Only then update `PROGRESS.md` / `V1Plan.md` (+ `V1Features.md`) and commit.
 
@@ -152,25 +158,60 @@ Leave the app running until the user says they're done, then shut it down.
 
 ## App-data layout
 
-`APP_DATA` has two subtrees. The user points their file-sync app at **`sync/` only**.
+The app's data has two roots: **`local/`** (machine-specific, never synced) and **`sync/`**
+(the shared folder the user's file-sync tool carries between machines). They are placed in
+one of two ways (`sortandpost.paths.Paths`):
 
-**Which folder is `APP_DATA`?** In order: a genuine process/shell `APP_DATA` env var
-(Docker's fixed container mount, or `APP_DATA=... command`) — a real instruction from
-whoever launched the process, always wins and can't be overridden from the UI; else the
-folder last saved from **Settings → App-data folder**, recorded outside any `APP_DATA`
-tree in `~/.sortandpost/app_data_path.json` (see `sortandpost.launcher_pref`) so it
-survives regardless of the launch command's cwd — this is how an end user sets it up
-with no environment variables at all; else a bare value left in a `.env` file (a soft
-default, e.g. a previous setup's leftover — deliberately ranked *below* a saved folder);
-else a bare `./appdata` next to wherever the launch happened to run from.
-`Env.resolved_app_data()` / `Env.app_data_source()` implement this (`sortandpost.config`);
-telling a real env var from a `.env`-file value apart means checking `os.environ` directly
-rather than trusting pydantic-settings' own (order-collapsing) env/dotenv merge. Saving a
-new folder from Settings takes effect on the next restart, not live — the running process
-already has an engine open on the old one.
+- **Split layout** (what the first-run wizard sets up, `Paths.for_sync_dir`): the user
+  picks only the shared folder, which *is* `sync/`. `local/` goes in a per-machine OS
+  folder, **one per shared folder**: `<default_local_root>/libraries/<name>-<hash8>/`
+  (`~/Library/Application Support/sortandpost`, `%LOCALAPPDATA%\sortandpost`,
+  `$XDG_DATA_HOME/sortandpost`; `SORTANDPOST_LOCAL_DIR` overrides). CLIP weights are shared
+  across libraries in `<default_local_root>/models`. So a second machine that picks the same
+  shared folder never shares the first one's `device.json` or working DB, and switching
+  libraries never carries a working DB from one library into another.
+- **Single folder** (`Paths(app_data=X)`): `X/local` + `X/sync`. What a real `APP_DATA`
+  env var (Docker, dev), a `.env` value, and pre-onboarding saved folders give. Here the user
+  must point their sync tool at `sync/` only.
+
+**Which folders?** In order (`Env.resolve_paths()` / `Env.paths_source()`,
+`sortandpost.config`): a genuine process/shell `APP_DATA` env var (Docker's fixed container
+mount, or `APP_DATA=... command`) — always wins, can't be changed from the UI; else the
+shared folder picked in the wizard or **Settings → Shared library folder**, recorded outside
+any data tree in `~/.sortandpost/app_data_path.json` as `{"sync_dir": …}` (see
+`sortandpost.launcher_pref`; `SORTANDPOST_PREF_DIR` overrides the folder); else a legacy
+`{"app_data": …}` pointer (single folder); else a bare value left in a `.env` file (a soft
+default, ranked *below* a saved folder); else **nothing** — the app starts in first-run
+setup mode (below) and the CLIs exit with "not set up yet". Telling a real env var from a
+`.env`-file value apart means checking `os.environ` directly rather than trusting
+pydantic-settings' own (order-collapsing) env/dotenv merge. Changing the folder from
+Settings is **Save & restart**: a clean shutdown (final publish, lock release) and an
+in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
+
+### First-run onboarding (`sortandpost.onboarding`, `/welcome`)
+
+1. **Setup mode** — no folder chosen (`resolve_paths()` is `None`): `app.run_setup` serves
+   only `/welcome`'s "Where should your library live?" step — no DB, no lock, no indexer.
+   `inspect_folder` tells the pick apart: an existing sync tree (the folder itself, its
+   `sync/` child for a legacy app-data folder, or a `sortandpost/` child) → **joined**; a
+   missing/empty folder → new library there; a folder with unrelated files → new library in
+   `<folder>/sortandpost`. The pointer is saved and the process re-execs.
+2. **Wizard** — folders open but no `local/onboarding.json`: every page redirects to
+   `/welcome` (HTTP middleware) and the indexer — in-app and `python -m
+   sortandpost.indexer` — does not start. Steps: library data → this machine's photo
+   folders (other devices' folders that exist here are offered one-click) → *new library
+   only:* scanning speed + excluded folders, stacking (on by default) + delete scope → look
+   (theme/season) → Ready → **Start** writes the marker and starts the indexer. A machine
+   joining an existing library adopts the shared `config.yaml` as-is. New-vs-joined is
+   remembered across a mid-wizard restart (`local/onboarding_started.json`).
+3. **Upgrades** — a single-folder install whose `local/device.json` already exists is marked
+   finished silently, so existing installs never see the wizard. A brand-new native machine
+   doesn't get the template's Docker `/library` seeded as a library folder.
+4. `/` reloads itself while the first scan fills an under-one-page library
+   (`_reload_as_photos_arrive`), so photos appear without a manual refresh.
 
 ```
-<APP_DATA>/
+<APP_DATA>/                    # single-folder layout; in the split layout local/ and sync/ live apart
   local/                       # machine-specific — NEVER synced
     sortandpost.db (+ -wal/-shm/-journal while running)   # the working copy the app runs against
     device.json                # {"device_id": "<random>", "hostname": "..."}  created on first run
@@ -502,12 +543,14 @@ The **only** module allowed to write under a library root. Wraps a persistent
   prev/next walk the same resolved view (`resolve_view`, cached per query for 30 min).
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/review` — pending CLIP predictions grouped by tag for bulk approve/reject.
+- `/welcome` — first-run onboarding wizard (see "First-run onboarding"); every other page
+  redirects here until this machine has finished it.
 - `/settings` — organized into categories (sticky side rail of anchors on wide windows; each
   category a responsive 2-column grid of `sp-card` panels via `_settings_section` /
   `_settings_card`): Overview (stat tiles + indexing progress), Library, Indexing & AI,
   Appearance & apps, Posting, Deleting, Sync & storage. Lock-gated panels still render in
   read-only mode with a note instead of disappearing. Contents: CLIP model & thresholds, re-index / re-embed actions, sync status (lock holder,
-  last publish, `db_generation`, snapshots, last merge summary), the app-data folder picker (see
+  last publish, `db_generation`, snapshots, last merge summary), the shared-folder picker with Save & restart (see
   "App-data layout" above), and a CLIP-weights cache check / force-download control (`Check if
   downloaded` / `Download / verify CLIP model`, `sortandpost.clip.model.check_cached` /
   `ensure_downloaded` — toggles `HF_HUB_OFFLINE` around the probe so it works even when the app

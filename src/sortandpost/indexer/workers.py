@@ -53,7 +53,8 @@ class DecodedFile:
 class DecodeJob:
     """Immutable, picklable bundle of everything a worker needs. No handles."""
 
-    app_data: str
+    local_dir: str
+    sync_dir: str
     thumb_sizes: tuple[int, ...]
     thumb_fmt: str
     thumb_quality: int
@@ -128,8 +129,8 @@ def decode_local(
 
 def decode_file(job: DecodeJob, path_str: str) -> DecodedFile:
     """Worker-process entry point. Rebuilds the thumbnail path function from
-    ``job.app_data`` so nothing unpicklable crosses the process boundary."""
-    thumbs = Paths(app_data=Path(job.app_data))
+    the job's roots so nothing unpicklable crosses the process boundary."""
+    thumbs = Paths.split(local=Path(job.local_dir), sync=Path(job.sync_dir))
     return decode_local(
         Path(path_str),
         thumb_path_fn=thumbs.thumbnail_file,

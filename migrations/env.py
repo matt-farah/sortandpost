@@ -2,7 +2,9 @@
 
 DB URL resolution order:
   1. ``SORTANDPOST_DB_URL`` env var
-  2. ``APP_DATA/local/sortandpost.db`` (APP_DATA defaults to ./appdata)
+  2. the working DB of whatever data folder the app itself would open
+     (``Env.resolve_paths``: ``APP_DATA``, else the folder chosen in the
+     welcome wizard / settings, else ``.env``); ``./appdata`` if none
 
 ``target_metadata`` is SQLModel's registry, so ``alembic revision --autogenerate``
 diffs against :mod:`sortandpost.db.models`.
@@ -30,8 +32,12 @@ target_metadata = SQLModel.metadata
 def _db_url() -> str:
     if url := os.environ.get("SORTANDPOST_DB_URL"):
         return url
-    app_data = Path(os.environ.get("APP_DATA", "appdata")).resolve()
-    return f"sqlite:///{app_data / 'local' / 'sortandpost.db'}"
+    from sortandpost.config import Env
+    from sortandpost.paths import Paths
+
+    paths = Env().resolve_paths() or Paths(app_data=Path("appdata").resolve())
+    paths.local.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{paths.working_db}"
 
 
 def run_migrations_offline() -> None:

@@ -26,11 +26,12 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from sortandpost.cpu import ClipSpeed, default_workers
-from sortandpost.launcher_pref import read_remembered_app_data
-from sortandpost.library_roots import LibraryRoot, load_roots, save_roots
+from sortandpost.launcher_pref import read_pointer
+from sortandpost.library_roots import LibraryRoot, load_roots, running_in_docker, save_roots
+from sortandpost.onboarding import settle_on_startup
 from sortandpost.paths import Paths
 
-_DEFAULT_APP_DATA = Path("appdata").resolve()
+PathsSource = Literal["env", "shared", "remembered", "dotenv", "unset"]
 
 
 class Env(BaseSettings):
@@ -38,52 +39,73 @@ class Env(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # ``None`` (not set by either a real env var or `.env`) means "fall back to
-    # whatever folder the user last saved from /settings, or, failing that,
-    # ./appdata". See :func:`resolved_app_data` and :mod:`launcher_pref`.
-    #
-    # Precedence is deliberately *not* just "whichever source pydantic-settings
-    # would normally prefer": a genuine process/shell environment variable
-    # (Docker's `environment: APP_DATA: /data`, or `APP_DATA=... command`) is
-    # a firm instruction from whoever launched the process and always wins.
-    # But a bare value sitting in a `.env` file is a soft default -- often a
-    # leftover from a previous setup -- so it must rank *below* a folder the
-    # user has explicitly saved from the Settings page (`os.environ` is
-    # checked directly to tell the two apart; `self.app_data` alone can't,
-    # since pydantic-settings merges both sources into it).
+    # Which folders to use -- see :meth:`resolve_paths`. Precedence is
+    # deliberately *not* just "whichever source pydantic-settings would
+    # normally prefer": a genuine process/shell environment variable (Docker's
+    # `environment: APP_DATA: /data`, or `APP_DATA=... command`) is a firm
+    # instruction from whoever launched the process and always wins. But a bare
+    # value sitting in a `.env` file is a soft default -- often a leftover from
+    # a previous setup -- so it must rank *below* a folder the user has chosen
+    # in the wizard or /settings (`os.environ` is checked directly to tell the
+    # two apart; `self.app_data` alone can't, since pydantic-settings merges
+    # both sources into it).
     app_data: Path | None = Field(default=None, alias="APP_DATA")
     port: int = Field(default=8080, alias="PORT")
     host: str = Field(default="0.0.0.0", alias="HOST")
     clip_model_override: str | None = Field(default=None, alias="CLIP_MODEL")
 
-    def resolved_app_data(self) -> Path:
+    def resolve_paths(self) -> Paths | None:
+        """The folders this launch uses, or ``None`` when nothing has been
+        chosen yet (first run -> the onboarding wizard asks).
+
+        1. a real ``APP_DATA`` env var -- single folder (``local/`` + ``sync/``)
+        2. the shared folder picked in onboarding / /settings -- split layout,
+           machine-local data in :func:`paths.local_dir_for` (one per library)
+        3. a legacy single folder saved from /settings
+        4. ``APP_DATA`` from a ``.env`` file -- single folder
+        """
         if os.environ.get("APP_DATA"):
             assert self.app_data is not None
-            return self.app_data.resolve()
-        remembered = read_remembered_app_data()
-        if remembered is not None:
-            return remembered.resolve()
+            return Paths(app_data=self.app_data.expanduser().resolve())
+        ptr = read_pointer()
+        if ptr is not None and ptr.kind == "sync_dir":
+            return Paths.for_sync_dir(ptr.path.resolve())
+        if ptr is not None:
+            return Paths(app_data=ptr.path.resolve())
         if self.app_data is not None:  # from a .env file only
-            return self.app_data.resolve()
-        return _DEFAULT_APP_DATA
+            return Paths(app_data=self.app_data.expanduser().resolve())
+        return None
 
-    def app_data_source(self) -> str:
-        """``"env"`` (a real process/shell ``APP_DATA``, e.g. Docker or
-        ``APP_DATA=... command`` -- always wins), ``"remembered"`` (saved from
-        ``/settings`` on a previous run), ``"dotenv"`` (only a `.env` file has
-        it -- a saved folder would override this), or ``"default"`` (bare
-        ``./appdata``, relative to wherever this launch's cwd happens to be)."""
+    def paths_source(self) -> PathsSource:
+        """``"env"`` (a real process/shell ``APP_DATA`` -- always wins, the UI
+        can't change it), ``"shared"`` (a shared folder picked in onboarding /
+        /settings), ``"remembered"`` (a legacy single folder saved from
+        /settings), ``"dotenv"`` (only a `.env` file has it), or ``"unset"``."""
         if os.environ.get("APP_DATA"):
             return "env"
-        if read_remembered_app_data() is not None:
-            return "remembered"
+        ptr = read_pointer()
+        if ptr is not None:
+            return "shared" if ptr.kind == "sync_dir" else "remembered"
         if self.app_data is not None:
             return "dotenv"
-        return "default"
+        return "unset"
 
     @property
     def paths(self) -> Paths:
-        return Paths(app_data=self.resolved_app_data())
+        paths = self.resolve_paths()
+        if paths is None:
+            raise NoAppDataFolder
+        return paths
+
+
+class NoAppDataFolder(RuntimeError):
+    """No data folder chosen yet on this machine (first run)."""
+
+    def __str__(self) -> str:
+        return (
+            "sortandpost hasn't been set up on this computer yet -- start the web "
+            "app (python -m sortandpost) and finish the setup wizard, or set APP_DATA."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -253,20 +275,28 @@ class Settings(BaseModel):
     # Per-device library folders (``sync/devices/<name>-<id8>/library.json``).
     # NOT ``config.library_roots`` -- see sortandpost.library_roots.
     library_roots: list[LibraryRoot] = Field(default_factory=list)
+    # First-run wizard state for this machine (sortandpost.onboarding).
+    onboarding_pending: bool = False
+    joined_existing: bool = False
 
     @classmethod
     def resolve(cls) -> Settings:
         env = Env()
         paths = env.paths
+        paths.local.mkdir(parents=True, exist_ok=True)
+        onboarding = settle_on_startup(paths)  # before bootstrap creates device.json
         bootstrap(paths)
         config = AppConfig.load(paths.config_file)
         if env.clip_model_override:
             config.clip.model = env.clip_model_override
         device_id, hostname = load_device(paths)
         roots = load_roots(paths, device_id, hostname)
-        if not roots and config.library_roots:
+        seed = not onboarding.fresh_device or running_in_docker()
+        if not roots and config.library_roots and seed:
             # First run after upgrading: seed the per-device file once from the
             # old shared config, then treat the per-device file as canonical.
+            # A brand-new native machine gets its folders from onboarding
+            # instead (the template's "/library" is a Docker mount point).
             roots = [LibraryRoot(container=str(p), host=str(p)) for p in config.library_roots]
             save_roots(paths, device_id, hostname, roots)
         return cls(
@@ -276,6 +306,8 @@ class Settings(BaseModel):
             device_id=device_id,
             hostname=hostname,
             library_roots=roots,
+            onboarding_pending=onboarding.pending,
+            joined_existing=onboarding.joined_existing,
         )
 
     def set_library_roots(self, roots: list[str | Path]) -> None:
