@@ -109,6 +109,134 @@ def test_reveal_rejects_a_relative_path(server: str) -> None:
     assert _req(server, "/reveal", method="POST", body={"path": "relative/x"})[0] == 400
 
 
+# --- multi-path reveal / open ------------------------------------------------
+
+
+def test_reveal_multi_runs_the_multi_opener_for_paths_inside_a_root(
+    server: str, app_data: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[Path]] = []
+    monkeypatch.setattr(agent, "reveal_multiple", lambda paths: calls.append(paths))
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    b = Path(lib) / "b.jpg"
+    b.write_bytes(b"x")
+    code, body = _req(server, "/reveal", method="POST", body={"paths": [f"{lib}/a.jpg", str(b)]})
+    assert code == 200 and body["ok"] is True and body["count"] == 2
+    assert len(calls) == 1 and len(calls[0]) == 2
+
+
+def test_open_multi_runs_the_multi_opener(
+    server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[Path]] = []
+    monkeypatch.setattr(agent, "open_multiple", lambda paths: calls.append(paths))
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    code, body = _req(server, "/open", method="POST", body={"paths": [f"{lib}/a.jpg"]})
+    assert code == 200 and body["ok"] is True
+    assert len(calls) == 1
+
+
+def test_open_single_with_app_uses_the_app_opener(
+    server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[Path, str]] = []
+    monkeypatch.setattr(agent, "open_with", lambda path, app: calls.append((path, app)))
+    monkeypatch.setattr(agent, "open_default", lambda path: pytest.fail("must not use default"))
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    code, body = _req(
+        server,
+        "/open",
+        method="POST",
+        body={"path": f"{lib}/a.jpg", "app": "/Applications/Preview.app"},
+    )
+    assert code == 200 and body["ok"] is True
+    assert len(calls) == 1 and calls[0][1] == "/Applications/Preview.app"
+
+
+def test_open_multi_with_app_uses_the_app_opener(
+    server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[Path], str]] = []
+    monkeypatch.setattr(agent, "open_multiple_with", lambda paths, app: calls.append((paths, app)))
+    monkeypatch.setattr(agent, "open_multiple", lambda paths: pytest.fail("must not use default"))
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    code, body = _req(
+        server,
+        "/open",
+        method="POST",
+        body={"paths": [f"{lib}/a.jpg"], "app": "/Applications/Preview.app"},
+    )
+    assert code == 200 and body["ok"] is True
+    assert len(calls) == 1 and calls[0][1] == "/Applications/Preview.app"
+
+
+def test_reveal_ignores_app_field(
+    server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Path] = []
+    monkeypatch.setattr(agent, "reveal", lambda path: calls.append(path))
+    monkeypatch.setattr(agent, "open_with", lambda path, app: pytest.fail("must not open"))
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    code, body = _req(
+        server,
+        "/reveal",
+        method="POST",
+        body={"path": f"{lib}/a.jpg", "app": "/Applications/Preview.app"},
+    )
+    assert code == 200 and body["ok"] is True
+    assert len(calls) == 1
+
+
+def test_reveal_multi_refuses_if_any_path_is_outside_every_root(
+    server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent, "reveal_multiple", lambda paths: pytest.fail("must not spawn"))
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    code, _body = _req(
+        server, "/reveal", method="POST", body={"paths": [f"{lib}/a.jpg", "/etc/passwd"]}
+    )
+    assert code == 403
+
+
+def test_reveal_multi_skips_missing_files_but_keeps_the_rest(
+    server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[Path]] = []
+    monkeypatch.setattr(agent, "reveal_multiple", lambda paths: calls.append(paths))
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    code, body = _req(
+        server,
+        "/reveal",
+        method="POST",
+        body={"paths": [f"{lib}/a.jpg", f"{lib}/does-not-exist.jpg"]},
+    )
+    assert code == 200 and body["count"] == 1
+    assert len(calls[0]) == 1
+
+
+def test_reveal_multi_rejects_empty_or_too_many(server: str, app_data: Path) -> None:
+    assert _req(server, "/reveal", method="POST", body={"paths": []})[0] == 400
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    too_many = [f"{lib}/a.jpg"] * (agent._MAX_MULTI_PATHS + 1)
+    assert _req(server, "/reveal", method="POST", body={"paths": too_many})[0] == 400
+
+
 def test_listdir_lists_directories_only_and_hides_dotfiles(server: str, app_data: Path) -> None:
     lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
         "host"
@@ -117,6 +245,16 @@ def test_listdir_lists_directories_only_and_hides_dotfiles(server: str, app_data
     assert code == 200
     names = [e["name"] for e in body["entries"]]
     assert names == ["sub"]  # a.jpg (file) and .hidden (dot) excluded
+
+
+def test_listdir_files_1_also_lists_files(server: str, app_data: Path) -> None:
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    code, body = _req(server, f"/listdir?path={lib}&files=1")
+    assert code == 200
+    entries = {e["name"]: e["dir"] for e in body["entries"]}
+    assert entries == {"sub": True, "a.jpg": False}  # .hidden still excluded
 
 
 def test_listdir_root_listing_returns_start_points(server: str) -> None:

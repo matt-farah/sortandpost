@@ -16,7 +16,9 @@ import bisect
 import hashlib
 import json
 import logging
+import os
 import re
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -126,6 +128,7 @@ from sortandpost.library_view import (
 )
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.metadata.shared import EXIFTOOL
+from sortandpost.post_export import resolve_sources
 from sortandpost.posts import posted_hashes
 from sortandpost.posts_ui import (
     compose_button,
@@ -133,8 +136,24 @@ from sortandpost.posts_ui import (
     posting_settings_panel,
     register_post_pages,
 )
-from sortandpost.prefs import Theme, get_theme, set_theme
-from sortandpost.reveal import open_in_default_app, reveal_in_file_manager, reveal_supported
+from sortandpost.prefs import (
+    Theme,
+    get_open_with_app,
+    get_season,
+    get_theme,
+    set_open_with_app,
+    set_season,
+    set_theme,
+)
+from sortandpost.reveal import (
+    open_in_default_app,
+    open_multiple_in_default_app,
+    open_multiple_with_app,
+    open_with_app,
+    reveal_in_file_manager,
+    reveal_multiple_in_file_manager,
+    reveal_supported,
+)
 from sortandpost.searches import (
     SavedSearch,
     add_search,
@@ -145,6 +164,17 @@ from sortandpost.searches import (
 from sortandpost.stacks import build_stacks
 from sortandpost.sync import SyncManager, WriteMode
 from sortandpost.sync.clock import utcnow
+from sortandpost.themes import (
+    PALETTES,
+    SEASON_CHOICES,
+    SEASON_ICONS,
+    SEASON_LABELS,
+    SEASONS,
+    SeasonChoice,
+    body_class,
+    resolve_season,
+    theme_css,
+)
 from sortandpost.trash import (
     TrashBatch,
     find_batch,
@@ -157,16 +187,22 @@ from sortandpost.undelete import UndeleteResult, put_back_batch
 log = logging.getLogger(__name__)
 
 _PAGES = [
-    ("/", "Library"),
-    ("/collections", "Collections"),
-    ("/posts", "Posts"),
-    ("/rate", "Rate"),
-    ("/review", "Review"),
-    ("/settings", "Settings"),
+    ("/", "Library", "photo_library"),
+    ("/collections", "Collections", "collections_bookmark"),
+    ("/posts", "Posts", "send"),
+    ("/rate", "Rate", "star_rate"),
+    ("/review", "Review", "rate_review"),
+    ("/settings", "Settings", "settings"),
 ]
 _REVIEW_PAGE = 48  # per-photo tiles loaded per /review "Show more" step
 _GRID_BATCH = 80  # thumbnails appended per infinite-scroll step
 _PICKER_CAP = 500  # photos offered at once in the "add photos to collection" picker
+# Reveal is one OS call regardless of count (Finder/Explorer/dbus all batch), so it
+# only needs a confirm well past normal selection sizes. "Open in default app" can
+# spawn one process/window per file on Windows/Linux (no batching there), so it
+# stays more conservative.
+_BULK_REVEAL_CONFIRM_THRESHOLD = 200
+_BULK_OPEN_CONFIRM_THRESHOLD = 25
 _THUMB_URL = "/thumbs"
 _TRASH_THUMB_URL = "/trash-thumb"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -242,7 +278,7 @@ _GRID_KB_CSS = """
 a.group.kb-focus::after,
 .sp-pick.kb-focus::after {
   content: ""; position: absolute; inset: 0; box-sizing: border-box;
-  border: 4px solid #fbbf24; pointer-events: none; z-index: 20;
+  border: 4px solid var(--sp-focus, #fbbf24); pointer-events: none; z-index: 20;
 }
 a.group.kb-focus .kbreveal,
 .sp-pick.kb-focus .kbreveal { opacity: 1 !important; }
@@ -252,10 +288,11 @@ a.group.kb-focus .kbreveal,
 .nicegui-grid > a.nicegui-link.group { scroll-margin-top: 4.5rem; }
 """
 
-# Global design layer -- "warm editorial": paper backgrounds, an old-style serif
-# for display type, indigo accent (via ``ui.colors``), amber kept only for the
-# keyboard-focus ring and the edit flag. Tokens flip on Quasar's ``body--dark``.
-# System fonts only -- the app is offline-first, so no webfont fetch.
+# Global design layer -- "warm editorial": an old-style serif for display type,
+# colors from design tokens. The seasonal themes (:mod:`sortandpost.themes`,
+# added after this block) set every token per season x mode on the <body>
+# classes; the :root values here are only the fallback. Amber stays for
+# warnings and the edit flag. System fonts only -- the app is offline-first.
 _THEME_CSS = """
 :root {
   --sp-bg: #faf8f4;
@@ -267,6 +304,12 @@ _THEME_CSS = """
   --sp-text-faint: #9c9284;
   --sp-shadow: 0 1px 2px rgba(44,40,35,.06), 0 10px 28px -14px rgba(44,40,35,.22);
   --sp-shadow-lg: 0 2px 6px rgba(44,40,35,.09), 0 22px 48px -20px rgba(44,40,35,.34);
+  --sp-primary: #4f46e5;
+  --sp-on-primary: #ffffff;
+  --sp-focus: #fbbf24;
+  --sp-statusbar-bg: #201b15;
+  --sp-statusbar-fg: #c9beac;
+  --sp-statusbar-border: #3c332a;
 }
 body.body--dark {
   --sp-bg: #1b1815;
@@ -285,6 +328,15 @@ body, .q-page, .nicegui-content {
   color: var(--sp-text);
 }
 ::selection { background: color-mix(in srgb, var(--q-primary) 26%, transparent); }
+/* text on a primary fill: Quasar hard-codes white, which a pastel primary
+   (Spring / Winter dark) can't carry. In the `theme` layer because Quasar's
+   `.text-white !important` sits in NiceGUI's `quasar_importants` layer, and for
+   !important the earliest-declared layer wins. */
+@layer theme {
+  .bg-primary.text-white, .q-btn.bg-primary, .q-badge.bg-primary, .q-chip.bg-primary {
+    color: var(--sp-on-primary) !important;
+  }
+}
 
 .sp-display {
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua",
@@ -293,6 +345,7 @@ body, .q-page, .nicegui-content {
   font-feature-settings: "liga" 1, "kern" 1;
 }
 .sp-muted { color: var(--sp-text-dim); }
+.sp-placeholder { background-color: var(--sp-surface-2); }  /* image wells, pills */
 .sp-faint { color: var(--sp-text-faint); }
 
 /* app bar --------------------------------------------------------------- */
@@ -303,6 +356,11 @@ body, .q-page, .nicegui-content {
   -webkit-backdrop-filter: saturate(1.6) blur(10px);
   backdrop-filter: saturate(1.6) blur(10px);
 }
+.sp-appbar.q-header::after {  /* the season's palette as a hairline stripe */
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px;
+  background: var(--sp-season-stripe, transparent); pointer-events: none;
+}
+.sp-season-glyph { color: var(--sp-primary); }
 .sp-nav {
   color: var(--sp-text-dim);
   text-decoration: none !important;
@@ -313,6 +371,7 @@ body, .q-page, .nicegui-content {
 }
 .sp-nav:hover { color: var(--sp-text); background-color: var(--sp-surface-2); }
 .sp-nav-active { color: var(--q-primary); font-weight: 600; }
+.sp-nav .q-icon { font-size: 1.05rem; }
 .sp-chip {
   font-size: .68rem;
   font-weight: 700;
@@ -326,9 +385,9 @@ body, .q-page, .nicegui-content {
 
 /* status bar ---------------------------------------------------------------- */
 .sp-statusbar.q-footer {
-  background-color: #201b15 !important;
-  color: #c9beac !important;
-  border-top: 1px solid #3c332a;
+  background-color: var(--sp-statusbar-bg) !important;
+  color: var(--sp-statusbar-fg) !important;
+  border-top: 1px solid var(--sp-statusbar-border);
   font-size: .72rem;
 }
 
@@ -358,14 +417,11 @@ body, .q-page, .nicegui-content {
   overflow: hidden;
 }
 .q-btn-toggle .q-btn { border-radius: 0; }
-.q-btn-toggle .q-btn:not(.q-btn--active) {
+.q-btn-toggle .q-btn:not(.bg-primary) {
   background-color: var(--sp-surface) !important;
   color: var(--sp-text-dim) !important;
 }
-.q-btn-toggle .q-btn--active {
-  background-color: var(--q-primary) !important;
-  color: #fff !important;
-}
+.q-btn-toggle .q-btn.bg-primary { background-color: var(--q-primary) !important; }
 
 /* empty states --------------------------------------------------------------- */
 .sp-empty {
@@ -375,6 +431,22 @@ body, .q-page, .nicegui-content {
 .sp-empty .sp-empty-title {
   font-size: 1.15rem; color: var(--sp-text);
 }
+
+/* inputs / menus / cards follow the season's surfaces */
+.q-menu, .q-card, .q-dialog .q-card { background-color: var(--sp-surface); color: var(--sp-text); }
+.q-field--outlined .q-field__control:before { border-color: var(--sp-border); }
+
+/* settings: season swatches ------------------------------------------------ */
+.sp-swatch {
+  display: flex; flex-direction: column; gap: .35rem; cursor: pointer;
+  padding: .5rem; border-radius: .6rem; border: 2px solid var(--sp-border);
+  background-color: var(--sp-surface); min-width: 8.5rem;
+  transition: border-color .12s, transform .12s;
+}
+.sp-swatch:hover { transform: translateY(-1px); }
+.sp-swatch.sp-swatch-on { border-color: var(--q-primary); }
+.sp-swatch-strip { display: flex; height: 1.1rem; border-radius: .3rem; overflow: hidden; }
+.sp-swatch-strip > span { flex: 1; }
 """
 
 
@@ -416,6 +488,7 @@ class State:
     settings: Settings | None = None
     indexer_started: bool = False
     theme: Theme = "system"  # per-machine UI theme (local/ui_prefs.json)
+    season: SeasonChoice = "auto"  # per-machine seasonal palette (sortandpost.themes)
     # (trash batch id, photos deleted, time.monotonic()) of the most recent
     # delete on this machine -- drives the status bar's "Undo delete" button.
     last_delete: tuple[str, int, float] | None = None
@@ -435,26 +508,40 @@ class State:
 _THEME_TO_DARK: dict[Theme, bool | None] = {"system": None, "light": False, "dark": True}
 
 
-def _header(active: str) -> ui.dark_mode:
-    ui.colors(
-        primary="#4f46e5",  # indigo -- flows into every color=primary / ring-primary / bg-primary
-        secondary="#7c6df2",
-        accent="#d97706",
-        positive="#3f9d6d",
-        negative="#c0392b",
+def _apply_season(choice: SeasonChoice) -> str:
+    """Put the season's class on <body> (dropping any other season's); returns
+    the Material icon for the resolved season. The token CSS is keyed on it."""
+    season = resolve_season(choice)
+    ui.query("body").classes(
+        add=body_class(season), remove=" ".join(body_class(s) for s in SEASONS)
     )
+    return SEASON_ICONS[season]
+
+
+def _header(active: str) -> ui.dark_mode:
+    # primary / secondary / accent come from the season (sortandpost.themes)
+    ui.colors(positive="#3f9d6d", negative="#c0392b")
     dark = ui.dark_mode(_THEME_TO_DARK[State.theme])  # per-machine; None = follow the OS
+    glyph_icon = _apply_season(State.season)
     with ui.header().classes("sp-appbar items-center justify-between gap-4"):
-        with ui.row().classes("items-baseline gap-2 no-wrap"):
+        with ui.row().classes("items-center gap-2 no-wrap"):
+            ui.icon(glyph_icon).classes("sp-season-glyph text-lg").tooltip(
+                f"{SEASON_LABELS[resolve_season(State.season)]} theme"
+                + (" (auto)" if State.season == "auto" else "")
+            )
             ui.link("sortandpost", "/").classes("sp-display text-xl font-semibold sp-nav")
             ui.label(__version__).classes("sp-faint text-[11px]")
         with ui.row().classes("items-center gap-1 no-wrap"):
-            for path, name in _PAGES:
-                ui.link(name, path).classes("sp-nav" + (" sp-nav-active" if path == active else ""))
+            for path, name, icon in _PAGES:
+                with ui.link("", path).classes(
+                    "sp-nav flex items-center gap-1" + (" sp-nav-active" if path == active else "")
+                ):
+                    ui.icon(icon)
+                    ui.label(name)
         with ui.row().classes("items-center gap-2 no-wrap"):
             _inject_helper()
             if State.write_mode == WriteMode.writable:
-                ui.label("writable").classes("sp-chip text-emerald-600 dark:text-emerald-400")
+                ui.label("writable").classes("sp-chip text-primary")
             else:
                 ui.label(f"read-only · {State.lock_holder}").classes(
                     "sp-chip text-amber-600 dark:text-amber-400"
@@ -641,11 +728,13 @@ def build_ui(settings: Settings) -> None:
     _add_tailwind_css()  # stands in for NiceGUI's in-browser Tailwind (see ui.run)
     ui.add_css(_GRID_KB_CSS, shared=True)  # grid keyboard-focus styling, all pages
     ui.add_css(_THEME_CSS, shared=True)  # design tokens + component polish, all pages
+    ui.add_css(theme_css(), shared=True)  # seasonal token sets (sortandpost.themes)
     engine = make_engine(settings.paths.working_db)
     init_db(engine)  # ensure an empty DB still renders an empty grid
     State.engine = engine
     State.settings = settings
     State.theme = get_theme(settings.paths)
+    State.season = get_season(settings.paths)
 
     manager = SyncManager(settings, engine=engine)
     try:
@@ -816,7 +905,7 @@ def build_ui(settings: Settings) -> None:
             with ui.dialog() as dialog, ui.card().classes("gap-2"):
                 ui.label("Remove the “marked for editing” flag from every photo?")
                 ui.label("Only the flag is cleared — no photo files are touched.").classes(
-                    "text-xs text-gray-500"
+                    "text-xs sp-muted"
                 )
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -1021,16 +1110,16 @@ def build_ui(settings: Settings) -> None:
             with ui.dialog() as dialog, ui.card().classes("gap-2"):
                 ui.label(f"Delete {count} selected photo(s)?").classes("font-medium")
                 ui.label(f"The photo files will be {_delete_where_note()}.").classes(
-                    "text-xs text-gray-500"
+                    "text-xs sp-muted"
                 )
                 if settings.config.stacking.enabled:
                     ui.label(
                         "Whole stacks will be deleted."
                         if settings.config.deletion.stack_scope == "whole_stack"
                         else "Only the shown photo of each stack is deleted."
-                    ).classes("text-xs text-gray-500")
+                    ).classes("text-xs sp-muted")
                 ui.label("Their ratings, tags and thumbnails are removed too.").classes(
-                    "text-xs text-gray-500"
+                    "text-xs sp-muted"
                 )
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -1041,6 +1130,72 @@ def build_ui(settings: Settings) -> None:
                         dialog.close()
 
                     ui.button("Delete", on_click=_go).props("color=negative")
+            dialog.open()
+
+        async def _do_bulk_reveal_or_open(open_mode: bool, app: str | None = None) -> None:
+            """Reveal every selected photo in the host file manager, or open it
+            in *app* (or the OS default app when ``app`` is ``None``) -- via
+            the native openers, or the host helper agent under Docker. Works
+            read-only: it doesn't touch the DB."""
+            hashes = list(sel.ordered())
+            if not hashes:
+                return
+            resolved = await nicegui_run.io_bound(resolve_sources, engine, hashes)
+            if resolved is None:  # io_bound cancelled / app shutting down
+                return
+            roots = settings.library_roots
+            host_paths = [to_host_path(p, roots) for p in resolved.values() if p]
+            missing = len(hashes) - len(host_paths)
+            if not host_paths:
+                ui.notify("No present copies to open on this machine.", type="warning")
+                return
+            helper = _current_helper()
+            endpoint = "open" if open_mode else "reveal"
+            app_for = app if open_mode else None
+            if helper is not None:
+                res = await ui.run_javascript(
+                    _helper_action_js_multi(endpoint, host_paths, app_for), timeout=8.0
+                )
+                if not (res or {}).get("ok"):
+                    ui.notify((res or {}).get("error") or "helper error", type="warning")
+            elif reveal_supported():
+                path_objs = [Path(p) for p in host_paths]
+                if not open_mode:
+                    reveal_multiple_in_file_manager(path_objs)
+                elif app_for:
+                    open_multiple_with_app(path_objs, app_for)
+                else:
+                    open_multiple_in_default_app(path_objs)
+            else:
+                ui.notify("Reveal/open isn't available in this environment.", type="warning")
+                return
+            if missing:
+                ui.notify(
+                    f"{missing} photo(s) have no present copy on this machine.", type="warning"
+                )
+
+        async def _bulk_reveal_or_open(open_mode: bool, app: str | None = None) -> None:
+            count = len(sel.selected)
+            if not count:
+                return
+            threshold = (
+                _BULK_OPEN_CONFIRM_THRESHOLD if open_mode else _BULK_REVEAL_CONFIRM_THRESHOLD
+            )
+            if count <= threshold:
+                await _do_bulk_reveal_or_open(open_mode, app)
+                return
+            verb = "Open" if open_mode else "Reveal"
+            with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                ui.label(f"{verb} {count} photos?").classes("font-medium")
+                ui.label(f"This opens {count} windows or apps at once.").classes("text-xs sp-muted")
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                    async def _go() -> None:
+                        dialog.close()
+                        await _do_bulk_reveal_or_open(open_mode, app)
+
+                    ui.button(verb, on_click=_go).props("color=primary")
             dialog.open()
 
         def _render_toolbar() -> None:
@@ -1074,6 +1229,11 @@ def build_ui(settings: Settings) -> None:
                     ).tooltip("delete — move files to trash")
                 else:
                     ui.label("read-only").classes("text-xs text-amber-300")
+                ui.separator().props("vertical dark")
+                ui.button(icon="folder_open", on_click=lambda: _bulk_reveal_or_open(False)).props(
+                    "flat dense round"
+                ).tooltip("reveal in file manager")
+                _open_with_button(lambda app: _bulk_reveal_or_open(True, app))
                 _collection_add_button(
                     settings, lambda: list(sel.selected), label=None, on_added=sel.clear
                 )
@@ -1086,6 +1246,13 @@ def build_ui(settings: Settings) -> None:
                 ui.button(icon="close", on_click=sel.clear).props("flat dense round").tooltip(
                     "deselect all"
                 )
+
+        if lq.mark and rep_ids:
+            # the "marked for editing" view IS the flagged set -- pre-select
+            # everything so bulk actions (rate, tag, open, delete, …) need no
+            # manual checkbox clicking first.
+            sel.selected = set(rep_ids)
+            _render_toolbar()
 
         def _render_tiles(container: ui.element, hashes: list[str]) -> None:
             """Draw the tiles for *hashes* into *container* (one grid). Shared by
@@ -1426,9 +1593,7 @@ def build_ui(settings: Settings) -> None:
             with ui.column().classes("gap-1 text-sm shrink-0 max-w-sm"):
                 star_widget = _star_widget(settings, engine, pixel_hash, stars or 0)
                 flag_switch = _edit_flag_button(settings, engine, pixel_hash, flagged)
-                ui.label("← → move · 1-5 rate · 0 clear · f flag").classes(
-                    "text-[11px] text-gray-400"
-                )
+                ui.label("← → move · 1-5 rate · 0 clear · f flag").classes("text-[11px] sp-faint")
                 _facts(photo)
                 ui.separator()
                 ui.label("Paths").classes("font-bold mt-2")
@@ -1455,12 +1620,12 @@ def build_ui(settings: Settings) -> None:
                         settings, lambda: [pixel_hash], on_added=_paint_collections
                     )
                 if not member_of:
-                    ui.label("Not in any collection.").classes("text-xs text-gray-500")
+                    ui.label("Not in any collection.").classes("text-xs sp-muted")
                     return
                 with ui.row().classes("items-center gap-1 flex-wrap"):
                     for c in member_of:
                         with ui.row().classes(
-                            "items-center gap-0 rounded-full bg-gray-200 pl-2 dark:bg-gray-700"
+                            "items-center gap-0 rounded-full sp-placeholder pl-2"
                         ):
                             ui.button(
                                 f"{c.name}  ·  {c.count}",
@@ -1509,7 +1674,7 @@ def build_ui(settings: Settings) -> None:
                             else "Delete this photo?"
                         ).classes("font-medium")
                         ui.label(f"The file(s) will be {_delete_where_note()}.").classes(
-                            "text-xs text-gray-500"
+                            "text-xs sp-muted"
                         )
                         with ui.row().classes("w-full justify-end gap-2"):
                             ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -1588,7 +1753,7 @@ def build_ui(settings: Settings) -> None:
                 "You can look through unrated photos, but rating is disabled."
             ).classes("m-4 text-amber-600")
 
-        progress = ui.label().classes("px-4 pt-2 text-sm text-gray-500")
+        progress = ui.label().classes("px-4 pt-2 text-sm sp-muted")
         card = ui.column().classes("w-full max-w-3xl mx-auto items-center gap-3 p-4")
 
         def _load_more() -> None:
@@ -1646,7 +1811,7 @@ def build_ui(settings: Settings) -> None:
                 # mirror the photo page (max-w-2xl) and cap the height so a tall
                 # portrait still fits one screen.
                 ui.image(_thumb_src(h, thumb_large)).classes(
-                    "w-full max-w-2xl rounded shadow bg-gray-100"
+                    "w-full max-w-2xl rounded shadow sp-placeholder"
                 ).style("max-height: 78vh").props("fit=contain")
                 meta = [Path(photo.primary_path).name]
                 if photo.taken_at:
@@ -1654,7 +1819,7 @@ def build_ui(settings: Settings) -> None:
                 cam = " ".join(filter(None, (photo.camera_make, photo.camera_model)))
                 if cam:
                     meta.append(cam)
-                ui.label(" · ".join(meta)).classes("text-xs text-gray-500")
+                ui.label(" · ".join(meta)).classes("text-xs sp-muted")
 
                 with ui.row().classes("items-center gap-5"):
                     rating = ui.rating(value=stars, max=5, size="2.75rem").props("color=amber-6")
@@ -1670,10 +1835,10 @@ def build_ui(settings: Settings) -> None:
                     )
                     ui.button("Skip →", on_click=lambda: _step(1)).props("flat")
                     ui.link("open photo page", f"/photo/{h}").classes(
-                        "text-xs text-gray-500 self-center"
+                        "text-xs sp-muted self-center"
                     )
                 ui.label("1-5 rate · f flag for editing · → / S skip · ← back").classes(
-                    "text-[11px] text-gray-400"
+                    "text-[11px] sp-faint"
                 )
 
         def _step(delta: int) -> None:
@@ -1744,7 +1909,7 @@ def build_ui(settings: Settings) -> None:
                 ui.label(f'Delete collection "{c.name}"?').classes("font-medium")
                 ui.label(
                     "Only the collection is removed — no photo files, ratings or tags are touched."
-                ).classes("text-xs text-gray-500")
+                ).classes("text-xs sp-muted")
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
 
@@ -1888,7 +2053,7 @@ def build_ui(settings: Settings) -> None:
             with ui.dialog() as dialog, ui.card().classes("gap-2"):
                 ui.label(f'Delete collection "{title.text}"?').classes("font-medium")
                 ui.label("Only the collection is removed — no photo files are touched.").classes(
-                    "text-xs text-gray-500"
+                    "text-xs sp-muted"
                 )
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -2032,16 +2197,16 @@ def build_ui(settings: Settings) -> None:
                     with ui.row().classes("items-center gap-3"):
                         ui.label("Add photos to this collection").classes("text-lg font-medium")
                         ui.label("↔ move · space select · shift+space range · enter add").classes(
-                            "text-xs text-gray-400"
+                            "text-xs sp-faint"
                         )
-                    count_lbl = ui.label("0 selected").classes("text-sm text-gray-500")
+                    count_lbl = ui.label("0 selected").classes("text-sm sp-muted")
                 if len(candidates) > _PICKER_CAP:
                     ui.label(
                         f"Showing the first {_PICKER_CAP} of {len(candidates)} — add the rest "
                         "from the library's bulk toolbar."
                     ).classes("text-xs text-amber-600")
                 if not shown:
-                    ui.label("Every photo is already in this collection.").classes("text-gray-500")
+                    ui.label("Every photo is already in this collection.").classes("sp-muted")
 
                 # a plain overflow-y-auto div (not ui.scroll_area): q-scroll-area
                 # moves its content with a transform, so native scrollIntoView --
@@ -2060,7 +2225,7 @@ def build_ui(settings: Settings) -> None:
                         cells[h] = cell
                         with cell:
                             ui.image(_thumb_src(h, thumb_small)).classes(
-                                "aspect-square w-full bg-gray-100 object-cover"
+                                "aspect-square w-full sp-placeholder object-cover"
                             ).props("loading=lazy")
                             sel.checkbox(h)
                         cell.on("click", lambda h=h: sel.click(h))
@@ -2158,7 +2323,7 @@ def build_ui(settings: Settings) -> None:
             with ui.element("div").classes("group relative block"):
                 with ui.link(target=f"/photo/{photo.pixel_hash}"):
                     ui.image(_thumb_src(photo.pixel_hash, thumb_small)).classes(
-                        "w-full aspect-square object-cover bg-gray-100"
+                        "w-full aspect-square object-cover sp-placeholder"
                     ).props("loading=lazy")
                 ui.label(str(i + 1)).classes(
                     "absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-xs "
@@ -2202,7 +2367,7 @@ def build_ui(settings: Settings) -> None:
                             "flat dense size=sm"
                         )
                 if not present:
-                    with ui.column().classes("m-4 items-start gap-2 text-gray-500"):
+                    with ui.column().classes("m-4 items-start gap-2 sp-muted"):
                         ui.label("Empty — no photos in this collection yet.")
                         ui.button(
                             "Add photos", icon="add_photo_alternate", on_click=_add_photos_dialog
@@ -2219,7 +2384,7 @@ def build_ui(settings: Settings) -> None:
         with ui.column().classes("w-full gap-1 px-4 pt-4 pb-8"):
             ui.label("Notes").classes("text-sm font-bold")
             ui.label("Reserved for the caption / post copy this collection feeds.").classes(
-                "text-xs text-gray-400"
+                "text-xs sp-faint"
             )
             notes_box = (
                 ui.textarea(value=coll.notes).props("outlined autogrow").classes("w-full max-w-2xl")
@@ -2259,7 +2424,7 @@ def build_ui(settings: Settings) -> None:
                 f"{len(groups)} tag(s) in {len(sections)} facet(s)"
             )
 
-        summary = ui.label(_summary()).classes("px-4 pt-2 text-sm text-gray-500")
+        summary = ui.label(_summary()).classes("px-4 pt-2 text-sm sp-muted")
 
         if State.write_mode != WriteMode.writable:
             ui.label(
@@ -2271,7 +2436,7 @@ def build_ui(settings: Settings) -> None:
             ui.label(
                 "Nothing to review. Run  python -m sortandpost.indexer --once  "
                 "to generate suggestions."
-            ).classes("m-4 text-gray-500")
+            ).classes("m-4 sp-muted")
             return
 
         async def _bulk(tag_name: str, decision: str) -> None:
@@ -2342,7 +2507,7 @@ def build_ui(settings: Settings) -> None:
                 with ui.column().classes("gap-0 w-full") as tile:
                     with ui.link(target=f"/photo/{pixel_hash}").classes("block w-full"):
                         ui.image(_thumb_src(pixel_hash, thumb_small)).classes(
-                            "w-full aspect-square object-cover bg-gray-100"
+                            "w-full aspect-square object-cover sp-placeholder"
                         ).props("loading=lazy")
                     with ui.row().classes("w-full items-center justify-between no-wrap"):
                         ui.label(f"{score:.2f}").classes("text-xs sp-faint")
@@ -2442,6 +2607,9 @@ def build_ui(settings: Settings) -> None:
             _theme_editor(settings, dark)
 
             ui.separator()
+            _open_with_app_editor(settings)
+
+            ui.separator()
             _app_data_editor(settings)
 
             ui.separator()
@@ -2475,7 +2643,7 @@ def build_ui(settings: Settings) -> None:
                 )
             ui.label(
                 "Rebuild the CLIP matrix from the CLI:  python -m sortandpost.indexer --reembed"
-            ).classes("text-xs text-gray-400")
+            ).classes("text-xs sp-faint")
 
 
 def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
@@ -2881,7 +3049,7 @@ def _stacking_editor(settings: Settings) -> None:
     ui.label(
         "Group near-duplicate photos in the same folder into one entry (the "
         "newest by modified time is shown). Ratings apply to the whole stack."
-    ).classes("text-xs text-gray-400 max-w-xl")
+    ).classes("text-xs sp-faint max-w-xl")
 
     enabled = ui.switch("Enabled", value=cfg.enabled)
     raw_jpeg = ui.checkbox("Pair a RAW with its same-named JPEG", value=cfg.raw_jpeg)
@@ -2906,7 +3074,7 @@ def _theme_editor(settings: Settings, dark: ui.dark_mode) -> None:
     other open tabs pick it up on their next load."""
     ui.label("Appearance").classes("font-bold mt-4")
     ui.label("Light, Dark, or follow the operating system. Saved on this machine only.").classes(
-        "text-xs text-gray-400 max-w-xl"
+        "text-xs sp-faint max-w-xl"
     )
 
     choice = ui.toggle(
@@ -2921,6 +3089,83 @@ def _theme_editor(settings: Settings, dark: ui.dark_mode) -> None:
         dark.set_value(_THEME_TO_DARK[value])
 
     choice.on_value_change(_on_change)
+
+    ui.label("Season").classes("text-sm font-medium pt-2")
+    ui.label(
+        "A color palette per season. Auto follows today's date (Mar-May Spring, Jun-Aug "
+        "Summer, Sep-Nov Fall, Dec-Feb Winter)."
+    ).classes("text-xs sp-faint max-w-xl")
+    swatches: dict[SeasonChoice, ui.element] = {}
+
+    def _pick(value: SeasonChoice) -> None:
+        State.season = value
+        set_season(settings.paths, value)
+        _apply_season(value)
+        for key, el in swatches.items():
+            if key == value:
+                el.classes(add="sp-swatch-on")
+            else:
+                el.classes(remove="sp-swatch-on")
+
+    with ui.row().classes("gap-2 flex-wrap"):
+        for choice_key in SEASON_CHOICES:
+            shown = resolve_season(choice_key)
+            label = SEASON_LABELS[choice_key]
+            if choice_key == "auto":
+                label += f" · {SEASON_LABELS[shown]} now"
+            with ui.element("div").classes(
+                "sp-swatch" + (" sp-swatch-on" if choice_key == State.season else "")
+            ) as sw:
+                with ui.row().classes("items-center gap-1 no-wrap"):
+                    ui.icon(SEASON_ICONS[choice_key]).classes("text-base sp-muted")
+                    ui.label(label).classes("text-sm")
+                with ui.element("div").classes("sp-swatch-strip"):
+                    for color in PALETTES[shown]:
+                        ui.element("span").style(f"background:{color}")
+            sw.on("click", lambda c=choice_key: _pick(c))
+            swatches[choice_key] = sw
+
+
+def _open_with_app_editor(settings: Settings) -> None:
+    """`/settings` control for the app the "Open" button launches instead of
+    the OS default (#22). Per-machine (``local/ui_prefs.json``), never synced
+    -- app paths differ across machines -- and doesn't touch the system's own
+    file-type association, only what sortandpost itself launches."""
+    ui.label("Open with").classes("font-bold mt-4")
+    ui.label(
+        "The app sortandpost's Open button launches, instead of the "
+        "operating system default. Saved on this machine only."
+    ).classes("text-xs sp-faint max-w-xl")
+
+    with ui.row().classes("w-full items-end gap-2 no-wrap"):
+        app_in = (
+            ui.input("App path", value=get_open_with_app(settings.paths) or "")
+            .props("dense")
+            .classes("flex-1")
+        )
+        if _app_browse_available():
+            ui.button("Browse…", icon="folder_open", on_click=lambda: _browse_app(app_in)).props(
+                "flat dense"
+            )
+        else:
+            ui.label(
+                "macOS: the .app in /Applications.  Windows: the .exe path.  "
+                "Linux: an executable or .desktop file path."
+            ).classes("text-xs sp-faint")
+
+    def _save() -> None:
+        value = clean_path(app_in.value or "")
+        set_open_with_app(settings.paths, value or None)
+        ui.notify("saved" if value else "cleared — using system default", type="positive")
+
+    def _clear() -> None:
+        app_in.value = ""
+        set_open_with_app(settings.paths, None)
+        ui.notify("cleared — using system default")
+
+    with ui.row().classes("gap-2"):
+        ui.button("Save", on_click=_save).props("color=primary")
+        ui.button("Use system default", on_click=_clear).props("flat")
 
 
 def _cpu_speed_editor(settings: Settings) -> None:
@@ -2969,7 +3214,7 @@ def _deletion_editor(settings: Settings) -> None:
         "files into the app's trash on this computer (see Recently deleted below) and "
         "remove them from the library. When stacking is on, choose whether a delete "
         "takes only the shown photo or the whole stack."
-    ).classes("text-xs text-gray-400 max-w-xl")
+    ).classes("text-xs sp-faint max-w-xl")
 
     scope = (
         ui.select(
@@ -3117,7 +3362,7 @@ def _app_data_editor(settings: Settings) -> None:
         "Where the database, thumbnails, and CLIP embeddings live. Point your "
         "file-sync tool (OneDrive, Google Drive, Synology Drive, Dropbox, …) at "
         "this folder's sync/ subfolder to carry the index across machines."
-    ).classes("text-xs text-gray-400 max-w-xl")
+    ).classes("text-xs sp-faint max-w-xl")
     if source == "default":
         ui.label(
             "⚠ not saved anywhere yet — using a bare ./appdata next to wherever "
@@ -3174,7 +3419,7 @@ def _clip_model_editor(settings: Settings) -> None:
     ui.label("CLIP model files").classes("font-bold mt-4")
     ui.label(
         f"{ccfg.model} / {ccfg.pretrained} — cached under {settings.paths.models_dir}"
-    ).classes("text-xs text-gray-400 max-w-xl")
+    ).classes("text-xs sp-faint max-w-xl")
 
     status = ui.label("not checked yet").classes("text-sm")
 
@@ -3258,6 +3503,136 @@ async def _browse_folder(target: ui.input) -> None:
 
             ui.button("Use this folder", on_click=_use).props("color=primary")
         await _load(state["path"])
+    dlg.open()
+
+
+def _list_local(path: Path | None, *, include_files: bool) -> dict[str, object]:
+    """Directories (and, when *include_files*, files) under *path* on *this
+    process's own* filesystem. Only meaningful on a native run -- a
+    container can't see the host, which is what the helper agent's
+    ``/listdir`` is for. Deliberately duplicates
+    ``tools/sortandpost_helper.py``'s ``list_dir``: that script must stay
+    stdlib-only and importable without the ``sortandpost`` package
+    installed, so it can't import this module either."""
+    if path is None:
+        starts: list[Path] = [Path.home()]
+        if sys.platform == "darwin":
+            apps = Path("/Applications")
+            if apps.is_dir():
+                starts.append(apps)
+        elif sys.platform.startswith("win"):
+            for letter in "CDEFGH":
+                drive = Path(f"{letter}:\\")
+                if drive.exists():
+                    starts.append(drive)
+            for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+                pf = os.environ.get(env_var)
+                if pf and Path(pf).is_dir():
+                    starts.append(Path(pf))
+        else:
+            starts.append(Path("/"))
+        return {
+            "path": None,
+            "parent": None,
+            "entries": [
+                {"name": str(p), "path": str(p), "dir": True} for p in dict.fromkeys(starts)
+            ],
+        }
+    entries: list[dict[str, object]] = []
+    try:
+        for child in sorted(path.iterdir(), key=lambda c: c.name.casefold()):
+            if child.name.startswith("."):
+                continue
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                entries.append({"name": child.name, "path": str(child), "dir": True})
+            elif include_files:
+                entries.append({"name": child.name, "path": str(child), "dir": False})
+    except (OSError, PermissionError):
+        entries = []
+    parent = str(path.parent) if path.parent != path else None
+    return {"path": str(path), "parent": parent, "entries": entries}
+
+
+def _app_browse_available() -> bool:
+    """Can :func:`_browse_app` show a real listing? Either the host helper
+    agent is connected (Docker), or this process itself runs natively on the
+    user's machine and can list its own filesystem directly."""
+    return _current_helper() is not None or not running_in_docker()
+
+
+async def _browse_app(target: ui.input) -> None:
+    """Picker for the "Open with" app: like :func:`_browse_folder` but also
+    lists files (an app is often a single file -- an ``.exe`` on Windows, an
+    executable or ``.desktop`` on Linux) and treats a macOS ``.app`` bundle as
+    a selectable leaf rather than a folder to open. Goes through the host
+    helper agent's ``/listdir`` under Docker, same as :func:`_browse_folder`;
+    otherwise lists this (native) process's own filesystem directly -- no
+    external helper needed on a native run."""
+    helper = _current_helper()
+
+    async def _list(path: str | None) -> dict[str, Any]:
+        if helper is not None:
+            js = (
+                "(async () => { const h = window.__spHelper; if (!h) return {entries: []};"
+                " const u = new URL('http://127.0.0.1:' + h.port + '/listdir');"
+                f" const p = {json.dumps(path)}; if (p) u.searchParams.set('path', p);"
+                " u.searchParams.set('files', '1');"
+                " const r = await fetch(u, {headers: {'X-SP-Token': h.token}});"
+                " return await r.json(); })()"
+            )
+            try:
+                data = await ui.run_javascript(js, timeout=6.0)
+            except Exception:  # helper stopped mid-browse
+                data = None
+        else:
+            data = await nicegui_run.io_bound(
+                _list_local, Path(path) if path else None, include_files=True
+            )
+        return data if isinstance(data, dict) else {"entries": [], "parent": None}
+
+    with (
+        ui.dialog() as dlg,
+        ui.card().classes("flex h-[70vh] w-[42rem] max-w-full flex-col gap-2"),
+    ):
+        crumb = ui.label("…").classes("truncate text-xs sp-faint")
+        listing = ui.column().classes("w-full flex-1 gap-0 overflow-y-auto")
+
+        def _pick(path: str) -> None:
+            target.value = path
+            dlg.close()
+
+        async def _load(path: str | None) -> None:
+            data = await _list(path)
+            crumb.text = path or "Pick a starting point"
+            listing.clear()
+            with listing:
+                if data.get("parent"):
+                    ui.button("⬆  parent", on_click=lambda p=data["parent"]: _load(p)).props(
+                        "flat dense align=left"
+                    ).classes("w-full justify-start")
+                for entry in data.get("entries", []):
+                    name = str(entry["name"])
+                    is_app = bool(entry.get("dir")) and name.endswith(".app")
+                    if entry.get("dir") and not is_app:
+                        ui.button(
+                            name,
+                            icon="folder",
+                            on_click=lambda p=entry["path"]: _load(p),
+                        ).props("flat dense align=left").classes("w-full justify-start")
+                    else:
+                        ui.button(
+                            name,
+                            icon="apps" if is_app else "insert_drive_file",
+                            on_click=lambda p=entry["path"]: _pick(p),
+                        ).props("flat dense align=left").classes("w-full justify-start")
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dlg.close).props("flat")
+        await _load((target.value or "").strip() or None)
     dlg.open()
 
 
@@ -3434,7 +3809,7 @@ def _exclude_editor(settings: Settings, engine: Engine) -> None:
         "Folder names skipped while scanning — case-insensitive, matched at any "
         "depth. Photos already indexed from an excluded folder drop out on the "
         "next scan; removing an entry brings them back."
-    ).classes("text-xs text-gray-400 max-w-xl")
+    ).classes("text-xs sp-faint max-w-xl")
 
     chips = ui.row().classes("items-center gap-2 flex-wrap min-h-8")
 
@@ -3442,7 +3817,7 @@ def _exclude_editor(settings: Settings, engine: Engine) -> None:
         chips.clear()
         with chips:
             if not names:
-                ui.label("none").classes("text-xs text-gray-500")
+                ui.label("none").classes("text-xs sp-muted")
             for name in names:
                 ui.chip(name, removable=True).on_value_change(lambda _, n=name: _drop(n))
 
@@ -3549,7 +3924,7 @@ def _star_widget(
     writable = State.write_mode == WriteMode.writable
     with ui.row().classes("items-center gap-2"):
         rating = ui.rating(value=stars, max=5, size="lg").props("color=amber-6")
-        caption = ui.label(_stars_caption(stars)).classes("text-xs text-gray-500")
+        caption = ui.label(_stars_caption(stars)).classes("text-xs sp-muted")
         clear = ui.button(icon="clear", on_click=lambda: rating.set_value(0)).props(
             "flat dense round size=sm"
         )
@@ -3841,19 +4216,59 @@ def _copy_path(path: str) -> None:
     ui.notify("path copied")
 
 
-def _helper_action_js(endpoint: str, host_path: str) -> str:
+def _helper_action_js(endpoint: str, host_path: str, app: str | None = None) -> str:
     """Client-side ``fetch`` of the host helper agent, returning ``{ok, error}``
-    so the Python handler can ``ui.notify`` the outcome."""
+    so the Python handler can ``ui.notify`` the outcome. ``app`` (``/open``
+    only) picks a specific app instead of the OS default -- see
+    ``sortandpost.prefs.get_open_with_app``."""
+    body: dict[str, object] = {"path": host_path}
+    if app:
+        body["app"] = app
     return (
         "(async () => { const h = window.__spHelper;"
         " if (!h) return {ok: false, error: 'helper not running'};"
         f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
         "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
-        f"   body: JSON.stringify({{path: {json.dumps(host_path)}}})}});"
+        f"   body: JSON.stringify({json.dumps(body)})}});"
         "   const j = await r.json().catch(() => ({}));"
         "   return {ok: r.ok, error: j.error}; }"
         " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
     )
+
+
+def _helper_action_js_multi(endpoint: str, host_paths: list[str], app: str | None = None) -> str:
+    """Same as :func:`_helper_action_js` but for the bulk ``{paths: [...]}}``
+    form of ``/reveal`` and ``/open``."""
+    body: dict[str, object] = {"paths": host_paths}
+    if app:
+        body["app"] = app
+    return (
+        "(async () => { const h = window.__spHelper;"
+        " if (!h) return {ok: false, error: 'helper not running'};"
+        f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
+        "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
+        f"   body: JSON.stringify({json.dumps(body)})}});"
+        "   const j = await r.json().catch(() => ({}));"
+        "   return {ok: r.ok, error: j.error}; }"
+        " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
+    )
+
+
+def _app_label(app: str) -> str:
+    """Short display name for a saved "open with" app path."""
+    return Path(app).stem or app
+
+
+def _open_with_button(on_pick: Callable[[str | None], object], *, size: str = "") -> None:
+    """The "open" button shared by the bulk toolbar and the photo page's Paths
+    list. One click: opens with the app saved in Settings -> Open with, or the
+    OS default when none is saved -- no extra menu step. Change or clear the
+    app from Settings."""
+    settings = State.settings
+    saved = get_open_with_app(settings.paths) if settings is not None else None
+    props = f"flat dense round{f' size={size}' if size else ''}"
+    tooltip = f'open with "{_app_label(saved)}"' if saved else "open in default app"
+    ui.button(icon="open_in_new", on_click=lambda: on_pick(saved)).props(props).tooltip(tooltip)
 
 
 def _path_row(
@@ -3872,7 +4287,7 @@ def _path_row(
     with ui.row().classes("items-center gap-1"):
         with ui.column().classes("min-w-0 gap-0"):
             ui.label(host_path + ("" if present else "  (missing)")).classes(
-                "break-all text-xs " + ("text-gray-600" if present else "text-red-500")
+                "break-all text-xs " + ("sp-muted" if present else "text-red-500")
             )
             if host_path != path:
                 ui.label(f"container: {path}").classes("break-all text-[10px] sp-faint")
@@ -3883,24 +4298,29 @@ def _path_row(
             return
         if helper is not None:
 
-            async def _act(endpoint: str) -> None:
-                res = await ui.run_javascript(_helper_action_js(endpoint, host_path), timeout=6.0)
+            async def _act(endpoint: str, app: str | None = None) -> None:
+                res = await ui.run_javascript(
+                    _helper_action_js(endpoint, host_path, app), timeout=6.0
+                )
                 if not (res or {}).get("ok"):
                     ui.notify((res or {}).get("error") or "helper error", type="warning")
 
             ui.button(icon="folder_open", on_click=lambda: _act("reveal")).props(
                 "flat dense round size=xs"
             ).tooltip("Reveal in file manager")
-            ui.button(icon="open_in_new", on_click=lambda: _act("open")).props(
-                "flat dense round size=xs"
-            ).tooltip("Open in default app")
+            _open_with_button(lambda app: _act("open", app), size="xs")
         elif native_reveal:
             ui.button(
                 icon="folder_open", on_click=lambda: reveal_in_file_manager(Path(path))
             ).props("flat dense round size=xs").tooltip("Reveal in file manager")
-            ui.button(icon="open_in_new", on_click=lambda: open_in_default_app(Path(path))).props(
-                "flat dense round size=xs"
-            ).tooltip("Open in default app")
+
+            def _open_native(app: str | None) -> None:
+                if app:
+                    open_with_app(Path(path), app)
+                else:
+                    open_in_default_app(Path(path))
+
+            _open_with_button(_open_native, size="xs")
 
 
 def _stack_filmstrip(current: str, members: list[str], size: int, link_query: str = "") -> None:
@@ -3921,7 +4341,7 @@ def _stack_filmstrip(current: str, members: list[str], size: int, link_query: st
                 )
                 with cell:
                     ui.image(_thumb_src(member, size)).classes(
-                        "w-full aspect-square object-cover bg-gray-100"
+                        "w-full aspect-square object-cover sp-placeholder"
                     ).props("loading=lazy")
                     if i == 0:
                         ui.label("top").classes(
@@ -4100,7 +4520,7 @@ def _thumb_cell(
             cell.on("mouseenter", lambda: on_hover(photo.pixel_hash, True))
             cell.on("mouseleave", lambda: on_hover(photo.pixel_hash, False))
         ui.image(_thumb_src(photo.pixel_hash, size)).classes(
-            "w-full aspect-square object-cover bg-gray-100"
+            "w-full aspect-square object-cover sp-placeholder"
         ).props("loading=lazy")
         if stack_size > 1:
             ui.label(f"⧉ {stack_size}").classes(
@@ -4233,7 +4653,7 @@ def _facts(photo: Photo) -> None:
     ]
     with ui.grid(columns=2).classes("gap-x-4 gap-y-1"):
         for label, value in rows:
-            ui.label(label).classes("text-gray-400")
+            ui.label(label).classes("sp-faint")
             ui.label(value)
 
 

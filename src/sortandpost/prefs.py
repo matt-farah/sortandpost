@@ -11,6 +11,7 @@ import logging
 from typing import Literal
 
 from sortandpost.paths import Paths
+from sortandpost.themes import SEASON_CHOICES, SeasonChoice
 
 log = logging.getLogger(__name__)
 
@@ -50,4 +51,38 @@ def get_theme(paths: Paths) -> Theme:
 def set_theme(paths: Paths, theme: Theme) -> None:
     prefs = load_prefs(paths)
     prefs["theme"] = theme if theme in _THEMES else _DEFAULT_THEME
+    save_prefs(paths, prefs)
+
+
+def get_season(paths: Paths) -> SeasonChoice:
+    """The seasonal color theme (see :mod:`sortandpost.themes`); ``"auto"``
+    follows today's date."""
+    value = load_prefs(paths).get("season")
+    for season in SEASON_CHOICES:
+        if value == season:
+            return season
+    return "auto"
+
+
+def set_season(paths: Paths, season: SeasonChoice) -> None:
+    prefs = load_prefs(paths)
+    prefs["season"] = season if season in SEASON_CHOICES else "auto"
+    save_prefs(paths, prefs)
+
+
+def get_open_with_app(paths: Paths) -> str | None:
+    """The app path/command "Open with…" should launch instead of the OS
+    default, or ``None`` for the OS default. Per-machine -- app paths differ
+    across machines, and this never changes the system's own file
+    association, only what sortandpost's Open buttons launch."""
+    value = load_prefs(paths).get("open_with_app")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def set_open_with_app(paths: Paths, app: str | None) -> None:
+    prefs = load_prefs(paths)
+    if app and app.strip():
+        prefs["open_with_app"] = app.strip()
+    else:
+        prefs.pop("open_with_app", None)
     save_prefs(paths, prefs)

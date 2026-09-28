@@ -1,11 +1,112 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-27 (**v1.1.0** — prebuilt Tailwind fixes the grid freeze; shortcut focus guard; photo-page sizing)._
+_Last updated: 2026-09-28 (V2 P3-A — seasonal themes)._
 _Working branch: `main` (tag `v1.1.0`, GitHub release published)._
 
-> **▶️ Next session:** the user is testing v1.0.0 hands-on and will bring bug fixes / small
-> changes → ship them as **1.0.x** (fixes) / **1.1.0** (small features). See "Versioning" and
-> "NEXT SESSION — start here" below.
+> **▶️ Next session:** V2 P0–P2 done; P3 (design pass round 2) in progress — **A (seasonal
+> themes) done**; next **B** compact icon filter bar + group-by in the toolbar, defaulting to
+> Month (`group=flat` for the flat grid), then **C** `/settings` in categories. See `V2Plan.md` P3.
+
+---
+
+## 📋 2026-09-28 — V2 P3-A: seasonal themes (`V2.md` #10, part A)
+
+User browser-tested (dev on :8081) + signed off. All tests pass; ruff / format / mypy clean;
+no schema change.
+
+- **`themes.py`** (new): the user's four palettes verbatim (`PALETTES`), per season × light/dark
+  design tokens (`TOKENS`, derived shades commented), `season_for` (meteorological, N.
+  hemisphere), `resolve_season`, `theme_css()` keyed on `<body>` class `sp-season-<s>`.
+- **`prefs.py`**: `get_season` / `set_season` — per-machine, default `"auto"`.
+- **`app.py`**: color values moved out of `_THEME_CSS` into tokens (fallback kept on `:root`);
+  `_header` applies the season class + season glyph, nav links get icons, status bar / focus
+  ring / toggles follow the season; `/settings` → Appearance gets five swatch cards (live).
+  Hard-coded `text-gray-*` / `bg-gray-*` swept to `sp-muted` / `sp-faint` / `sp-placeholder`.
+- **Gotcha:** Quasar's `.text-white !important` lives in NiceGUI's `quasar_importants` cascade
+  layer, which beats unlayered `!important`; the on-primary override sits in `@layer theme`
+  (for `!important`, the earliest layer wins). Also `--q-primary` is set inline on `<body>` by
+  Quasar, so the season's override needs `!important`.
+- **`tests/test_themes.py`**: season boundaries, palettes verbatim, WCAG contrast for all 8 looks.
+- Docs: CLAUDE.md "Theming" section.
+- Known nit: the header's season glyph updates on the next page load, not on the swatch click.
+
+---
+
+## 📋 2026-09-28 — V2 P2: choose the "open with" app (`V2.md` #22)
+
+User browser-tested on macOS native + signed off. 564 tests pass; ruff / format / mypy clean;
+no schema change.
+
+- **`prefs.py`**: `get_open_with_app` / `set_open_with_app` — per-machine app path in
+  `local/ui_prefs.json` (never synced; app paths differ across machines).
+- **`/settings` → "Open with"**: an input + "Browse…" that fills it from a real directory+file
+  listing (`_list_local` in `app.py`) — a macOS `.app` bundle shows as a selectable leaf, not
+  something you navigate into. "Save" / "Use system default" round-trip through `prefs.py`.
+- **One click, no menu**: `_open_with_button` (shared by the library's bulk toolbar and the
+  photo page's Paths list) opens with the saved app when one is set, the OS default otherwise —
+  no extra confirmation step. (First cut showed a menu offering both, every time; dropped after
+  user feedback — picking a custom app should just work.)
+- **`reveal.py`**: `open_with_app` / `open_multiple_with_app` (macOS: `open -a <app> …`;
+  Windows/Linux: run the app with the paths as argv).
+- **`tools/sortandpost_helper.py`**: `/reveal` + `/open` accept an optional `app` field;
+  `/listdir` accepts `?files=1` to also list files (not just directories), plus `/Applications`
+  (macOS) / Program Files (Windows) as extra starting points — Docker gets the same picker.
+- **Considered and reverted:** a real native OS "choose an application" dialog (`osascript` /
+  PowerShell `OpenFileDialog` / zenity-kdialog, plus a `/pick_app` helper endpoint) — it worked,
+  but the user asked to go back to the in-app web-based browser for consistency across
+  native/Docker and simpler docs. Don't re-propose a native file-picker dialog here without
+  asking first.
+- **Bonus, from hands-on testing feedback:** the library's "marked for editing" filtered view
+  (`mark=1`) now pre-selects every flagged photo on load (`library()` in `app.py`), so bulk
+  actions need no manual checkbox clicking first.
+
+---
+
+## 📋 2026-09-28 — V2 P1: bulk reveal / open selected photos (`V2.md` #21)
+
+User browser-tested on macOS native + signed off. 548 tests pass; ruff / format / mypy clean;
+alembic autogenerate empty (no schema change).
+
+- **Library bulk toolbar** (`app.py`) gets two new buttons for the current selection —
+  reveal in file manager, open in default app — working on any selected photos including ones
+  reached by filtering to the "marked for editing" tag. Read-only sessions get them too (no DB
+  write involved).
+- **`reveal.py`**: `reveal_multiple_in_file_manager` / `open_multiple_in_default_app`. macOS
+  batches every path into one AppleScript `tell Finder to reveal {…}` call; Windows groups by
+  parent folder via `SHOpenFolderAndSelectItems` (ctypes, guarded by a literal
+  `sys.platform == "win32"` check so mypy skips it on macOS/Linux, same idiom as
+  `cpu.lower_process_priority`), falling back to one Explorer window per file if that fails;
+  Linux tries the running file manager's D-Bus `org.freedesktop.FileManager1.ShowItems` via
+  `dbus-send` and falls back to opening each distinct parent folder.
+- **`tools/sortandpost_helper.py`** (Docker host agent): `/reveal` and `/open` now also accept
+  a `paths: [...]` body (existing single-`path` form untouched), capped at 100 paths per
+  request, same allowed-roots check per path, skips any that don't exist rather than failing
+  the whole batch.
+- Duplicates resolve to one present path per photo via the existing `post_export.resolve_sources`
+  (reused, not reimplemented).
+- **Confirm-dialog thresholds** (tuned after hands-on testing found 25 too conservative for
+  reveal, which is one OS call regardless of count): reveal confirms above 200 selected; open
+  confirms above 25 (it can spawn one process/window per file on Windows/Linux, no OS batching
+  there the way `open path1 path2 …` gives macOS).
+- **Follow-up logged, not built here:** `V2.md` #24 — the grid's shift-click only range-selects
+  when the click lands on the tile's small checkbox, and Cmd/Ctrl-click opens a new tab instead
+  of adding to the selection (native `<a>` behavior). Needs a JS-level modifier check on the
+  tile's click.
+
+---
+
+## 📋 2026-09-28 — V2 P0: docs housekeeping (`V2.md`)
+
+Docs only, no code changes.
+
+- `V2.md`: #14 (in-app indexer lock re-check) was already dropped — confirmed already
+  implemented via `_start_lock_watch()` (`app.py`, see `V2Plan.md` "Finding from the code
+  survey"). Numbered the three new items the user added: **#21** open/reveal multiple
+  selected/flagged photos, **#22** choose the "open with" app, **#23** user onboarding.
+  Carved out a **"Backlog — fix if it bites"** section for #12 (group-by scroll race), #17
+  (ANN index > 25k), #18 (dHash on flat images) — low-priority, revisit only if they actually
+  bite.
+- `V2Plan.md`: marked P0 done.
 
 ---
 
@@ -1312,10 +1413,15 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-**v1.0.0 is released** (V1 P0–P7, see `V1Plan.md`). The user is testing it hands-on and will
-bring bug fixes and small changes: collect them, fix on a branch per batch, bump
-`__version__` (1.0.x for fixes, 1.1.0 for small features), PR, browser-test, merge, tag +
-GitHub release. Bigger work comes from `V2.md`.
+**V2 is underway.** Plan + model-per-phase in `V2Plan.md`, feature list in `V2.md`. P0 (docs
+housekeeping) and P1 (bulk reveal/open, #21) are done — next is **P2: choose the "open with"
+app** (#22 in `V2.md`), Sonnet. See `V2Plan.md` for the full phase order and per-phase workflow.
+
+Small carried-over item from P1 (not a blocker): `V2.md` #24, the grid's shift-click /
+Cmd-Ctrl-click only work correctly from the tile's small checkbox, not the whole tile.
+
+**v1.0.0 is released** (V1 P0–P7, see `V1Plan.md`). Bug fixes / small changes from hands-on
+testing still ship as **1.0.x** (fixes) / **1.x.0** (small features) alongside V2 work.
 
 Possible P7 follow-ups (not blockers): a full library picker inside the composer (today:
 "Add from collection" + the bulk toolbar's ✈); alt text if robopost's API adds it; caption
