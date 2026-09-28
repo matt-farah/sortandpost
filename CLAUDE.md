@@ -502,7 +502,11 @@ The **only** module allowed to write under a library root. Wraps a persistent
   prev/next walk the same resolved view (`resolve_view`, cached per query for 30 min).
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/review` — pending CLIP predictions grouped by tag for bulk approve/reject.
-- `/settings` — CLIP model & thresholds, re-index / re-embed actions, sync status (lock holder,
+- `/settings` — organized into categories (sticky side rail of anchors on wide windows; each
+  category a responsive 2-column grid of `sp-card` panels via `_settings_section` /
+  `_settings_card`): Overview (stat tiles + indexing progress), Library, Indexing & AI,
+  Appearance & apps, Posting, Deleting, Sync & storage. Lock-gated panels still render in
+  read-only mode with a note instead of disappearing. Contents: CLIP model & thresholds, re-index / re-embed actions, sync status (lock holder,
   last publish, `db_generation`, snapshots, last merge summary), the app-data folder picker (see
   "App-data layout" above), and a CLIP-weights cache check / force-download control (`Check if
   downloaded` / `Download / verify CLIP model`, `sortandpost.clip.model.check_cached` /
