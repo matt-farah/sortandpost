@@ -10,7 +10,8 @@ both call it, so arrow keys on ``/photo/...`` page through the filtered set.
 Ordering rules:
 
 * text query -> CLIP relevance (best first); group-by is ignored.
-* filters only / nothing -> newest ``taken_at`` first; group-by applies.
+* filters only / nothing -> newest ``taken_at`` first; group-by applies --
+  by month unless the URL says otherwise (``group=flat`` for one flat grid).
 
 Pure DB + NumPy; no NiceGUI. The text-query path runs CLIP inference, so UI
 callers run :func:`resolve_view` off the event loop (hard constraint #7).
@@ -57,6 +58,8 @@ from sortandpost.stacks import StackIndex, build_stacks
 SEARCH_LIMIT = 500  # text-query results kept (relevance tails off long before this)
 UNRATED = 0  # the "stars" value meaning *no rating*
 TAG_MODES = ("any", "all")
+DEFAULT_GROUP: GroupMode = "month"  # what ``group=""`` (no param) means
+FLAT = "flat"  # the ``group`` value for an ungrouped grid
 
 # --------------------------------------------------------------------------- #
 # date ranges
@@ -148,7 +151,8 @@ class LibraryQuery:
     ``q`` text · ``stars`` comma list (``u`` = unrated) · ``camera`` (repeat) ·
     ``dates`` · ``folder`` · ``tag`` (repeat) + ``tagmode`` any|all · ``gps`` ·
     ``dups`` · ``missing`` · ``mark`` · ``posted`` (``1`` sent to robopost /
-    ``0`` not yet) · ``group`` + ``folder_sort`` (view only).
+    ``0`` not yet) · ``group`` + ``folder_sort`` (view only; ``group`` unset
+    means :data:`DEFAULT_GROUP`, ``flat`` means no sections).
     """
 
     q: str = ""
@@ -163,7 +167,7 @@ class LibraryQuery:
     missing: bool = False
     mark: bool = False
     posted: str = ""  # "" any · "1" sent to robopost · "0" not sent yet
-    group: str = ""  # view only: not a filter, not saved with a search
+    group: str = ""  # view only ("" = DEFAULT_GROUP, "flat"): not saved with a search
     folder_sort: str = ""
 
     # -- parsing ------------------------------------------------------------ #
@@ -201,7 +205,7 @@ class LibraryQuery:
             elif key == "posted" and value:
                 posted = "1" if _truthy(value) else "0"
             elif key == "group":
-                group = parse_mode(value) or ""
+                group = FLAT if value == FLAT else parse_mode(value) or ""
             elif key == "folder_sort":
                 folder_sort = value if value and parse_folder_sort(value) == value else ""
         return cls(
@@ -261,8 +265,11 @@ class LibraryQuery:
     # -- meaning -------------------------------------------------------------- #
     @property
     def mode(self) -> GroupMode | None:
-        """Group-by mode in effect (never with a text query -- relevance wins)."""
-        return None if self.q else parse_mode(self.group)
+        """Group-by mode in effect (never with a text query -- relevance wins;
+        ``None`` = a flat grid)."""
+        if self.q or self.group == FLAT:
+            return None
+        return parse_mode(self.group or DEFAULT_GROUP)
 
     def has_filters(self) -> bool:
         """Any filter or a text query (view-only params don't count)."""
@@ -307,6 +314,40 @@ class LibraryQuery:
     def without_view(self) -> LibraryQuery:
         return replace(self, group="", folder_sort="")
 
+    def chips(self) -> list[FilterChip]:
+        """One removable chip per active filter (per value for cameras / tags),
+        each carrying the query without it. The view (group-by) is kept."""
+        out: list[FilterChip] = []
+        if self.q:
+            out.append(FilterChip("search", f"“{self.q}”", replace(self, q="")))
+        if self.stars:
+            label = ", ".join("unrated" if s == UNRATED else str(s) for s in sorted(self.stars))
+            out.append(FilterChip("star", label, replace(self, stars=frozenset())))
+        for cam in self.cameras:
+            rest = tuple(c for c in self.cameras if c != cam)
+            out.append(
+                FilterChip("photo_camera", cam or "Unknown camera", replace(self, cameras=rest))
+            )
+        if self.dates:
+            out.append(FilterChip("event", dates_label(self), replace(self, dates="")))
+        if self.folder:
+            out.append(FilterChip("folder", _leaf(self.folder), replace(self, folder="")))
+        for tag in self.tags:
+            rest = tuple(t for t in self.tags if t != tag)
+            out.append(FilterChip("sell", tag, replace(self, tags=rest)))
+        for on, icon, label, without in (
+            (self.gps, "place", "Has GPS", replace(self, gps=False)),
+            (self.dups, "content_copy", "Detected duplicates", replace(self, dups=False)),
+            (self.mark, "flag", "Marked for editing", replace(self, mark=False)),
+            (self.missing, "visibility", "Show missing files", replace(self, missing=False)),
+        ):
+            if on:
+                out.append(FilterChip(icon, label, without))
+        if self.posted:
+            label = "Posted" if self.posted == "1" else "Not posted"
+            out.append(FilterChip("send", label, replace(self, posted="")))
+        return out
+
     def summary(self) -> str:
         """Short human description, e.g. for a saved-search tooltip."""
         bits: list[str] = []
@@ -325,8 +366,8 @@ class LibraryQuery:
             bits.append((" & " if self.tagmode == "all" else " | ").join(self.tags))
         for key, label in (
             ("gps", "GPS"),
-            ("dups", "dupes"),
-            ("missing", "incl. missing"),
+            ("dups", "detected duplicates"),
+            ("missing", "missing files shown"),
             ("mark", "⚑ to edit"),
         ):
             if getattr(self, key):
@@ -334,6 +375,16 @@ class LibraryQuery:
         if self.posted:
             bits.append("posted" if self.posted == "1" else "not posted")
         return " · ".join(bits) or "all photos"
+
+
+@dataclass(frozen=True)
+class FilterChip:
+    """An active filter as the filter bar shows it: Material icon, short
+    label, and the query with just this filter removed."""
+
+    icon: str
+    label: str
+    without: LibraryQuery
 
 
 # --------------------------------------------------------------------------- #

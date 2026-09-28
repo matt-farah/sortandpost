@@ -25,6 +25,10 @@ import httpx
 
 log = logging.getLogger(__name__)
 
+# How the UI names this posting service ("Posted with Robopost"). Other posting
+# APIs will each bring their own.
+SERVICE_NAME = "Robopost"
+
 BASE_URL = "https://public-api.robopost.app/v1"
 # Exact paths, trailing slash included or not: robopost answers the other form
 # with a 307 to a plain-http URL that carries the key (verified 2026-09-25), so

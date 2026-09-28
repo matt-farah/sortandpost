@@ -28,6 +28,7 @@ from sortandpost.db.models import (
 )
 from sortandpost.library_roots import LibraryRoot
 from sortandpost.library_view import (
+    FLAT,
     UNRATED,
     LibraryQuery,
     camera_choices,
@@ -272,6 +273,50 @@ def test_junk_params_are_ignored() -> None:
 def test_text_query_disables_group_by() -> None:
     assert LibraryQuery(group="month").mode == "month"
     assert LibraryQuery(q="x", group="month").mode is None
+
+
+def test_group_by_defaults_to_month_and_flat_is_explicit() -> None:
+    assert LibraryQuery().mode == "month"
+    assert LibraryQuery().url() == "/"  # the default needs no param
+    flat = LibraryQuery.from_query_string("group=flat")
+    assert flat.group == FLAT and flat.mode is None
+    assert flat.url() == "/?group=flat"
+    assert not flat.has_filters()
+    assert LibraryQuery(q="x").mode is None
+
+
+def test_chips_one_per_filter_value_each_removing_only_itself() -> None:
+    lq = LibraryQuery(
+        q="dog",
+        stars=frozenset({UNRATED, 5}),
+        cameras=("Canon R5", ""),
+        dates="2025",
+        folder="/lib/trip",
+        tags=("dog", "beach"),
+        mark=True,
+        posted="0",
+        group="folder",
+    )
+    chips = lq.chips()
+    labels = [c.label for c in chips]
+    assert labels == [
+        "“dog”",
+        "unrated, 5",
+        "Canon R5",
+        "Unknown camera",
+        "2025",
+        "trip",
+        "dog",
+        "beach",
+        "Marked for editing",
+        "Not posted",
+    ]
+    by_label = {c.label: c.without for c in chips[1:]}
+    assert by_label["Canon R5"].cameras == ("",)
+    assert by_label["beach"].tags == ("dog",)
+    assert by_label["Marked for editing"].mark is False
+    assert all(c.without.group == "folder" for c in chips)  # the view is kept
+    assert LibraryQuery().chips() == []
 
 
 def test_to_filter_maps_fields() -> None:
