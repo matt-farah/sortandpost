@@ -1,11 +1,25 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-27 (**v1.1.0** — prebuilt Tailwind fixes the grid freeze; shortcut focus guard; photo-page sizing)._
+_Last updated: 2026-09-28 (V2 P0 — docs housekeeping in `V2.md`)._
 _Working branch: `main` (tag `v1.1.0`, GitHub release published)._
 
-> **▶️ Next session:** the user is testing v1.0.0 hands-on and will bring bug fixes / small
-> changes → ship them as **1.0.x** (fixes) / **1.1.0** (small features). See "Versioning" and
-> "NEXT SESSION — start here" below.
+> **▶️ Next session:** V2 is underway (`V2Plan.md`, P0 done). Next up is **P1 — open/reveal
+> multiple selected/flagged photos** (Sonnet). See "NEXT SESSION — start here" below.
+
+---
+
+## 📋 2026-09-28 — V2 P0: docs housekeeping (`V2.md`)
+
+Docs only, no code changes.
+
+- `V2.md`: #14 (in-app indexer lock re-check) was already dropped — confirmed already
+  implemented via `_start_lock_watch()` (`app.py`, see `V2Plan.md` "Finding from the code
+  survey"). Numbered the three new items the user added: **#21** open/reveal multiple
+  selected/flagged photos, **#22** choose the "open with" app, **#23** user onboarding.
+  Carved out a **"Backlog — fix if it bites"** section for #12 (group-by scroll race), #17
+  (ANN index > 25k), #18 (dHash on flat images) — low-priority, revisit only if they actually
+  bite.
+- `V2Plan.md`: marked P0 done.
 
 ---
 
@@ -1312,10 +1326,13 @@ or a deps-only manifest / `--no-install-project`), then `COPY src/`, then
 
 ## ▶️ NEXT SESSION — start here
 
-**v1.0.0 is released** (V1 P0–P7, see `V1Plan.md`). The user is testing it hands-on and will
-bring bug fixes and small changes: collect them, fix on a branch per batch, bump
-`__version__` (1.0.x for fixes, 1.1.0 for small features), PR, browser-test, merge, tag +
-GitHub release. Bigger work comes from `V2.md`.
+**V2 is underway.** Plan + model-per-phase in `V2Plan.md`, feature list in `V2.md`. P0 (docs
+housekeeping) is done — next is **P1: open/reveal multiple selected/flagged photos** (#21 in
+`V2.md`), Sonnet, then **P2: choose the "open with" app** (#22), also Sonnet. See `V2Plan.md`
+for the full phase order and per-phase workflow.
+
+**v1.0.0 is released** (V1 P0–P7, see `V1Plan.md`). Bug fixes / small changes from hands-on
+testing still ship as **1.0.x** (fixes) / **1.x.0** (small features) alongside V2 work.
 
 Possible P7 follow-ups (not blockers): a full library picker inside the composer (today:
 "Add from collection" + the bulk toolbar's ✈); alt text if robopost's API adds it; caption
