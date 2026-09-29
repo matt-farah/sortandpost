@@ -12,6 +12,7 @@ CLIP stay off it -- the indexer process, or ``run.io_bound`` for query embedding
 
 from __future__ import annotations
 
+import asyncio
 import bisect
 import hashlib
 import json
@@ -76,7 +77,7 @@ from sortandpost.collections import (
     reorder_collection,
     set_collection_notes,
 )
-from sortandpost.config import Settings
+from sortandpost.config import Env, Settings
 from sortandpost.cpu import default_workers
 from sortandpost.db import add_manual_tag, init_db, make_engine, set_rating
 from sortandpost.db.browse import (
@@ -104,7 +105,7 @@ from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.hydrate import hydrate_online_only
 from sortandpost.indexer.progress import PROGRESS, ProgressSnapshot
 from sortandpost.indexer.service import run_indexer
-from sortandpost.launcher_pref import remember_app_data
+from sortandpost.launcher_pref import remember_sync_dir
 from sortandpost.library_roots import (
     LibraryRoot,
     clean_path,
@@ -130,6 +131,14 @@ from sortandpost.library_view import (
 )
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.metadata.shared import EXIFTOOL
+from sortandpost.onboarding import (
+    FolderInspection,
+    cloud_folder_candidates,
+    inspect_folder,
+    mark_complete,
+    suggested_roots,
+)
+from sortandpost.paths import default_local_root
 from sortandpost.post_export import resolve_sources
 from sortandpost.posts import posted_hashes
 from sortandpost.posts_ui import (
@@ -403,6 +412,13 @@ body, .q-page, .nicegui-content {
   transition: box-shadow .15s ease, transform .15s ease;
 }
 .sp-card:hover { box-shadow: var(--sp-shadow-lg); transform: translateY(-1px); }
+.sp-wizard.q-stepper {
+  background: var(--sp-surface);
+  color: var(--sp-text);
+  border: 1px solid var(--sp-border);
+  border-radius: .6rem;
+  box-shadow: var(--sp-shadow);
+}
 .sp-section-header {
   background-color: color-mix(in srgb, var(--sp-bg) 86%, transparent);
   border-bottom: 1px solid var(--sp-border);
@@ -525,6 +541,10 @@ class State:
     engine: Engine | None = None
     settings: Settings | None = None
     indexer_started: bool = False
+    manager: SyncManager | None = None
+    # This machine hasn't finished the welcome wizard (sortandpost.onboarding):
+    # every page redirects to /welcome and the indexer waits.
+    onboarding_pending: bool = False
     theme: Theme = "system"  # per-machine UI theme (local/ui_prefs.json)
     season: SeasonChoice = "auto"  # per-machine seasonal palette (sortandpost.themes)
     # (trash batch id, photos deleted, time.monotonic()) of the most recent
@@ -556,7 +576,7 @@ def _apply_season(choice: SeasonChoice) -> str:
     return SEASON_ICONS[season]
 
 
-def _header(active: str) -> ui.dark_mode:
+def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
     # primary / secondary / accent come from the season (sortandpost.themes)
     ui.colors(positive="#3f9d6d", negative="#c0392b")
     dark = ui.dark_mode(_THEME_TO_DARK[State.theme])  # per-machine; None = follow the OS
@@ -569,6 +589,8 @@ def _header(active: str) -> ui.dark_mode:
             )
             ui.link("sortandpost", "/").classes("sp-display text-xl font-semibold sp-nav")
             ui.label(__version__).classes("sp-faint text-[11px]")
+        if minimal:  # the welcome wizard: nothing else to navigate to yet
+            return dark
         with ui.row().classes("items-center gap-1 no-wrap"):
             for path, name, icon in _PAGES:
                 with ui.link("", path).classes(
@@ -780,12 +802,20 @@ def build_ui(settings: Settings) -> None:
     except Exception:  # browsing must work even if the sync layer is unhappy
         log.exception("sync layer failed to start; continuing read-only")
     State.apply(manager)
+    State.manager = manager
+    State.onboarding_pending = settings.onboarding_pending
     nicegui_app.on_shutdown(manager.stop)
     nicegui_app.on_shutdown(EXIFTOOL.close)
 
-    if settings.config.indexer.run_in_app and State.write_mode == WriteMode.writable:
+    if (
+        settings.config.indexer.run_in_app
+        and State.write_mode == WriteMode.writable
+        and not State.onboarding_pending
+    ):
         _start_indexer_thread(settings, manager)
     _start_lock_watch(settings, manager)
+    _install_onboarding_gate()
+    _register_welcome(settings, engine, manager)
 
     settings.paths.thumbnails_dir.mkdir(parents=True, exist_ok=True)
     nicegui_app.add_static_files(_THUMB_URL, str(settings.paths.thumbnails_dir))
@@ -949,6 +979,8 @@ def build_ui(settings: Settings) -> None:
 
         if view.notice:
             ui.label(view.notice).classes("mx-4 mt-2 text-sm text-amber-600")
+        if total < _GRID_BATCH and not lq.has_filters():
+            _reload_as_photos_arrive(engine)
         if total == 0:
             if lq.has_filters():
                 _empty_state("search_off", "No matching photos", "Try loosening the filters.")
@@ -961,10 +993,13 @@ def build_ui(settings: Settings) -> None:
                         ),
                     ).props("flat")
             else:
+                scanning = State.indexer_started
                 _empty_state(
-                    "photo_library",
-                    "No photos yet",
-                    "Run  python -m sortandpost.indexer --once  to index your library.",
+                    "hourglass_top" if scanning else "photo_library",
+                    "Looking for your photos…" if scanning else "No photos yet",
+                    "They'll appear here as soon as the first ones are indexed."
+                    if scanning
+                    else "Add your photo folders in Settings → Library.",
                 )
             return
 
@@ -2694,7 +2729,7 @@ def build_ui(settings: Settings) -> None:
                         for key, value in rows:
                             ui.label(key).classes("sp-faint")
                             ui.label(value).classes("break-all")
-                    with _settings_card("App-data folder", "storage"):
+                    with _settings_card("Shared library folder", "folder_shared"):
                         _app_data_editor(settings)
 
 
@@ -2780,7 +2815,11 @@ def _start_lock_watch(settings: Settings, manager: SyncManager) -> None:
                 State.apply(manager)
                 if mode is not before:
                     log.info("write-lock state changed: %s -> %s", before, mode)
-                if mode is WriteMode.writable and settings.config.indexer.run_in_app:
+                if (
+                    mode is WriteMode.writable
+                    and settings.config.indexer.run_in_app
+                    and not State.onboarding_pending
+                ):
                     _start_indexer_thread(settings, manager)  # no-op if already running
             except Exception:  # a bad tick must not kill the watch
                 log.exception("lock-watch tick failed")
@@ -3126,10 +3165,11 @@ def _delete_where_note() -> str:
     )
 
 
-def _stacking_editor(settings: Settings) -> None:
+def _stacking_editor(settings: Settings, *, autosave: bool = False) -> None:
     """`/settings` toggles for image stacking. Read-time, so saving just persists
     to ``config.yaml`` + updates the live config -- no re-index; the next library
-    or search view reflects it."""
+    or search view reflects it. ``autosave`` (the welcome wizard) saves on every
+    change instead of showing a Save button."""
     cfg = settings.config.stacking
     ui.label(
         "Group near-duplicate photos in the same folder into one entry (the "
@@ -3143,11 +3183,19 @@ def _stacking_editor(settings: Settings) -> None:
         value=cfg.similar_names,
     )
 
-    def _save() -> None:
+    def _store() -> None:
         cfg.enabled = bool(enabled.value)
         cfg.raw_jpeg = bool(raw_jpeg.value)
         cfg.similar_names = bool(similar.value)
         settings.config.dump(settings.paths.config_file)
+
+    if autosave:
+        for el in (enabled, raw_jpeg, similar):
+            el.on_value_change(lambda _: _store())
+        return
+
+    def _save() -> None:
+        _store()
         ui.notify("saved — reload the library to see it")
 
     ui.button("Save", on_click=_save).props("color=primary")
@@ -3287,13 +3335,13 @@ def _cpu_speed_editor(settings: Settings) -> None:
     mode.on_value_change(_save_speed)
 
 
-def _deletion_editor(settings: Settings) -> None:
+def _deletion_editor(settings: Settings, *, autosave: bool = False) -> None:
     """`/settings` control for the "Delete photos" action (CLAUDE.md constraint
     #1, exception 2). Only the stack scope is user-configurable."""
     cfg = settings.config.deletion
     ui.label(
         "The bulk toolbar's Delete and the photo page's “Delete photo” move the "
-        "files into the app's trash on this computer (see Recently deleted below) and "
+        "files into the app's trash on this computer (see Settings → Recently deleted) and "
         "remove them from the library. When stacking is on, choose whether a delete "
         "takes only the shown photo or the whole stack."
     ).classes("text-xs sp-faint max-w-xl")
@@ -3310,9 +3358,16 @@ def _deletion_editor(settings: Settings) -> None:
         .classes("w-96")
     )
 
-    def _save() -> None:
+    def _store() -> None:
         cfg.stack_scope = "whole_stack" if scope.value == "whole_stack" else "selected"
         settings.config.dump(settings.paths.config_file)
+
+    if autosave:
+        scope.on_value_change(lambda _: _store())
+        return
+
+    def _save() -> None:
+        _store()
         ui.notify("saved")
 
     ui.button("Save", on_click=_save).props("color=primary")
@@ -3417,71 +3472,66 @@ def _fmt_trash_time(iso: str) -> str:
 
 
 def _app_data_editor(settings: Settings) -> None:
-    """`/settings` control for where sortandpost keeps its database,
-    thumbnails, and CLIP embeddings (CLAUDE.md "App-data layout").
-
-    An end user setting this up from scratch (a new computer, say) should
-    never have to touch an environment variable or a ``.env`` file -- saving
-    a folder here writes a small pointer file in the user's home directory
-    (:mod:`sortandpost.launcher_pref`) that every future launch checks and
-    uses. It ranks below only a genuine process/shell ``APP_DATA`` (Docker's
-    fixed container mount, or ``APP_DATA=... command`` on the command line) --
-    a real instruction from whoever launched the process, which this UI can't
-    see or override. A bare value left in a ``.env`` file is *not* that: it
-    ranks below a saved folder, so a leftover ``.env`` from a previous setup
-    can no longer silently keep overriding a choice made here. This process
-    is already running against the folder it started with, so the change
-    takes effect on the next restart, not immediately -- move or copy the old
-    folder's contents to the new location first to keep the data.
-    """
-    source = settings.env.app_data_source()
-    current = settings.paths.app_data
-    helper = read_helper_info(settings.paths)
+    """`/settings` control for the shared folder -- where the database,
+    thumbnails and CLIP embeddings are kept and synced (CLAUDE.md "App-data
+    layout"). Saving writes the pointer file in the user's home directory
+    (:mod:`sortandpost.launcher_pref`) and restarts: a clean shutdown (final
+    publish, lock release) and a re-launch on the new folder. A genuine
+    process/shell ``APP_DATA`` (Docker, or ``APP_DATA=... command``) always
+    wins and can't be changed from here."""
+    source = settings.env.paths_source()
+    paths = settings.paths
 
     ui.label(
-        "Where the database, thumbnails, and CLIP embeddings live. Point your "
-        "file-sync tool (OneDrive, Google Drive, Synology Drive, Dropbox, …) at "
-        "this folder's sync/ subfolder to carry the index across machines."
+        "Where your library's database, thumbnails and search index are kept. Keep it "
+        "in a cloud drive and pick the same folder on your other computers."
     ).classes("text-xs sp-faint max-w-xl")
-    if source == "default":
+    with ui.grid(columns="auto 1fr").classes("gap-x-4 gap-y-1 text-sm"):
+        ui.label("Shared folder").classes("sp-faint")
+        ui.label(str(paths.sync)).classes("break-all")
+        ui.label("This computer only").classes("sp-faint")
+        ui.label(str(paths.local)).classes("break-all")
+
+    if source == "env":
         ui.label(
-            "⚠ not saved anywhere yet — using a bare ./appdata next to wherever "
-            "this launch's working directory happens to be, which is why it can "
-            "look different between sessions. Save a folder below to fix that."
+            "⚠ set for this launch by the APP_DATA environment variable (Docker, or "
+            "APP_DATA=... on the command line) — change it there."
         ).classes("text-xs text-amber-600 dark:text-amber-400 max-w-xl")
-    elif source == "env":
+        return
+    if not paths.is_split:
         ui.label(
-            "⚠ set for this launch by a process environment variable (Docker, or "
-            "APP_DATA=... on the command line) — that overrides anything saved "
-            "below until it's unset."
-        ).classes("text-xs text-amber-600 dark:text-amber-400 max-w-xl")
-    elif source == "dotenv":
-        ui.label(
-            "Currently read from this computer's .env file. Saving a folder "
-            "below will take priority over it from now on."
+            "This setup keeps this computer's private files inside the data folder "
+            "(local/). If that folder is synced, pick its sync/ folder below to move "
+            "them onto this computer only — you'll confirm your photo folders once."
         ).classes("text-xs sp-faint max-w-xl")
 
-    with ui.row().classes("w-full items-end gap-2 no-wrap"):
-        path_in = ui.input("App-data folder", value=str(current)).props("dense").classes("flex-1")
-        if helper is not None:
-            ui.button(
-                "Browse…", icon="folder_open", on_click=lambda: _browse_folder(path_in)
-            ).props("flat dense")
-
-    def _save() -> None:
-        value = clean_path(path_in.value or "")
-        if not value:
-            ui.notify("enter a folder path", type="warning")
+    def _use(ins: FolderInspection) -> None:
+        assert ins.sync_dir is not None
+        target = ins.sync_dir
+        if paths.is_split and target.resolve() == paths.sync.resolve():
+            ui.notify("that's the folder this computer already uses")
             return
-        remember_app_data(Path(value).expanduser())
-        ui.notify(
-            "saved — restart sortandpost to use this folder. To keep your "
-            "existing data, move or copy the old app-data folder there first.",
-            type="positive",
-            timeout=8000,
-        )
 
-    ui.button("Save app-data folder", on_click=_save).props("color=primary")
+        def _go() -> None:
+            dlg.close()
+            target.mkdir(parents=True, exist_ok=True)
+            remember_sync_dir(target)
+            _restart_app("/", "Switching library…")
+
+        with ui.dialog() as dlg, ui.card().classes("w-[32rem] max-w-full gap-2"):
+            ui.label("Restart on this folder?").classes("font-semibold")
+            ui.label(str(target)).classes("font-mono text-sm break-all")
+            ui.label(ins.message).classes("text-sm sp-muted")
+            ui.label("Your current library stays where it is; it isn't copied or moved.").classes(
+                "text-xs sp-faint"
+            )
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dlg.close).props("flat")
+                ui.button("Save & restart", on_click=_go).props("color=primary")
+        dlg.open()
+
+    with ui.expansion("Change folder", icon="swap_horiz").classes("w-full"):
+        _shared_folder_picker(str(paths.sync), on_use=_use, button="Save & restart")
 
 
 def _clip_model_editor(settings: Settings) -> None:
@@ -3530,22 +3580,17 @@ def _clip_model_editor(settings: Settings) -> None:
 
 
 async def _browse_folder(target: ui.input) -> None:
-    """Native folder picker backed by the host file-manager helper agent (see
-    :mod:`sortandpost.helper`) -- lets ``target`` be filled from a real
-    directory listing on this computer instead of typed by hand. Reads
-    ``window.__spHelper`` (injected by :func:`_inject_helper`) directly in the
-    browser; the server never talks to the helper itself. A no-op UI (empty
-    listing) if the helper isn't connected -- callers should only show the
-    "Browse…" button when :func:`read_helper_info` returns something."""
-    with (
-        ui.dialog() as dlg,
-        ui.card().classes("flex h-[70vh] w-[42rem] max-w-full flex-col gap-2"),
-    ):
-        crumb = ui.label("…").classes("truncate text-xs sp-faint")
-        listing = ui.column().classes("w-full flex-1 gap-0 overflow-y-auto")
-        state = {"path": (target.value or "").strip() or None}
+    """Folder picker that fills ``target`` from a real directory listing on this
+    computer instead of a typed path. Under Docker it goes through the host
+    file-manager helper agent (:mod:`sortandpost.helper`) straight from the
+    browser via ``window.__spHelper`` -- the server never talks to it; on a
+    native run it lists this process's own filesystem (:func:`_list_local`),
+    starting from home, the cloud-sync drives and mounted volumes. Callers
+    should only offer "Browse…" when :func:`_app_browse_available`."""
+    helper = _current_helper()
 
-        async def _load(path: str | None) -> None:
+    async def _list(path: str | None) -> dict[str, Any]:
+        if helper is not None:
             js = (
                 "(async () => { const h = window.__spHelper; if (!h) return {entries: []};"
                 " const u = new URL('http://127.0.0.1:' + h.port + '/listdir');"
@@ -3556,21 +3601,44 @@ async def _browse_folder(target: ui.input) -> None:
             try:
                 data = await ui.run_javascript(js, timeout=6.0)
             except Exception:  # helper stopped mid-browse
-                data = {"entries": [], "parent": None}
+                data = None
+        else:
+            data = await nicegui_run.io_bound(
+                _list_local, Path(path) if path else None, include_files=False, folders=True
+            )
+        return data if isinstance(data, dict) else {"entries": [], "parent": None}
+
+    with (
+        ui.dialog() as dlg,
+        ui.card().classes("flex h-[70vh] w-[42rem] max-w-full flex-col gap-2"),
+    ):
+        crumb = ui.label("…").classes("truncate text-xs sp-faint")
+        listing = ui.column().classes("w-full flex-1 gap-0 overflow-y-auto")
+        state = {"path": (target.value or "").strip() or None}
+
+        async def _load(path: str | None) -> None:
+            data = await _list(path)
+            if path and not data.get("entries") and data.get("path") is None:
+                path = None  # a typed path that doesn't exist: start from the top
+                data = await _list(None)
             state["path"] = path
             crumb.text = path or "Pick a starting point"
             listing.clear()
             with listing:
+                if data.get("library"):
+                    ui.label("✓ This folder is a sortandpost library").classes(
+                        "text-sm text-primary px-2 pb-1"
+                    )
                 if data.get("parent"):
                     ui.button("⬆  parent", on_click=lambda p=data["parent"]: _load(p)).props(
-                        "flat dense align=left"
+                        "flat dense align=left no-caps"
                     ).classes("w-full justify-start")
                 for entry in data.get("entries", []):
                     ui.button(
                         entry["name"],
                         icon="folder",
                         on_click=lambda p=entry["path"]: _load(p),
-                    ).props("flat dense align=left").classes("w-full justify-start")
+                    ).props("flat dense align=left no-caps").classes("w-full justify-start")
 
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("Cancel", on_click=dlg.close).props("flat")
@@ -3585,7 +3653,9 @@ async def _browse_folder(target: ui.input) -> None:
     dlg.open()
 
 
-def _list_local(path: Path | None, *, include_files: bool) -> dict[str, object]:
+def _list_local(
+    path: Path | None, *, include_files: bool, folders: bool = False
+) -> dict[str, object]:
     """Directories (and, when *include_files*, files) under *path* on *this
     process's own* filesystem. Only meaningful on a native run -- a
     container can't see the host, which is what the helper agent's
@@ -3593,8 +3663,29 @@ def _list_local(path: Path | None, *, include_files: bool) -> dict[str, object]:
     ``tools/sortandpost_helper.py``'s ``list_dir``: that script must stay
     stdlib-only and importable without the ``sortandpost`` package
     installed, so it can't import this module either."""
+    if path is None and folders:
+        # picking a folder (library / shared data): home, the cloud-sync
+        # drives, and mounted volumes / drives
+        starts: list[Path] = [Path.home(), *cloud_folder_candidates()]
+        if sys.platform == "darwin":
+            volumes = Path("/Volumes")
+            if volumes.is_dir():
+                starts += sorted(v for v in volumes.iterdir() if v.is_dir())
+        elif sys.platform.startswith("win"):
+            starts += [Path(f"{c}:\\") for c in "CDEFGHIJ" if Path(f"{c}:\\").exists()]
+        else:
+            starts += [Path("/media"), Path("/mnt"), Path("/")]
+        return {
+            "path": None,
+            "parent": None,
+            "entries": [
+                {"name": _start_label(p), "path": str(p), "dir": True}
+                for p in dict.fromkeys(starts)
+                if p.is_dir()
+            ],
+        }
     if path is None:
-        starts: list[Path] = [Path.home()]
+        starts = [Path.home()]
         if sys.platform == "darwin":
             apps = Path("/Applications")
             if apps.is_dir():
@@ -3631,9 +3722,23 @@ def _list_local(path: Path | None, *, include_files: bool) -> dict[str, object]:
             elif include_files:
                 entries.append({"name": child.name, "path": str(child), "dir": False})
     except (OSError, PermissionError):
+        if not path.is_dir():
+            return {"path": None, "parent": None, "entries": []}
         entries = []
     parent = str(path.parent) if path.parent != path else None
-    return {"path": str(path), "parent": parent, "entries": entries}
+    library = folders and ((path / "config.yaml").is_file() or (path / "sortandpost.db").is_file())
+    return {"path": str(path), "parent": parent, "entries": entries, "library": library}
+
+
+def _start_label(p: Path) -> str:
+    """A friendly name for a folder-picker starting point."""
+    if p == Path.home():
+        return f"Home ({p})"
+    if p.name == "com~apple~CloudDocs":
+        return "iCloud Drive"
+    if p.parent.name == "CloudStorage":
+        return p.name.replace("-", " · ", 1)
+    return str(p)
 
 
 def _app_browse_available() -> bool:
@@ -3715,7 +3820,13 @@ async def _browse_app(target: ui.input) -> None:
     dlg.open()
 
 
-def _library_roots_editor(settings: Settings, engine: Engine) -> None:
+def _library_roots_editor(
+    settings: Settings,
+    engine: Engine,
+    *,
+    rescan: bool = True,
+    suggestions: list[LibraryRoot] | None = None,
+) -> None:
     """`/settings` editor for this device's library folders
     (``sync/devices/<name>/library.json`` -- see :mod:`sortandpost.library_roots`).
 
@@ -3749,9 +3860,26 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
         _persist()
         _render()
 
+    def _adopt(root: LibraryRoot) -> None:
+        roots.append(root)
+        _persist()
+        _render()
+
     def _render() -> None:
         rows_box.clear()
         with rows_box:
+            have = {r.container for r in roots}
+            offered = [s for s in suggestions or [] if s.container not in have]
+            if offered:
+                ui.label("Folders your other computer uses that also exist here:").classes(
+                    "text-xs sp-muted"
+                )
+                for sug in offered:
+                    ui.button(
+                        sug.label or sug.host,
+                        icon="add",
+                        on_click=lambda _=None, r=sug: _adopt(r),
+                    ).props("flat dense no-caps align=left").classes("justify-start")
             if not roots:
                 ui.label("No folders yet — add one below.").classes("text-xs sp-faint")
             for r in roots:
@@ -3791,7 +3919,7 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
                 host_in = (
                     ui.input("Folder on this computer (host path)").props("dense").classes("flex-1")
                 )
-                if helper is not None:
+                if helper is not None or not in_docker:
                     ui.button(
                         "Browse…", icon="folder_open", on_click=lambda: _browse_folder(host_in)
                     ).props("flat dense")
@@ -3850,6 +3978,8 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
                         "saved — add the compose line, run docker compose up -d, then rescan"
                         if in_docker
                         else "saved — Save & rescan to index it"
+                        if rescan
+                        else "added"
                     )
 
                 ui.button("Save", on_click=_save_entry).props("color=primary")
@@ -3860,7 +3990,7 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
         if helper is not None:
             ui.label("🖥 helper connected — Browse enabled").classes("text-xs text-emerald-600")
 
-    if writable:
+    if writable and rescan:
 
         async def _save_rescan() -> None:
             _persist()
@@ -3874,7 +4004,7 @@ def _library_roots_editor(settings: Settings, engine: Engine) -> None:
     _render()
 
 
-def _exclude_editor(settings: Settings, engine: Engine) -> None:
+def _exclude_editor(settings: Settings, engine: Engine, *, autosave: bool = False) -> None:
     """`/settings` editor for ``indexer.exclude_dir_names``. Save persists to
     ``config.yaml``, updates the live config, and kicks a rescan -- the sweep
     then drops photos from newly-excluded folders (and revives un-excluded ones,
@@ -3898,22 +4028,32 @@ def _exclude_editor(settings: Settings, engine: Engine) -> None:
             for name in names:
                 ui.chip(name, removable=True).on_value_change(lambda _, n=name: _drop(n))
 
+    def _changed() -> None:
+        render()
+        if autosave:  # the welcome wizard: nothing is indexed yet, so no rescan
+            settings.config.indexer.exclude_dir_names = list(names)
+            settings.config.dump(settings.paths.config_file)
+
     def _drop(name: str) -> None:
         if name in names:
             names.remove(name)
-            render()
+            _changed()
 
     def _add() -> None:
         value = (box.value or "").strip()
         if value and value.casefold() not in {n.casefold() for n in names}:
             names.append(value)
-            render()
+            _changed()
         box.set_value("")
 
     with ui.row().classes("items-center gap-2"):
         box = ui.input(placeholder="folder name, e.g. RAW").props("dense").classes("w-52")
         box.on("keydown.enter", _add)
         ui.button("Add", on_click=_add).props("flat dense")
+
+    if autosave:
+        render()
+        return
 
     async def _save() -> None:
         settings.config.indexer.exclude_dir_names = list(names)
@@ -3968,6 +4108,29 @@ def _online_only_editor(settings: Settings, engine: Engine, cloud_n: int) -> Non
         "Download & index recorded files", icon="cloud_download", on_click=_download_now
     )
     btn.set_visibility(cloud_n > 0)
+
+
+def _reload_as_photos_arrive(engine: Engine) -> None:
+    """While the first scan is filling an empty (or not yet screen-full)
+    library, reload the page whenever more photos have been indexed, so
+    thumbnails show up without a manual refresh. Stops once the indexer goes
+    idle with nothing new; a full page then continues via infinite scroll."""
+    with Session(engine) as session:
+        baseline = photo_count(session)
+    idle_ticks = {"n": 0}
+
+    def _tick() -> None:
+        with Session(engine) as session:
+            now = photo_count(session)
+        if now > baseline:
+            timer.deactivate()
+            ui.navigate.reload()
+            return
+        idle_ticks["n"] = 0 if PROGRESS.snapshot().active else idle_ticks["n"] + 1
+        if idle_ticks["n"] >= 3:  # indexer idle and nothing new: stop polling
+            timer.deactivate()
+
+    timer = ui.timer(4.0, _tick)
 
 
 def _empty_state(icon: str, title: str, hint: str = "") -> None:
@@ -4872,6 +5035,334 @@ def _facts(photo: Photo) -> None:
             ui.label(value)
 
 
+# --------------------------------------------------------------------------- #
+# Welcome wizard (first-run onboarding, V2 #23) -- see sortandpost.onboarding
+# --------------------------------------------------------------------------- #
+_WELCOME_URL = "/welcome"
+# Pages that wait for the wizard; everything else (NiceGUI's own assets,
+# thumbnails, the prebuilt CSS) is served as usual.
+_GATED_PREFIXES = ("/photo", "/rate", "/collections", "/search", "/review", "/settings", "/posts")
+_RESTART = threading.Event()
+
+
+def _is_gated(path: str) -> bool:
+    return path == "/" or any(path == p or path.startswith(p + "/") for p in _GATED_PREFIXES)
+
+
+def _install_onboarding_gate() -> None:
+    """Until this machine finishes the welcome wizard, every page redirects to
+    it -- the library would be empty anyway, and the indexer is waiting."""
+
+    @nicegui_app.middleware("http")
+    async def _gate(request: Request, call_next: Callable[[Request], Any]) -> Any:
+        if State.onboarding_pending and request.method == "GET" and _is_gated(request.url.path):
+            return RedirectResponse(_WELCOME_URL)
+        return await call_next(request)
+
+
+def _restart_app(landing: str, message: str) -> None:
+    """Restart the whole process (to open a different data folder): show a
+    waiting dialog, have the browser poll until the new server answers, then
+    shut down cleanly -- the usual on_shutdown hooks run (final publish, lock
+    release, indexer stop) -- and :func:`_reexec_if_requested` re-launches."""
+    with ui.dialog().props("persistent") as dlg, ui.card().classes("items-center gap-3 p-6"):
+        ui.spinner(size="lg")
+        ui.label(message).classes("font-medium")
+        ui.label("sortandpost is restarting — this page reloads on its own.").classes(
+            "text-xs sp-faint"
+        )
+    dlg.open()
+    url = json.dumps(landing)
+    ui.run_javascript(
+        "(function () { let down = false; const t0 = Date.now();"
+        " const go = () => fetch(" + url + ", {cache: 'no-store'})"
+        "   .then(r => { if (r.ok && down) window.location.href = " + url + ";"
+        "     else if (Date.now() - t0 < 180000) setTimeout(go, 700); })"
+        "   .catch(() => { down = true; setTimeout(go, 700); });"
+        " setTimeout(go, 700); })();"
+    )
+    _RESTART.set()
+    asyncio.get_running_loop().call_later(0.8, nicegui_app.shutdown)
+
+
+def _reexec_if_requested() -> None:
+    """After ``ui.run`` returns: re-launch this same command in place if a
+    restart was requested. The listening socket is already closed (and Python
+    sockets aren't inherited across exec), so the new process can bind the
+    port again."""
+    if not _RESTART.is_set():
+        return
+    log.info("restarting sortandpost")
+    logging.shutdown()
+    if getattr(sys, "frozen", False):  # a packaged app (P5)
+        argv = [sys.executable, *sys.argv[1:]]
+    else:
+        argv = [sys.executable, *sys.orig_argv[1:]]
+    os.execv(sys.executable, argv)
+
+
+@contextmanager
+def _welcome_shell() -> Iterator[None]:
+    with ui.column().classes("w-full max-w-3xl mx-auto p-4 gap-6 pb-16"):
+        yield
+
+
+def _welcome_intro(joined: bool = False) -> None:
+    with ui.column().classes("gap-1 pt-4"):
+        ui.label(
+            "Welcome back — let's add this computer" if joined else "Welcome to sortandpost"
+        ).classes("sp-display text-3xl font-semibold")
+        ui.label(
+            "Your library, ratings and tags are already here. Just tell sortandpost "
+            "where your photos are on this computer."
+            if joined
+            else "Rate, tag and search your photos — privately, on your own computers. "
+            "A few quick choices and you're done; nothing is scanned until you finish."
+        ).classes("sp-muted max-w-2xl")
+
+
+def _shared_folder_intro() -> None:
+    ui.label(
+        "Pick a folder in the cloud drive you already use (Synology Drive, OneDrive, "
+        "Dropbox, Google Drive, iCloud Drive, …) so your ratings, tags and search index "
+        "follow you to your other computers — or any folder if you only use this one."
+    ).classes("text-sm sp-muted max-w-2xl")
+    ui.label(
+        "Already use sortandpost on another computer? Pick the same folder here and "
+        "everything carries over. Your photos stay exactly where they are."
+    ).classes("text-sm sp-muted max-w-2xl")
+
+
+def _shared_folder_picker(
+    initial: str, *, on_use: Callable[[FolderInspection], object], button: str
+) -> None:
+    """Path box + Browse… + a live verdict from :func:`inspect_folder` (new
+    library / existing library / not usable) + the confirm button."""
+    local_base = default_local_root()
+    with ui.row().classes("w-full items-end gap-2 no-wrap"):
+        path_in = (
+            ui.input("Shared folder", value=initial, placeholder="e.g. ~/Dropbox/sortandpost")
+            .props("dense")
+            .classes("flex-1")
+        )
+        if _app_browse_available():
+            ui.button(
+                "Browse…", icon="folder_open", on_click=lambda: _browse_folder(path_in)
+            ).props("flat dense")
+    verdict = ui.row().classes("w-full items-start gap-2 no-wrap min-h-6")
+    state: dict[str, Any] = {"n": 0, "ins": None}
+
+    async def _check() -> None:
+        state["n"] += 1
+        n = state["n"]
+        raw = path_in.value or ""
+        if not raw.strip():
+            verdict.clear()
+            use_btn.disable()
+            state["ins"] = None
+            return
+        ins = await nicegui_run.io_bound(inspect_folder, raw, local_root=local_base)
+        if ins is None or n != state["n"]:  # superseded by a newer keystroke / browse
+            return
+        state["ins"] = ins
+        verdict.clear()
+        icon, tone = {
+            "existing": ("check_circle", "text-primary"),
+            "new": ("create_new_folder", "sp-muted"),
+            "invalid": ("error_outline", "text-amber-600"),
+        }[ins.kind]
+        with verdict:
+            ui.icon(icon).classes(f"text-xl {tone}")
+            ui.label(ins.message).classes("text-sm")
+        use_btn.set_enabled(ins.kind != "invalid")
+
+    def _use() -> None:
+        ins = state["ins"]
+        if ins is not None and ins.kind != "invalid":
+            on_use(ins)
+
+    use_btn = ui.button(button, icon="arrow_forward", on_click=_use).props("color=primary")
+    use_btn.disable()
+    path_in.on_value_change(_check)
+    if initial:
+        ui.timer(0.05, _check, once=True)
+
+
+def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) -> None:
+    """``/welcome`` for a machine whose data folder is open but hasn't finished
+    setup: confirm the shared folder, this computer's photo folders, then (a
+    brand-new library only) scanning / stacking / delete choices, the look, and
+    Finish -- which starts the indexer. A machine joining an existing library
+    adopts that library's shared settings as they are."""
+
+    @ui.page(_WELCOME_URL)
+    def welcome_page() -> RedirectResponse | None:
+        if not State.onboarding_pending:
+            return RedirectResponse("/")
+        dark = _header(_WELCOME_URL, minimal=True)
+        joined = settings.joined_existing
+        writable = State.write_mode == WriteMode.writable
+        cfg = settings.config
+
+        def _nav(back: bool = True, on_next: Callable[[], object] | None = None) -> None:
+            with ui.stepper_navigation():
+                ui.button("Next", on_click=on_next or stepper.next).props("color=primary")
+                if back:
+                    ui.button("Back", on_click=stepper.previous).props("flat")
+
+        def _library_next() -> None:
+            if not settings.library_roots:
+                ui.notify("add at least one photo folder", type="warning")
+                return
+            if not any(Path(r.container).is_dir() for r in settings.library_roots):
+                ui.notify(
+                    "none of these folders can be found right now — they'll be "
+                    "scanned once they're available",
+                    type="warning",
+                )
+            stepper.next()
+
+        def _read_only_note() -> None:
+            ui.label(
+                f"{State.lock_holder or 'Another computer'} is using this library right "
+                "now, so shared settings can't change. Adjust them later in Settings."
+            ).classes("text-sm text-amber-600")
+
+        with _welcome_shell():
+            _welcome_intro(joined)
+            with (
+                ui.stepper().props("vertical flat animated").classes("w-full sp-wizard") as stepper
+            ):
+                with ui.step("folder", title="Library data", icon="folder_shared"):
+                    _welcome_folder_step(settings, joined)
+                    _nav(back=False)
+
+                with ui.step("library", title="Photo folders", icon="photo_library"):
+                    ui.label(
+                        "Folders sortandpost scans for photos. Nothing in them is moved "
+                        "or renamed. Different computers can use different folders."
+                    ).classes("text-sm sp-muted max-w-2xl")
+                    _library_roots_editor(
+                        settings,
+                        engine,
+                        rescan=False,
+                        suggestions=suggested_roots(settings.paths, settings.device_id),
+                    )
+                    _nav(on_next=_library_next)
+
+                if not joined:
+                    with ui.step("scanning", title="Scanning", icon="speed"):
+                        if writable:
+                            _cpu_speed_editor(settings)
+                            ui.label("Skip folders named").classes("text-sm font-medium pt-3")
+                            _exclude_editor(settings, engine, autosave=True)
+                        else:
+                            _read_only_note()
+                        _nav()
+
+                    with ui.step("organizing", title="Stacks & deleting", icon="layers"):
+                        if writable:
+                            ui.label("Image stacking").classes("text-sm font-medium")
+                            _stacking_editor(settings, autosave=True)
+                            ui.label("Deleting photos").classes("text-sm font-medium pt-3")
+                            _deletion_editor(settings, autosave=True)
+                        else:
+                            _read_only_note()
+                        _nav()
+
+                with ui.step("look", title="Look", icon="palette"):
+                    _theme_editor(settings, dark)
+                    _nav()
+
+                with ui.step("finish", title="Ready", icon="rocket_launch"):
+                    summary = ui.column().classes("gap-1 text-sm")
+                    with ui.stepper_navigation():
+                        ui.button(
+                            "Start using sortandpost", icon="play_arrow", on_click=lambda: _finish()
+                        ).props("color=primary")
+                        ui.button("Back", on_click=stepper.previous).props("flat")
+
+        def _render_summary() -> None:
+            summary.clear()
+            speed = "fast (all cores)" if cfg.clip.speed == "fast" else "slow (background)"
+            rows = [
+                ("Shared folder", str(settings.paths.sync)),
+                (
+                    "Photo folders",
+                    ", ".join(r.label or r.host for r in settings.library_roots) or "none yet",
+                ),
+                ("Scanning", speed),
+                ("Skipped folders", ", ".join(cfg.indexer.exclude_dir_names) or "none"),
+                ("Stacking", "on" if cfg.stacking.enabled else "off"),
+                (
+                    "Deleting",
+                    "the whole stack"
+                    if cfg.deletion.stack_scope == "whole_stack"
+                    else "only the selected photo",
+                ),
+            ]
+            with summary:
+                if joined:
+                    ui.label(
+                        "Shared settings come from your library — change any of them later "
+                        "in Settings."
+                    ).classes("sp-muted pb-1")
+                with ui.grid(columns="auto 1fr").classes("gap-x-6 gap-y-1"):
+                    for key, value in rows:
+                        ui.label(key).classes("sp-faint")
+                        ui.label(value).classes("break-all")
+                ui.label(
+                    "Scanning starts right away and runs in the background — you can "
+                    "browse while it works."
+                ).classes("sp-muted pt-2")
+
+        stepper.on_value_change(lambda e: _render_summary() if e.value == "finish" else None)
+
+        def _finish() -> None:
+            mark_complete(settings.paths, how="joined" if joined else "new")
+            State.onboarding_pending = False
+            if settings.config.indexer.run_in_app and manager.mode is WriteMode.writable:
+                _start_indexer_thread(settings, manager)
+            log.info("onboarding finished (%s library)", "joined" if joined else "new")
+            ui.navigate.to("/")
+
+        return None
+
+
+def _welcome_folder_step(settings: Settings, joined: bool) -> None:
+    """Wizard step 1 once a folder is open: where the shared data is, what was
+    found there, and (unless ``APP_DATA`` pins it) a way to pick another."""
+    paths = settings.paths
+    source = settings.env.paths_source()
+    with ui.row().classes("items-center gap-2 no-wrap"):
+        ui.icon("folder_shared").classes("text-xl text-primary")
+        ui.label(str(paths.sync)).classes("font-mono text-sm break-all")
+    if joined:
+        ui.label(inspect_folder(str(paths.sync)).message).classes("text-sm max-w-2xl")
+    else:
+        ui.label(
+            "A new library — its database, thumbnails and search index are kept here."
+        ).classes("text-sm max-w-2xl")
+    if paths.is_split:
+        ui.label(f"This computer's private working files: {paths.local}").classes(
+            "text-xs sp-faint break-all"
+        )
+    if source == "env":
+        ui.label("Set by the APP_DATA environment variable (e.g. Docker).").classes(
+            "text-xs sp-faint"
+        )
+        return
+    with ui.expansion("Use a different folder", icon="swap_horiz").classes("w-full"):
+
+        def _use(ins: FolderInspection) -> None:
+            assert ins.sync_dir is not None
+            ins.sync_dir.mkdir(parents=True, exist_ok=True)
+            remember_sync_dir(ins.sync_dir)
+            _restart_app(_WELCOME_URL, "Switching folder…")
+
+        _shared_folder_picker("", on_use=_use, button="Use this folder")
+
+
 def run(settings: Settings) -> None:
     build_ui(settings)
     ui.run(
@@ -4883,3 +5374,45 @@ def run(settings: Settings) -> None:
         storage_secret=settings.device_id,
         tailwind=False,  # prebuilt instead -- see _TAILWIND_URL
     )
+    _reexec_if_requested()
+
+
+def run_setup(env: Env) -> None:
+    """First run on this machine, before any data folder is chosen
+    (:meth:`Env.resolve_paths` is ``None``). Serves only the first welcome step
+    -- pick the shared folder -- with no DB, no lock and no indexer, then
+    restarts itself on the chosen folder (sortandpost.onboarding)."""
+    _add_tailwind_css()
+    ui.add_css(_THEME_CSS, shared=True)
+    ui.add_css(theme_css(), shared=True)
+
+    @ui.page("/")
+    def _root() -> RedirectResponse:
+        return RedirectResponse(_WELCOME_URL)
+
+    @ui.page(_WELCOME_URL)
+    def _setup_welcome() -> None:
+        _header(_WELCOME_URL, minimal=True)
+        with _welcome_shell():
+            _welcome_intro()
+            with _settings_card("Where should your library live?", "folder_shared", wide=True):
+                _shared_folder_intro()
+
+                def _use(ins: FolderInspection) -> None:
+                    assert ins.sync_dir is not None
+                    ins.sync_dir.mkdir(parents=True, exist_ok=True)
+                    remember_sync_dir(ins.sync_dir)
+                    _restart_app(_WELCOME_URL, "Setting up your library…")
+
+                _shared_folder_picker("", on_use=_use, button="Continue")
+
+    ui.run(
+        host=env.host,
+        port=env.port,
+        title="sortandpost — welcome",
+        reload=False,
+        show=False,
+        storage_secret="sortandpost-setup",
+        tailwind=False,
+    )
+    _reexec_if_requested()

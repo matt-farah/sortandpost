@@ -57,6 +57,14 @@ class MemoryKeyring(keyring.backend.KeyringBackend):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_machine_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No test ever reads the real ``~/.sortandpost`` pointer or writes under the
+    real per-machine data folder (``~/Library/Application Support/...``)."""
+    monkeypatch.setenv("SORTANDPOST_PREF_DIR", str(tmp_path / "_prefs"))
+    monkeypatch.setenv("SORTANDPOST_LOCAL_DIR", str(tmp_path / "_machine"))
+
+
+@pytest.fixture(autouse=True)
 def memory_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[MemoryKeyring]:
     """Every test gets a fresh in-memory keyring and no ROBOPOST_API_KEY."""
     monkeypatch.delenv("ROBOPOST_API_KEY", raising=False)

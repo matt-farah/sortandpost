@@ -54,6 +54,7 @@ from sortandpost.indexer.scanner import iter_image_files
 from sortandpost.indexer.workers import DecodedFile, DecodeJob, decode_file, decode_local
 from sortandpost.library_roots import container_roots
 from sortandpost.metadata import ExiftoolClient
+from sortandpost.paths import Paths
 
 log = logging.getLogger(__name__)
 
@@ -177,7 +178,7 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
         todo: list[str] = []
         for path in iter_image_files(
             roots,
-            exclude=[paths.app_data],
+            exclude=paths.roots(),
             exclude_names=settings.config.indexer.exclude_dir_names,
         ):
             key = str(path)
@@ -201,7 +202,7 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
         # -- stages 2-4 in parallel, stages 5-6 + DB serial here ------------- #
         PROGRESS.begin("indexing", total=len(todo))
         for n_done, decoded in enumerate(
-            _decode_stream(todo, pcfg, paths.app_data, n_workers, lower_priority=lower_priority),
+            _decode_stream(todo, pcfg, paths, n_workers, lower_priority=lower_priority),
             start=1,
         ):
             PROGRESS.update(done=n_done, current=Path(decoded.path).name)
@@ -249,7 +250,7 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
 def _decode_stream(
     paths_to_do: list[str],
     pcfg: PipelineConfig,
-    app_data: Path,
+    paths: Paths,
     n_workers: int,
     *,
     lower_priority: bool = False,
@@ -278,7 +279,8 @@ def _decode_stream(
         return
 
     job = DecodeJob(
-        app_data=str(app_data),
+        local_dir=str(paths.local),
+        sync_dir=str(paths.sync),
         thumb_sizes=pcfg.thumbnail_sizes,
         thumb_fmt=pcfg.thumbnail_format,
         thumb_quality=pcfg.thumbnail_quality,

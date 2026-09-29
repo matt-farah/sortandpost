@@ -20,7 +20,7 @@ import sys
 import threading
 
 from sortandpost.clip.store import ModelMismatch
-from sortandpost.config import Settings
+from sortandpost.config import NoAppDataFolder, Settings
 from sortandpost.db import init_db, make_engine
 from sortandpost.indexer.scan import scan_clip_once, scan_once
 from sortandpost.indexer.service import IndexerLoopConfig, run_indexer
@@ -43,8 +43,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    settings = Settings.resolve()
+    try:
+        settings = Settings.resolve()
+    except NoAppDataFolder as exc:
+        print(exc, file=sys.stderr)
+        return 1
     configure(settings.paths.logs_dir)
+    if settings.onboarding_pending:
+        # The wizard's promise: nothing is scanned until setup is finished.
+        print(
+            "setup isn't finished on this computer yet -- open the web app "
+            "(python -m sortandpost) and complete the welcome wizard first.",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.reembed:
         try:

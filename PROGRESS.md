@@ -1,15 +1,61 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-28 (V2 P3 — design pass round 2 done: A themes, B filter bar, C settings)._
-_Working branch: `main` (tag `v1.1.0`, GitHub release published). P3 is three **stacked** PRs:
-#28 (A, → `main`), #29 (B, → A's branch), C (`ui-redesign-c-settings`, → B's branch) — merge
-in order A → B → C; each later PR retargets to `main` as the one below merges._
+_Last updated: 2026-09-28 (V2 P4 — first-run onboarding wizard + split local/sync layout)._
+_Working branch: `main` (tag `v1.1.0`). P3 shipped (#28 → #29 → #30 merged). P4 is branch
+`v2-p4-onboarding`._
 
-> **▶️ Next session:** V2 P0–P3 done (P3 pending merge of the stacked PRs above). Next up per
-> `V2Plan.md` is **P4 — user onboarding** (`V2.md` #23, **Opus**): first-run wizard (library
-> folders, app-data location, scan speed, stacking, excluded folders, theme **incl. season**,
-> delete behaviour); indexer waits until it's finished. Build it in the P3 style (`sp-card`,
-> `_settings_card`-like panels, theme tokens — see CLAUDE.md "Theming").
+> **▶️ Next session:** V2 P0–P4 done. Next up per `V2Plan.md` is **P5 — packaging + tray +
+> lifecycle** (`V2.md` #5, **Opus**): macOS `.app` first. P4 already gives it what a
+> double-clickable app needs — no env vars, first-run wizard, the per-machine data folder
+> under `~/Library/Application Support/sortandpost`, and an in-place restart
+> (`_reexec_if_requested` already handles `sys.frozen`).
+
+---
+
+## 📋 2026-09-28 — V2 P4: first-run onboarding (`V2.md` #23)
+
+User browser-tested as three simulated machines (A new library, B joining it, C new again)
+and signed off. All tests pass (+24 in `tests/test_onboarding.py`); ruff / format / mypy
+clean; no schema change.
+
+- **Design decision — split local/sync layout.** Found that the user's prod app-data folder
+  lives inside Synology Drive with `local/` synced too; a second machine picking it would
+  share `device.json` (same device_id → the lock sees itself → two writers) and the working
+  SQLite file. So the wizard asks only for the **shared** folder (= `sync/`); machine data
+  goes to `<OS app-support>/sortandpost/libraries/<name>-<hash8>/` — one per shared folder,
+  so switching libraries can't publish one library's working DB into another. CLIP weights
+  shared in `<…>/sortandpost/models`. `Paths` gained `split()` / `for_sync_dir()`;
+  `Paths(app_data=…)` (env `APP_DATA`, Docker, `.env`, the old pointer) is unchanged.
+- **Resolution** — `Env.resolve_paths()` / `paths_source()` replace `resolved_app_data()` /
+  `app_data_source()`: env → shared (`{"sync_dir"}` pointer) → legacy `{"app_data"}` pointer
+  → `.env` → none. None = setup mode (no more silent `./appdata`); CLIs raise
+  `NoAppDataFolder`. Alembic's `env.py` now uses the same resolution.
+- **Setup mode** (`app.run_setup`) serves only the folder step; `onboarding.inspect_folder`
+  recognises an existing library (itself, a legacy app-data folder's `sync/`, or a
+  `sortandpost/` child), otherwise new library (in `<folder>/sortandpost` if the folder has
+  other files). Then **auto-restart**: `app.shutdown()` (on_shutdown hooks run — verified
+  `ui.run` returns) + `os.execv` of the same command; the page polls until the server went
+  down and came back. Also used by Settings → **Shared library folder** → Save & restart.
+- **Wizard** (`/welcome`, vertical Quasar stepper in `sp-wizard` card): library data → photo
+  folders (other devices' folders that exist here offered one-click; `_library_roots_editor`
+  got `rescan=False` + `suggestions=`) → new library only: scanning (speed + excludes) and
+  stacks & deleting (editors got `autosave=True`) → look → Ready summary → Start. Gate: HTTP
+  middleware redirects page GETs to `/welcome` while `State.onboarding_pending`; the indexer
+  (in-app, lock-watch promotion, standalone CLI) waits for `local/onboarding.json`.
+- **Upgrades** — single-folder installs with an existing `device.json` are auto-marked done
+  (prod never sees the wizard). Split layout: missing marker always means unfinished.
+  Fresh native machines don't seed the template's `/library`.
+- **Folder browser** works natively now (no helper needed), starting from home, the cloud
+  drives (`onboarding.cloud_folder_candidates`) and `/Volumes`, and flags a folder that is a
+  sortandpost library. Auto-discovery by crawling cloud drives was tried and dropped:
+  Synology's File Provider took 34 s for 186 folders.
+- **User feedback applied:** stacking on by default for new libraries (template
+  `stacking.enabled: true`; existing configs unchanged), and `/` reloads itself while the
+  first scan fills an under-one-page library (`_reload_as_photos_arrive`) — it was blank
+  until a manual refresh. Empty state now says "Looking for your photos…".
+- Not done: the host helper (`tools/sortandpost_helper.py`) still takes `--app-data` (Docker
+  only, always single-folder). Prod's synced `local/` can be moved off Synology by picking
+  its `sync/` in Settings → Shared library folder (fresh device id; confirm photo folders once).
 
 ---
 
