@@ -1,12 +1,9 @@
-"""Cross-session memory of which APP_DATA folder the user has chosen.
+"""Cross-session memory of which data folder the user has chosen.
 
-``Env.app_data`` (:mod:`sortandpost.config`) normally comes from the ``APP_DATA``
-environment variable or a ``.env`` file, but both only take effect if the launch
-command remembers to set them, and ``.env`` is only picked up when the process's
-current working directory happens to contain one. Absent either, ``Env`` falls
-back to a bare ``./appdata`` resolved against whatever directory the launch
-command happened to run from -- a different folder on every launch from a
-different terminal/cwd, which looks like "nothing persists between sessions".
+A real ``APP_DATA`` environment variable always decides (Docker, dev), but an end
+user never sets one: they pick a shared folder in the first-run wizard or
+Settings, and that choice has to survive every later launch regardless of which
+directory the launch happened to run from.
 
 This module is a tiny pointer file, kept in a fixed, cwd-independent location
 (the user's home directory) rather than inside any APP_DATA tree -- it has to

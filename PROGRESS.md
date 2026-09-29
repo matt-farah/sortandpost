@@ -1,8 +1,8 @@
 # sortandpost — build progress & resume notes
 
 _Last updated: 2026-09-28 (V2 P4 — first-run onboarding wizard + split local/sync layout)._
-_Working branch: `main` (tag `v1.1.0`). P3 shipped (#28 → #29 → #30 merged). P4 is branch
-`v2-p4-onboarding`._
+_Working branch: `main` (tag `v1.1.0`). P3 shipped (#28 → #29 → #30); P4 shipped (#31).
+All merged, nothing pending._
 
 > **▶️ Next session:** V2 P0–P4 done. Next up per `V2Plan.md` is **P5 — packaging + tray +
 > lifecycle** (`V2.md` #5, **Opus**): macOS `.app` first. P4 already gives it what a
