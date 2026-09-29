@@ -1,14 +1,77 @@
 # sortandpost — build progress & resume notes
 
 _Last updated: 2026-09-29 (V2 P5 — macOS app: PyInstaller bundle, menu-bar tray, clean lifecycle)._
-_Working branch: `v2-p5-macos-packaging` (PR pending). P0–P4 merged (#28–#32)._
+_Working branch: `main`. P0–P5 merged (#28–#33). Nothing pending._
 
-> **▶️ Next session:** V2 P0–P5 done. Next up per `V2Plan.md` is **P6 — Windows pass (#19) +
-> `.exe`** (**Sonnet**, Opus if packaging bites). This needs a real Windows machine. Reuse
-> `sortandpost.desktop` as-is: `runtime.py` already has an `msvcrt` lock, and `tray.py` has
-> Windows branches for the alert and open-path helpers. Add a `packaging/windows/` spec
-> that bundles `exiftool.exe` (`binaries.exiftool_path()` already looks for it), and a
-> Windows "start at login" (Startup-folder shortcut or `HKCU\…\Run`) in `login_item.py`.
+> **▶️ Next session (on the Windows machine):** V2 **P6 — Windows pass (#19) + `.exe`**
+> (`V2Plan.md`; **Sonnet**, Opus if packaging bites). First Windows session: start from
+> the checklist below.
+
+### P6 kickoff — Windows
+
+**Working conventions** (these live in the Mac's Claude memory, which doesn't travel):
+- Models: Sonnet or Opus only, never Haiku. Plan in Opus (plan mode), then implement
+  with the model the phase is assigned.
+- Every feature ends with the CLAUDE.md "Development workflow": quality gate → boot the
+  app → the user clicks through it → sign-off → PROGRESS.md / V2.md / V2Plan.md → commit →
+  PR per phase.
+- Don't commit the user's own `Issues.md` edits unless asked.
+- Prod on the Mac runs from the repo working tree on :8080 against a Synology Drive
+  folder. The Windows machine may join that **same** shared folder as a second device
+  (that's the P4 "join" flow). It's fine to test with, but it's real data: use a scratch
+  shared folder for destructive tests.
+
+**Set up the dev environment (PowerShell):**
+```powershell
+winget install Python.Python.3.13 astral-sh.uv OliverBetz.ExifTool Git.Git
+git clone https://github.com/matt-farah/sortandpost; cd sortandpost
+uv sync --extra dev --extra desktop       # pyobjc is skipped off macOS
+uv run pytest -q; uv run ruff check .; uv run mypy src
+```
+- `browser_test_data/` is **not in git** (it's in the Mac's `.git/info/exclude`). Make a
+  scratch one instead:
+  `$env:SORTANDPOST_PREF_DIR="$PWD\scratch\prefs"; $env:SORTANDPOST_LOCAL_DIR="$PWD\scratch\local"`,
+  then run `uv run python -m sortandpost` and do the wizard. Pick a scratch shared folder
+  and a folder of sample photos (JPEG + HEIC + a RAW if possible).
+- Desktop flow from source: `uv run python -m sortandpost --tray`.
+
+**P6 checklist:**
+1. **Windows pass (#19)** on the native app:
+   - rawpy / pillow-heif decode
+   - `send2trash` (delete → "Move all to system Trash", the Recycle Bin)
+   - Explorer reveal / open of multiple files (P1), including `SHOpenFolderAndSelectItems`
+   - the "Open with" app picker on `.exe` files (P2)
+   - Windows rating tags (`write_windows_compat_tags`: stars visible in Explorer
+     Properties)
+   - `%LOCALAPPDATA%\sortandpost` split layout
+   - The process pool (spawn) and exiftool `-stay_open` on Windows.
+2. **Tray on Windows:** `desktop/` already has Windows branches:
+   - `runtime.py`'s `msvcrt` lock
+   - `tray._ask`'s `MessageBoxW`
+   - `os.startfile`
+   - pystray's win32 backend, which calls menu callbacks on its own thread (check that
+     `_on_main`'s direct call is safe).
+
+   Still to do:
+   - **Start at login:** `login_item.py` is macOS-only; add a Startup-folder shortcut or
+     an `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value.
+   - **Parent watch:** `os.getppid()` does work on Windows, but a Windows process is
+     *not* re-parented when its parent dies, so `control.start_parent_watch` never fires
+     there. Use a parent-handle check (`psutil.pid_exists` / `OpenProcess`) instead.
+   - **Shutdown:** SIGTERM is `TerminateProcess` on Windows, which is **not** clean. So
+     the `/quit` control call is the only clean path there, and the SIGTERM fallback
+     leaves a stale lock.
+   - **Logoff / shutdown:** logging off or shutting down Windows needs
+     `WM_QUERYENDSESSION` handling, or it's an unclean stop.
+3. **`.exe` packaging:** add `packaging/windows/`, modelled on `packaging/macos/`:
+   - a PyInstaller onedir spec that bundles `exiftool.exe` + `exiftool_files/` from
+     exiftool.org's `exiftool-<ver>_64.zip` (sha256 on exiftool.org/checksums.txt). The
+     bundle layout needs `binaries.exiftool_path()`'s `exiftool/exiftool.exe`.
+   - the torchvision `*.pyd` op libraries: the macOS spec's explicit `.so` fix likely has
+     a `.pyd` equivalent.
+   - `console=False`, an `.ico` from `desktop.icon.render_icon`, and ideally an Inno Setup
+     / MSIX installer (code signing is out of scope, the same as the ad-hoc macOS build).
+   - winget publishing is a ToDo.md item after P6.
 
 ---
 
