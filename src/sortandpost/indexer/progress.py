@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
-Stage = Literal["idle", "discovering", "indexing", "embedding"]
+Stage = Literal["idle", "discovering", "indexing", "downloading_model", "embedding"]
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,8 @@ class ProgressSnapshot:
             return f"Scanning folders… {self.done:,} found"
         if self.stage == "indexing":
             return f"Indexing {self.done:,}/{self.total:,}"
+        if self.stage == "downloading_model":
+            return "Downloading the AI model (~600 MB, one time)…"
         if self.stage == "embedding":
             return f"Embedding {self.done:,}/{self.total:,}"
         return ""

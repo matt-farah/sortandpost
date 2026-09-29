@@ -99,6 +99,7 @@ from sortandpost.db.flags import (
 )
 from sortandpost.db.meta import get_generation
 from sortandpost.db.models import EmbeddingRow, Photo, Prediction, PredictionState, Rating
+from sortandpost.desktop import control as desktop_control
 from sortandpost.grouping import PhotoGroup, parse_folder_sort
 from sortandpost.helper import HelperInfo, read_helper_info
 from sortandpost.indexer import scan_clip_once, scan_once
@@ -541,6 +542,12 @@ class State:
     engine: Engine | None = None
     settings: Settings | None = None
     indexer_started: bool = False
+    indexer_stop: threading.Event | None = None
+    indexer_thread: threading.Thread | None = None
+    # Set by the desktop tray's "Pause indexing" (sortandpost.desktop): no new
+    # scan starts and a running one stops after the file in hand. Per process.
+    indexer_paused: threading.Event = threading.Event()
+    shutting_down: bool = False
     manager: SyncManager | None = None
     # This machine hasn't finished the welcome wizard (sortandpost.onboarding):
     # every page redirects to /welcome and the indexer waits.
@@ -679,9 +686,10 @@ def _status_bar() -> None:
                     if State.write_mode == WriteMode.writable
                     else f"read-only · {State.lock_holder}"
                 )
+                paused = " · indexing paused" if State.indexer_paused.is_set() else ""
                 summary.set_text(
                     f"{present}/{total} photos indexed · {total - present} missing · "
-                    f"{pending} CLIP suggestions pending · {lock}"
+                    f"{pending} CLIP suggestions pending · {lock}{paused}"
                 )
             except Exception:  # never let the status bar break a page
                 summary.set_text("status unavailable")
@@ -804,8 +812,9 @@ def build_ui(settings: Settings) -> None:
     State.apply(manager)
     State.manager = manager
     State.onboarding_pending = settings.onboarding_pending
-    nicegui_app.on_shutdown(manager.stop)
-    nicegui_app.on_shutdown(EXIFTOOL.close)
+    # One ordered hook -- NiceGUI runs on_shutdown callbacks in registration
+    # order, and the final publish must come after the indexer's last write.
+    nicegui_app.on_shutdown(lambda: _shutdown_all(manager))
 
     if (
         settings.config.indexer.run_in_app
@@ -2771,7 +2780,7 @@ def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
     """Run the continuous indexer (step 6) in-process while this machine is the
     writer. It stops on app shutdown; it never runs in read-only mode. Idempotent
     -- a later call (e.g. from ``_start_lock_watch`` on promotion) is a no-op."""
-    if State.indexer_started:
+    if State.indexer_started or State.shutting_down:
         return
     State.indexer_started = True
     stop = threading.Event()
@@ -2784,17 +2793,37 @@ def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
             # Share the one process-wide CLIP model with search so the two don't
             # each hold ~600MB of weights, and so the loop stops re-loading it.
             "clip_model": State.get_clip_model(settings),
+            "paused": State.indexer_paused,
         },
         name="sortandpost-indexer",
         daemon=True,
     )
+    State.indexer_stop, State.indexer_thread = stop, thread
     thread.start()
 
-    def _shutdown() -> None:
-        stop.set()
-        thread.join(timeout=10)
 
-    nicegui_app.on_shutdown(_shutdown)
+_INDEXER_JOIN_SEC = 60.0
+
+
+def _shutdown_all(manager: SyncManager) -> None:
+    """App shutdown (Quit, restart, Ctrl-C, SIGTERM), strictly in this order:
+    stop the indexer and wait for it -- it stops between files, so this is
+    quick -- then the final publish + lock release (``manager.stop``,
+    constraints #4 and #9), then exiftool."""
+    State.shutting_down = True  # the lock watch must not start a new indexer now
+    thread = State.indexer_thread
+    if State.indexer_stop is not None:
+        State.indexer_stop.set()
+    if thread is not None:
+        thread.join(timeout=_INDEXER_JOIN_SEC)
+        if thread.is_alive():
+            log.warning("indexer still busy after %.0fs; publishing anyway", _INDEXER_JOIN_SEC)
+    try:
+        manager.stop()
+    except Exception:
+        log.exception("final publish / lock release failed")
+    EXIFTOOL.close()
+    log.info("shutdown complete")
 
 
 def _start_lock_watch(settings: Settings, manager: SyncManager) -> None:
@@ -5363,8 +5392,57 @@ def _welcome_folder_step(settings: Settings, joined: bool) -> None:
         _shared_folder_picker("", on_use=_use, button="Use this folder")
 
 
+def _desktop_status(settings: Settings | None) -> dict[str, Any]:
+    """``GET /_desktop/status`` for the tray menu (cheap: no DB query)."""
+    snap = PROGRESS.snapshot()
+    trash_photos = 0
+    if settings is not None:
+        trash_photos = sum(len(b.hashes) for b in list_batches(settings.paths.local))
+    return {
+        "version": __version__,
+        "setup": settings is None,
+        "onboarding": State.onboarding_pending,
+        "writable": State.write_mode == WriteMode.writable,
+        "holder": State.lock_holder,
+        "paused": State.indexer_paused.is_set(),
+        "activity": _progress_text(snap) if snap.active else "",
+        "trash_photos": trash_photos,
+        "system_trash": system_trash_available(),
+        "logs_dir": str(settings.paths.logs_dir) if settings is not None else "",
+    }
+
+
+def _desktop_set_paused(paused: bool) -> None:
+    if paused:
+        State.indexer_paused.set()
+    else:
+        State.indexer_paused.clear()
+    log.info("indexing %s from the desktop tray", "paused" if paused else "resumed")
+
+
+def _desktop_flush_trash(settings: Settings) -> dict[str, Any]:
+    """Quit's "Move N deleted photos to the system Trash?" -> Move. A direct
+    user click in the tray's dialog (constraint #1), never automatic."""
+    res = flush_to_system_trash(settings.paths.local)
+    State.last_delete = None
+    return {"moved": res.moved, "failed": len(res.failed)}
+
+
+def _install_desktop_control(settings: Settings | None) -> None:
+    desktop_control.install(
+        nicegui_app,
+        desktop_control.ControlHooks(
+            status=lambda: _desktop_status(settings),
+            shutdown=nicegui_app.shutdown,
+            set_paused=_desktop_set_paused if settings is not None else None,
+            flush_trash=(lambda: _desktop_flush_trash(settings)) if settings is not None else None,
+        ),
+    )
+
+
 def run(settings: Settings) -> None:
     build_ui(settings)
+    _install_desktop_control(settings)
     ui.run(
         host=settings.env.host,
         port=settings.env.port,
@@ -5406,6 +5484,7 @@ def run_setup(env: Env) -> None:
 
                 _shared_folder_picker("", on_use=_use, button="Continue")
 
+    _install_desktop_control(None)
     ui.run(
         host=env.host,
         port=env.port,

@@ -31,6 +31,12 @@ dependencies = [
 sortandpost = "sortandpost.__main__:main"
 
 [project.optional-dependencies]
+# The packaged desktop app (V2 P5): menu-bar tray + the PyInstaller build.
+desktop = [
+    "pystray>=0.19",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "pyinstaller>=6.10",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
@@ -65,7 +71,7 @@ strict = true
 plugins = []
 # SQLModel/NiceGUI ship partial stubs; don't fail the build on their internals.
 [[tool.mypy.overrides]]
-module = ["nicegui.*", "send2trash.*"]
+module = ["nicegui.*", "send2trash.*", "pystray.*", "AppKit.*", "Foundation.*", "PyObjCTools.*"]
 ignore_missing_imports = true
 
 # These ship no stubs at all. `follow_imports = skip` makes them `Any` whether or

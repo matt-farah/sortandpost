@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
+from sortandpost import binaries
 from sortandpost.metadata import ExiftoolClient
 
 IDLE_CLOSE_SEC = 120.0
@@ -24,7 +25,7 @@ class SharedExiftool:
     def __init__(
         self,
         *,
-        exiftool_path: str = "exiftool",
+        exiftool_path: str | None = None,
         idle_seconds: float = IDLE_CLOSE_SEC,
         client_factory: Callable[[str], ExiftoolClient] = lambda path: ExiftoolClient(
             exiftool_path=path
@@ -47,12 +48,13 @@ class SharedExiftool:
         """Exclusive use of the shared client, or ``None`` when exiftool isn't
         installed (callers then skip the file write and stay DB-only). Blocks
         while another caller holds it -- call off the event loop."""
-        if shutil.which(self._path) is None:
+        path = self._path or binaries.exiftool_path()  # bundled copy in the packaged app
+        if shutil.which(path) is None:
             yield None
             return
         with self._lock:
             if self._client is None:
-                self._client = self._factory(self._path)
+                self._client = self._factory(path)
             client = self._client
             client.write_windows_compat_tags = write_windows_compat_tags
             client.start()  # no-op while alive; revives a crashed process

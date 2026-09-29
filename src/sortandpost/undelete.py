@@ -18,7 +18,6 @@ Runs under the indexer's process-wide lock so it never races a scan pass.
 from __future__ import annotations
 
 import logging
-import shutil
 from collections.abc import Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -27,6 +26,7 @@ from pathlib import Path
 from sqlalchemy import Engine
 from sqlmodel import Session
 
+from sortandpost import binaries
 from sortandpost.config import Settings
 from sortandpost.db.deletion import lift_tombstone, restore_photo_state
 from sortandpost.indexer.pipeline import PipelineConfig, index_file
@@ -91,7 +91,7 @@ def put_back_batch(
             ExiftoolClient(
                 write_windows_compat_tags=settings.config.rating.write_windows_compat_tags
             )
-            if shutil.which("exiftool")
+            if binaries.exiftool_available()
             else nullcontext(None)
         )
         now = utcnow()

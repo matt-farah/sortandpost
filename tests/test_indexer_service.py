@@ -187,3 +187,76 @@ def test_loop_loads_the_clip_model_once_across_many_cycles(settings: Settings) -
         thread.join(timeout=5)
     assert not thread.is_alive()
     assert model.load_calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# pause (desktop tray) + interrupt
+# --------------------------------------------------------------------------- #
+def test_loop_does_nothing_while_paused_then_resumes(settings: Settings) -> None:
+    paused = threading.Event()
+    paused.set()
+    stop = threading.Event()
+    cfg = IndexerLoopConfig(
+        full_scan_interval_sec=0.2, debounce_sec=0.1, poll_sec=0.02, watch=False, run_clip=False
+    )
+    thread = threading.Thread(
+        target=run_indexer,
+        kwargs={
+            "settings": settings,
+            "is_writable": lambda: True,
+            "stop": stop,
+            "loop_config": cfg,
+            "paused": paused,
+        },
+        daemon=True,
+    )
+    thread.start()
+    try:
+        time.sleep(0.5)
+        assert _photo_count(settings) == 0  # paused: no cycle started
+        paused.clear()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _photo_count(settings) == 0:
+            time.sleep(0.05)
+        assert _photo_count(settings) == 1
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_interrupted_scan_skips_the_presence_sweep(settings: Settings) -> None:
+    """A scan cut short hasn't seen every file, so it must not mark the unseen
+    ones missing (and it must not index anything past the interrupt)."""
+    from sortandpost.indexer.scan import scan_once
+
+    first = scan_once(settings)
+    assert first.indexed == 1 and not first.interrupted
+
+    stats = scan_once(settings, interrupt=lambda: True)
+    assert stats.interrupted
+    assert stats.seen == 0
+    assert stats.marked_absent == 0 and stats.marked_missing == 0
+    with Session(make_engine(settings.paths.working_db)) as s:
+        photo = s.exec(select(Photo)).one()
+    assert photo.missing_since is None
+
+
+def test_interrupt_stops_indexing_mid_list(settings: Settings, tmp_path: Path) -> None:
+    from sortandpost.indexer.scan import scan_once
+
+    library = tmp_path / "library"
+    for i in range(4):
+        Image.new("RGB", (16, 16), (i * 40, 10, 10)).save(library / f"b{i}.jpg", "JPEG")
+    calls = {"n": 0}
+
+    def _after_discovery() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 5 + 2  # 5 files discovered, then stop after 2 indexed
+
+    stats = scan_once(settings, workers=1, interrupt=_after_discovery)
+    assert stats.interrupted
+    assert 0 < _photo_count(settings) < 5
+    rest = scan_once(settings, workers=1)  # resumable: the next pass finishes the job
+    assert not rest.interrupted
+    assert _photo_count(settings) == 5
