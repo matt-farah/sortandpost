@@ -101,7 +101,12 @@ def run_indexer(
     stop: threading.Event,
     loop_config: IndexerLoopConfig | None = None,
     clip_model: ClipModel | None = None,
+    paused: threading.Event | None = None,
 ) -> None:
+    """Run scan cycles until ``stop`` is set. While ``paused`` is set (the
+    desktop tray's "Pause indexing") no new cycle starts; one already running
+    finishes, so a pause never leaves a file half-indexed (constraint #6).
+    FS events that arrive meanwhile stay pending and trigger a cycle on resume."""
     cfg = loop_config or IndexerLoopConfig.from_settings(settings)
     roots = [r for r in container_roots(settings.library_roots) if r.is_dir()]
 
@@ -120,13 +125,17 @@ def run_indexer(
     if cfg.run_clip:
         model = clip_model or ClipModel(settings.config.clip, settings.paths.models_dir)
 
+    def _halt() -> bool:
+        return stop.is_set() or (paused is not None and paused.is_set())
+
     next_full = 0.0  # run immediately on start
     try:
         while not stop.is_set():
-            if is_writable():
+            if is_writable() and not _halt():
                 now = time.monotonic()
                 if now >= next_full or debouncer.take_if_ready():
-                    _run_cycle(settings, clip_model=model)
+                    if not _run_cycle(settings, clip_model=model, interrupt=_halt):
+                        continue  # cut short: next_full stays due, so it reruns on resume
                     next_full = time.monotonic() + cfg.full_scan_interval_sec
             stop.wait(cfg.poll_sec)
     finally:
@@ -135,17 +144,28 @@ def run_indexer(
             observer.join(timeout=5)
 
 
-def _run_cycle(settings: Settings, *, clip_model: ClipModel | None) -> None:
+def _run_cycle(
+    settings: Settings,
+    *,
+    clip_model: ClipModel | None,
+    interrupt: Callable[[], bool] | None = None,
+) -> bool:
+    """One scan + CLIP pass. False if ``interrupt`` cut it short (pause / quit)."""
     try:
-        stats = scan_once(settings)
+        stats = scan_once(settings, interrupt=interrupt)
         log.info("indexer cycle: %s", stats)
+        if stats.interrupted:
+            return False
         if clip_model is not None:
-            clip_stats = scan_clip_once(settings, model=clip_model)
+            clip_stats = scan_clip_once(settings, model=clip_model, interrupt=interrupt)
             log.info("indexer cycle: %s", clip_stats)
+            if clip_stats.interrupted:
+                return False
     except ModelMismatch as exc:
         log.error("CLIP pass needs --reembed: %s", exc)
     except Exception:  # a bad cycle must not kill the loop
         log.exception("indexer cycle failed")
+    return True
 
 
 def _start_observer(roots: list[Path], debouncer: _Debouncer) -> Observer | None:

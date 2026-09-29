@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
-import shutil
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import nullcontext
@@ -24,7 +23,13 @@ from pathlib import Path
 import numpy as np
 from sqlmodel import Session, col, select
 
-from sortandpost.clip.model import ClipModel, ClipModelUnavailable, apply_cpu_profile
+from sortandpost import binaries
+from sortandpost.clip.model import (
+    ClipModel,
+    ClipModelUnavailable,
+    apply_cpu_profile,
+    clip_available,
+)
 from sortandpost.clip.store import EmbeddingStore, check_compatible, ensure_meta
 from sortandpost.clip.tagging import pick_terms, upsert_prediction
 from sortandpost.clip.vocab import Vocab, ensure_text_matrix, load_vocab
@@ -90,6 +95,7 @@ class ScanStats:
     ratings_imported: int = 0
     ratings_written: int = 0
     keywords_imported: int = 0
+    interrupted: bool = False  # stopped early (pause / quit); no presence sweep this pass
 
     def __str__(self) -> str:
         reconciled = ""
@@ -110,7 +116,7 @@ class ScanStats:
             f"({self.new_photos} new, {self.thumbnails} thumbnails), "
             f"{self.skipped} unchanged, {self.errors} errors; "
             f"{self.marked_absent} paths now absent, {self.marked_missing} photos now missing"
-            f"{reconciled}{tomb}{online}"
+            f"{reconciled}{tomb}{online}" + (" (interrupted)" if self.interrupted else "")
         )
 
 
@@ -118,7 +124,12 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
+def scan_once(
+    settings: Settings,
+    *,
+    workers: int | None = None,
+    interrupt: Callable[[], bool] | None = None,
+) -> ScanStats:
     """One full pass over the library roots (stages 1-6).
 
     Stages 2-4 (decode, pixel + perceptual hash, thumbnails) are CPU-bound and
@@ -134,15 +145,27 @@ def scan_once(settings: Settings, *, workers: int | None = None) -> ScanStats:
     ``UNIQUE constraint failed`` errors (get-or-create checks in one session
     can't see the other's uncommitted inserts). The cross-machine write lock
     (hard constraint #9) doesn't cover this -- it's intra-process.
+
+    ``interrupt`` is polled between files (the app's quit / "Pause indexing").
+    Once it returns True the pass stops after the file in hand -- every file
+    already done is committed, the rest are picked up next pass (constraint #6).
+    An interrupted pass skips the presence sweep: it hasn't seen every path, so
+    sweeping would wrongly mark the unvisited ones missing.
     """
     with _INDEX_LOCK:
         try:
-            return _scan_once_locked(settings, workers=workers)
+            return _scan_once_locked(settings, workers=workers, interrupt=interrupt)
         finally:
             PROGRESS.finish()
 
 
-def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> ScanStats:
+def _scan_once_locked(
+    settings: Settings,
+    *,
+    workers: int | None = None,
+    interrupt: Callable[[], bool] | None = None,
+) -> ScanStats:
+    stop_now = interrupt or (lambda: False)
     paths = settings.paths
     engine = make_engine(paths.working_db)
     init_db(engine)  # no-op once Alembic has run; safety net for native --once
@@ -160,9 +183,9 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
     lower_priority = settings.config.clip.speed == "slow"
     set_thread_priority(lower_priority)  # inline decoding + any pool we spawn inherit it (Linux)
 
-    have_exiftool = shutil.which("exiftool") is not None
+    have_exiftool = binaries.exiftool_available()
     if not have_exiftool:
-        log.warning("exiftool not on PATH; skipping embedded-metadata reads this pass")
+        log.warning("exiftool not found; skipping embedded-metadata reads this pass")
     et_ctx = (
         ExiftoolClient(write_windows_compat_tags=settings.config.rating.write_windows_compat_tags)
         if have_exiftool
@@ -181,6 +204,9 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
             exclude=paths.roots(),
             exclude_names=settings.config.indexer.exclude_dir_names,
         ):
+            if stop_now():
+                stats.interrupted = True
+                break
             key = str(path)
             seen_paths.add(key)
             stats.seen += 1
@@ -200,11 +226,15 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
             todo.append(key)
 
         # -- stages 2-4 in parallel, stages 5-6 + DB serial here ------------- #
+        if stats.interrupted:
+            todo = []
         PROGRESS.begin("indexing", total=len(todo))
-        for n_done, decoded in enumerate(
-            _decode_stream(todo, pcfg, paths, n_workers, lower_priority=lower_priority),
-            start=1,
-        ):
+        stream = _decode_stream(todo, pcfg, paths, n_workers, lower_priority=lower_priority)
+        for n_done, decoded in enumerate(stream, start=1):
+            if stop_now():
+                stats.interrupted = True
+                stream.close()  # waits only for the few files already in flight
+                break
             PROGRESS.update(done=n_done, current=Path(decoded.path).name)
             try:
                 outcome = persist_decoded(
@@ -223,6 +253,10 @@ def _scan_once_locked(settings: Settings, *, workers: int | None = None) -> Scan
                 stats.errors += 1
                 continue
             _tally(stats, outcome)
+
+        if stats.interrupted:
+            log.info("scan interrupted: %s", stats)
+            return stats
 
         result = sweep_presence(session, seen_paths, now=_utcnow())
         session.commit()
@@ -254,7 +288,7 @@ def _decode_stream(
     n_workers: int,
     *,
     lower_priority: bool = False,
-) -> Iterator[DecodedFile]:
+) -> Generator[DecodedFile]:
     """Yield a :class:`DecodedFile` per input path -- via a process pool when the
     batch is large enough, otherwise inline. Bounded in-flight work keeps peak
     memory flat regardless of library size. If the pool cannot run (``spawn``
@@ -382,6 +416,7 @@ class ClipStats:
     errors: int = 0
     total_rows: int = 0
     skipped_no_model: bool = False
+    interrupted: bool = False
 
     def __str__(self) -> str:
         if self.skipped_no_model:
@@ -397,6 +432,7 @@ def scan_clip_once(
     *,
     reembed: bool = False,
     model: ClipModel | None = None,
+    interrupt: Callable[[], bool] | None = None,
 ) -> ClipStats:
     """Embed every browsable photo with no row in the current model's matrix, and
     score it against the zero-shot vocabulary.
@@ -411,7 +447,9 @@ def scan_clip_once(
     """
     with _INDEX_LOCK:
         try:
-            return _scan_clip_once_locked(settings, reembed=reembed, model=model)
+            return _scan_clip_once_locked(
+                settings, reembed=reembed, model=model, interrupt=interrupt
+            )
         finally:
             PROGRESS.finish()
 
@@ -421,7 +459,9 @@ def _scan_clip_once_locked(
     *,
     reembed: bool = False,
     model: ClipModel | None = None,
+    interrupt: Callable[[], bool] | None = None,
 ) -> ClipStats:
+    stop_now = interrupt or (lambda: False)
     paths = settings.paths
     ccfg = settings.config.clip
     tcfg = settings.config.tagging
@@ -432,6 +472,13 @@ def _scan_clip_once_locked(
 
     if model is None:
         model = ClipModel(ccfg, paths.models_dir)
+    if (
+        isinstance(model, ClipModel)  # not a test double
+        and not model.loaded
+        and clip_available()
+        and not model.weights_present()
+    ):
+        PROGRESS.begin("downloading_model")  # first run: tell the status bar why it waits
     try:
         model.load()
     except ClipModelUnavailable as exc:
@@ -470,6 +517,9 @@ def _scan_clip_once_locked(
             PROGRESS.begin("embedding", total=len(candidates))
             n_done = 0
             for chunk in _chunked(candidates, batch_size):
+                if stop_now():  # between batches: each one is committed whole
+                    stats.interrupted = True
+                    break
                 PROGRESS.update(done=n_done, current=Path(chunk[0][1]).name)
                 n_done += len(chunk)
                 images = []

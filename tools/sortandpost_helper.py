@@ -12,7 +12,7 @@ and a random token; the container reads that file through its ``/data`` mount an
 hands them to the browser, which calls this agent directly.
 
 Security: 127.0.0.1 only; every request needs the ``X-SP-Token`` header; CORS is
-granted only to ``localhost`` / ``127.0.0.1`` origins; ``/reveal`` and ``/open``
+granted only to ``localhost`` / ``*.localhost`` / ``127.0.0.1`` origins; ``/reveal`` and ``/open``
 act only on paths inside a folder you've registered in the app; subprocesses are
 argv arrays, never a shell.
 """
@@ -297,7 +297,7 @@ class Handler(BaseHTTPRequestHandler):
     def _cors(self) -> None:
         origin = self.headers.get("Origin", "")
         host = urlparse(origin).hostname or ""
-        if host in ("localhost", "127.0.0.1"):
+        if host in ("localhost", "127.0.0.1") or host.endswith(".localhost"):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "X-SP-Token, Content-Type")

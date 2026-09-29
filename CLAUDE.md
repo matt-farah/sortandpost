@@ -31,7 +31,9 @@ updated as decisions are made or changed.
       its reverse, the explicit **"Put back" / "Undo delete"**, which moves them back to their
       exact original paths (refused if that path is now taken or its folder is gone; it never
       creates a folder). A separate user click, **"Move all to system Trash"** (macOS / Windows
-      only, via `send2trash`), hands the managed batches to the OS Trash. None of these is ever
+      only, via `send2trash`), hands the managed batches to the OS Trash. The desktop app's
+      Quit asks the same thing ("Move N deleted photos to the Trash?"), and only its
+      **Move to Trash** button does it. None of these is ever
       an `unlink`, writes anything else under a library root (no `.Trash-*` dir on the library
       filesystem), or runs automatically — only from a user click. RAW files are moved by these
       actions too (constraint #2 governs *metadata writes*, not an explicit user delete).
@@ -79,7 +81,8 @@ updated as decisions are made or changed.
 | Filesystem watch   | `watchdog` |
 | Lint / format / types | `ruff check`, `ruff format`, `mypy` |
 | Tests              | `pytest` + `pytest-asyncio` |
-| Deployment         | Docker Compose, single container |
+| Deployment         | Docker Compose, single container; **macOS app** = PyInstaller onedir `.app` + DMG (`packaging/macos/build.sh`) |
+| Desktop tray       | `pystray` (+ PyObjC on macOS) — `desktop` optional extra |
 
 ---
 
@@ -111,6 +114,10 @@ docker compose run --rm app pytest tests/test_hashing.py::test_pixel_hash_stable
 docker compose run --rm app ruff check .
 docker compose run --rm app ruff format .
 docker compose run --rm app mypy src
+
+# Desktop app (macOS)
+uv run python -m sortandpost --tray    # menu-bar app from source (tray + server child)
+packaging/macos/build.sh               # -> dist/sortandpost.app + dist/sortandpost-<ver>-arm64.dmg
 
 # Native dev (no Docker — requires exiftool + libraw on host)
 uv sync
@@ -393,8 +400,8 @@ for 5 minutes after a delete, or `/settings` → "Recently deleted"): move the b
 re-index those paths immediately, then re-insert the saved rating / tags / prediction states. It
 runs under the indexer's `_INDEX_LOCK`. The managed trash is a short-lived "oops" buffer, not a
 history: **"Move all to system Trash"** (`trash.flush_to_system_trash`, macOS/Windows) forgets
-the batches after handing their files to the OS Trash; it is meant to become an on-quit cleanup
-step. On Linux / Docker there is no flush (send2trash could create a `.Trash-<uid>` on a library
+the batches after handing their files to the OS Trash. The desktop app's Quit offers it too
+(a dialog, never automatic). On Linux / Docker there is no flush (send2trash could create a `.Trash-<uid>` on a library
 volume), so batches stay until put back or cleaned up by hand.
 
 **Stack scope** is a config choice, `deletion.stack_scope` — `selected` (default; only the
@@ -648,6 +655,52 @@ How they're applied:
 - Apple Silicon: the image is arm64 and CLIP runs on CPU (no MPS/CUDA inside Docker on macOS).
   A first full index of ~25k photos can take hours; that is expected — the indexer is background
   and resumable. Running the indexer natively is the escape hatch.
+
+---
+
+## Desktop app (V2 P5; `sortandpost.desktop`, `packaging/`)
+
+The packaged app is **two processes from one executable**. The tray (AppKit / pystray) and
+uvicorn each want the main thread.
+
+- **Tray** (`desktop.tray`, the default when frozen; `--tray` from source):
+  - Takes `app.lock` in `default_local_root()` (an OS file lock, so a second launch just
+    opens the browser on the first one) and picks `127.0.0.1:8080` (next free up to 8099).
+  - Starts the server child `<exe> --serve` (`desktop.supervisor`) with `HOST` / `PORT`,
+    `SORTANDPOST_CONTROL_TOKEN` and `SORTANDPOST_PARENT_PID`.
+  - Writes `runtime.json` (`{pid, host, port, token, version}`, 0600) and opens the browser
+    at **`http://sortandpost.localhost:<port>`**. Any `*.localhost` name resolves to this
+    computer with no DNS or hosts entry, so there's no setup and it works offline. The tray
+    itself talks to the server on `127.0.0.1`. `https://sortandpost.local` (hosts entry +
+    locally trusted certificate) and a public-domain certificate were scoped and rejected:
+    admin prompts / a certificate-issuing service, and no security gain on loopback.
+  - Menu: status, Open, Pause/Resume indexing, Start at login (a LaunchAgent that runs
+    `open -a …app`, packaged app only), Show logs, Quit.
+  - Menu-bar only (`LSUIElement`). Relaunching from Finder opens the browser
+    (`applicationShouldHandleReopen`).
+- **Server** = the normal web app. `desktop.control` mounts token-gated
+  `/_desktop/{status,pause,resume,flush-trash,quit}` only when launched by the tray, and a
+  parent watch shuts the server down cleanly if the tray dies. A source / Docker run has
+  none of this.
+- **Shutdown is one ordered hook** (`app._shutdown_all`): stop the indexer and join it, then
+  `manager.stop()` (final publish + lock release, constraints #4 / #9), then exiftool.
+  - The indexer stops **between files**: `scan_once` / `scan_clip_once` take an `interrupt`
+    callable. An interrupted scan skips the presence sweep (it hasn't seen every path).
+  - Pause uses the same mechanism (`State.indexer_paused`).
+  - Tray Quit → `/quit` → wait 60 s → SIGTERM → SIGKILL only as a last resort. Logout goes
+    through `applicationShouldTerminate` → the same stop, with no dialog.
+- **Bundled exiftool**: `sortandpost.binaries.exiftool_path()` resolves in order:
+  `$SORTANDPOST_EXIFTOOL`, then the bundle's `exiftool/exiftool` (the Perl distribution, run
+  by macOS's `/usr/bin/perl`), then `PATH`. Never hard-code `"exiftool"`.
+- **CLIP weights** are not bundled. They download on first use into
+  `default_local_root()/models`, and the progress stage `downloading_model` labels it.
+- **Build**: `packaging/macos/build.sh` pins the exiftool version + sha256, renders the icon
+  from `desktop.icon`, runs PyInstaller (`sortandpost.spec`, onedir, arm64), signs, and
+  makes the DMG.
+  - Signing is ad-hoc unless `SORTANDPOST_SIGN_ID` is set; notarization runs when
+    `NOTARY_PROFILE` is also set.
+  - `multiprocessing.freeze_support()` is the first call in `__main__.main`, because the
+    spawn pool re-runs the executable.
 
 ---
 

@@ -8,7 +8,22 @@ Dropbox) — pick the same folder on another computer and it works there with no
 
 **Architecture and design decisions live in [CLAUDE.md](CLAUDE.md). Read it first.**
 
-## Quick start (native — recommended)
+## macOS app (easiest)
+
+Download `sortandpost-<version>-arm64.dmg` (Apple Silicon), drag **sortandpost** to
+Applications and open it. No Python or exiftool needed. It lives in the **menu bar**: the ★
+icon opens the library in your browser and lets you pause or resume indexing, start
+sortandpost at login, show logs, and quit. Quitting finishes the current photo, saves the
+library to your shared folder and releases it for your other computers. If photos you
+deleted are still waiting in *Recently deleted*, Quit asks whether to move them to the
+Trash.
+
+The app isn't notarized yet, so the first time you open it, **right-click → Open**, or go to
+System Settings → Privacy & Security → *Open Anyway*. It opens at
+`http://sortandpost.localhost:8080` and only listens on this computer. To build it yourself, run `packaging/macos/build.sh` (see CLAUDE.md →
+"Desktop app").
+
+## Quick start (native — from source)
 
 Runs directly on your machine: native filesystem speed, GPU CLIP (Apple MPS /
 CUDA), and "Reveal in Finder / Explorer" works with no helper process.

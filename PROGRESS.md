@@ -1,16 +1,150 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-28 (V2 P4 — first-run onboarding wizard + split local/sync layout)._
-_Working branch: `main` (tag `v1.1.0`). P3 shipped (#28 → #29 → #30); P4 shipped (#31).
-All merged, nothing pending._
+_Last updated: 2026-09-29 (V2 P5 — macOS app: PyInstaller bundle, menu-bar tray, clean lifecycle)._
+_Working branch: `main`. P0–P5 merged (#28–#33). Nothing pending._
 
-> **▶️ Next session:** V2 P0–P4 done. Next up per `V2Plan.md` is **P5 — packaging + tray +
-> lifecycle** (`V2.md` #5, **Opus**): macOS `.app` first. P4 already gives it what a
-> double-clickable app needs — no env vars, first-run wizard, the per-machine data folder
-> under `~/Library/Application Support/sortandpost`, and an in-place restart
-> (`_reexec_if_requested` already handles `sys.frozen`).
+> **▶️ Next session (on the Windows machine):** V2 **P6 — Windows pass (#19) + `.exe`**
+> (`V2Plan.md`; **Sonnet**, Opus if packaging bites). First Windows session: start from
+> the checklist below.
+
+### P6 kickoff — Windows
+
+**Working conventions** (these live in the Mac's Claude memory, which doesn't travel):
+- Models: Sonnet or Opus only, never Haiku. Plan in Opus (plan mode), then implement
+  with the model the phase is assigned.
+- Every feature ends with the CLAUDE.md "Development workflow": quality gate → boot the
+  app → the user clicks through it → sign-off → PROGRESS.md / V2.md / V2Plan.md → commit →
+  PR per phase.
+- Don't commit the user's own `Issues.md` edits unless asked.
+- Prod on the Mac runs from the repo working tree on :8080 against a Synology Drive
+  folder. The Windows machine may join that **same** shared folder as a second device
+  (that's the P4 "join" flow). It's fine to test with, but it's real data: use a scratch
+  shared folder for destructive tests.
+
+**Set up the dev environment (PowerShell):**
+```powershell
+winget install Python.Python.3.13 astral-sh.uv OliverBetz.ExifTool Git.Git
+git clone https://github.com/matt-farah/sortandpost; cd sortandpost
+uv sync --extra dev --extra desktop       # pyobjc is skipped off macOS
+uv run pytest -q; uv run ruff check .; uv run mypy src
+```
+- `browser_test_data/` is **not in git** (it's in the Mac's `.git/info/exclude`). Make a
+  scratch one instead:
+  `$env:SORTANDPOST_PREF_DIR="$PWD\scratch\prefs"; $env:SORTANDPOST_LOCAL_DIR="$PWD\scratch\local"`,
+  then run `uv run python -m sortandpost` and do the wizard. Pick a scratch shared folder
+  and a folder of sample photos (JPEG + HEIC + a RAW if possible).
+- Desktop flow from source: `uv run python -m sortandpost --tray`.
+
+**P6 checklist:**
+1. **Windows pass (#19)** on the native app:
+   - rawpy / pillow-heif decode
+   - `send2trash` (delete → "Move all to system Trash", the Recycle Bin)
+   - Explorer reveal / open of multiple files (P1), including `SHOpenFolderAndSelectItems`
+   - the "Open with" app picker on `.exe` files (P2)
+   - Windows rating tags (`write_windows_compat_tags`: stars visible in Explorer
+     Properties)
+   - `%LOCALAPPDATA%\sortandpost` split layout
+   - The process pool (spawn) and exiftool `-stay_open` on Windows.
+2. **Tray on Windows:** `desktop/` already has Windows branches:
+   - `runtime.py`'s `msvcrt` lock
+   - `tray._ask`'s `MessageBoxW`
+   - `os.startfile`
+   - pystray's win32 backend, which calls menu callbacks on its own thread (check that
+     `_on_main`'s direct call is safe).
+
+   Still to do:
+   - **Start at login:** `login_item.py` is macOS-only; add a Startup-folder shortcut or
+     an `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value.
+   - **Parent watch:** `os.getppid()` does work on Windows, but a Windows process is
+     *not* re-parented when its parent dies, so `control.start_parent_watch` never fires
+     there. Use a parent-handle check (`psutil.pid_exists` / `OpenProcess`) instead.
+   - **Shutdown:** SIGTERM is `TerminateProcess` on Windows, which is **not** clean. So
+     the `/quit` control call is the only clean path there, and the SIGTERM fallback
+     leaves a stale lock.
+   - **Logoff / shutdown:** logging off or shutting down Windows needs
+     `WM_QUERYENDSESSION` handling, or it's an unclean stop.
+3. **`.exe` packaging:** add `packaging/windows/`, modelled on `packaging/macos/`:
+   - a PyInstaller onedir spec that bundles `exiftool.exe` + `exiftool_files/` from
+     exiftool.org's `exiftool-<ver>_64.zip` (sha256 on exiftool.org/checksums.txt). The
+     bundle layout needs `binaries.exiftool_path()`'s `exiftool/exiftool.exe`.
+   - the torchvision `*.pyd` op libraries: the macOS spec's explicit `.so` fix likely has
+     a `.pyd` equivalent.
+   - `console=False`, an `.ico` from `desktop.icon.render_icon`, and ideally an Inno Setup
+     / MSIX installer (code signing is out of scope, the same as the ad-hoc macOS build).
+   - winget publishing is a ToDo.md item after P6.
 
 ---
+
+## 🖥 2026-09-29 — V2 P5: macOS app + menu-bar tray + lifecycle (`V2.md` #5)
+
+The user tested the packaged app (menu, Pause/Resume, second launch opens the browser,
+Quit → clean exit) and signed off. 632 tests pass (+19: `tests/test_desktop.py`, plus the
+pause/interrupt tests in `test_indexer_service.py`). ruff / format / mypy are clean, and
+`alembic check` is empty (no schema change).
+
+- **Two processes, one executable.** The tray (`desktop.tray`, pystray + PyObjC) supervises
+  the server child `<exe> --serve` (`desktop.supervisor`).
+  - The tray takes the single-instance `app.lock` and writes `runtime.json` (0600), both
+    in `default_local_root()`, and picks `127.0.0.1:8080` (next free up to 8099).
+  - The server mounts a token-gated `/_desktop/{status,pause,resume,flush-trash,quit}`
+    (`desktop.control`) only when the tray launched it.
+  - A **parent watch** shuts the server down cleanly if the tray dies (verified with
+    `kill -9` on the tray: the final publish runs and the lock is released).
+  - Menu-bar only (`LSUIElement`). Reopening from Finder opens the browser.
+  - Start at login is a LaunchAgent running `open -a …app`, offered only in the packaged
+    app.
+- **Browser URL = `http://sortandpost.localhost:<port>`.** `*.localhost` resolves to
+  loopback with no setup (checked with the macOS resolver + Chromium). The user asked about
+  `https://sortandpost.local`, and about a path on their own domain with an existing
+  certificate. Both were scoped and rejected for now:
+  - `.local` + HTTPS needs a hosts-file edit and a keychain-trusted certificate (admin
+    prompts), with no security gain on loopback.
+  - A public-domain certificate would need its private key shipped in the app, or a
+    certificate-issuing service we'd have to run. It's also broken by routers that block
+    public names pointing at private addresses, and it fails offline.
+  - A path can't route to the local machine. Best use of the domain: a website
+    `/local` → `http://sortandpost.localhost:8080` redirect later (ToDo "Build website").
+- **Shutdown fixed:** `manager.stop` (final publish) was registered *before* the indexer's
+  stop hook, so a quit mid-scan could publish while the indexer still wrote.
+  - Now there's one ordered hook, `app._shutdown_all`: indexer stop + join (60 s), then
+    `manager.stop`, then exiftool. `_start_indexer_thread` refuses once shutting down.
+  - `scan_once` / `scan_clip_once` take `interrupt=` and stop between files (CLIP: between
+    batches). An interrupted scan **skips the presence sweep**, so unseen paths aren't
+    marked missing.
+  - Pause (`State.indexer_paused`, tray) uses the same path, and the status bar shows
+    "indexing paused".
+- **Quit + managed trash:** if "Recently deleted" has photos, Quit shows a native alert:
+  "Move N deleted photos to the Trash? — Move to Trash / Keep". Only the button moves them
+  (constraint #1 text updated). Logout goes through `applicationShouldTerminate` → the same
+  clean stop with no dialog.
+- **Bundled exiftool:** `sortandpost.binaries.exiftool_path()` resolves in order:
+  `$SORTANDPOST_EXIFTOOL`, then the bundle's `exiftool/exiftool`, then `PATH`. All four
+  hard-coded `"exiftool"` lookups now go through it. The bundle ships Image-ExifTool 13.59
+  (the Perl distribution, sha256-pinned in `build.sh`, run by `/usr/bin/perl`).
+- **First-run CLIP download:** a new progress stage `downloading_model` ("Downloading the AI
+  model (~600 MB, one time)…"), shown when `ClipModel.weights_present()` is false.
+- **Build:** `packaging/macos/build.sh` → `dist/sortandpost.app` (657 MB) +
+  `sortandpost-1.1.0-arm64.dmg` (259 MB).
+  - Ad-hoc signed. Developer ID signing + notarization are scripted behind
+    `SORTANDPOST_SIGN_ID` / `NOTARY_PROFILE`.
+  - Icon rendered from `desktop.icon` (Pillow → iconutil).
+  - `pyproject` gains the `desktop` extra.
+- **Gotchas found:**
+  - torchvision ≥ 0.29 ships `_C_stable.so` / `image_stable.so`, which PyInstaller's hook
+    misses. The frozen server died with "operator torchvision::nms does not exist", so the
+    spec adds them explicitly.
+  - `multiprocessing.freeze_support()` must come first in `__main__.main` (the spawn pool
+    re-runs the executable). With it in place, the frozen app's process pool indexed fine.
+  - The server child logs without a console handler, and `server-output.log` (last run
+    only) catches import-time crashes.
+- **Frozen app verified headless:**
+  - Cold start about 6 s to the setup page.
+  - The frozen re-exec restart after picking a folder works.
+  - Wizard → 14 photos indexed via a 2-worker pool, a rating imported by the bundled
+    exiftool, CLIP on MPS.
+  - A rating typed in the browser was written to the file.
+  - SIGINT (the logout path) and tray Quit both gave server exit 0, the publish, and the
+    lock released.
 
 ## 📋 2026-09-28 — V2 P4: first-run onboarding (`V2.md` #23)
 

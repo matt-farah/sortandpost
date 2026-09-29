@@ -176,6 +176,22 @@ class ClipModel:
         """The CPU budget for the *current* ``clip.speed`` setting."""
         return clip_profile(self.config.speed, self.config.batch_size)
 
+    @property
+    def loaded(self) -> bool:
+        return self._model is not None
+
+    def weights_present(self) -> bool:
+        """Cheap guess (no load) whether the weights are already in ``cache_dir``
+        -- if not, the first :meth:`load` downloads them (~600 MB for the default
+        model). Drives the one-time "Downloading the AI model" progress label."""
+        if not self.cache_dir.is_dir():
+            return False
+        return any(
+            p.stat().st_size > 1_000_000
+            for pattern in ("*.safetensors", "*.bin", "*.pt")
+            for p in self.cache_dir.rglob(pattern)
+        )
+
     def load(self) -> None:
         if self._model is not None:
             return

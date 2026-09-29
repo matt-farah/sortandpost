@@ -30,6 +30,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO
 
+from sortandpost import binaries
+
 RAW_SUFFIXES = frozenset(
     {".cr2", ".cr3", ".nef", ".arw", ".raf", ".rw2", ".orf", ".dng", ".pef", ".srw"}
 )
@@ -109,10 +111,10 @@ class ExiftoolClient:
         self,
         *,
         write_windows_compat_tags: bool = True,
-        exiftool_path: str = "exiftool",
+        exiftool_path: str | None = None,
     ) -> None:
         self.write_windows_compat_tags = write_windows_compat_tags
-        self._bin = exiftool_path
+        self._bin = exiftool_path or binaries.exiftool_path()
         self._proc: subprocess.Popen[str] | None = None
         self._seq = 0
         self._last_messages: tuple[str, ...] = ()
