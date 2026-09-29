@@ -2,8 +2,9 @@
 
 Locally-run photo organization app. Scans existing photo folders, lets you rate photos 1–5
 stars, auto-tags them with CLIP, and provides natural-language semantic search — in the
-browser, no cloud service. All state lives in one app-data folder you can put in any file-sync
-tool (OneDrive, Google Drive, Synology Drive, Dropbox) to work across machines with no rebuild.
+browser, no cloud service. Your library's state (database, thumbnails, search index) lives in
+one shared folder you keep in any file-sync tool (OneDrive, Google Drive, Synology Drive,
+Dropbox) — pick the same folder on another computer and it works there with no rebuild.
 
 **Architecture and design decisions live in [CLAUDE.md](CLAUDE.md). Read it first.**
 
@@ -19,15 +20,20 @@ brew install exiftool           # macOS   (Linux: apt install libimage-exiftool-
 # 2. install
 uv sync                         # or: pipx install .
 
-# 3. point it at your photos + an app-data folder
-export PHOTO_LIBRARY=~/Pictures
-export APP_DATA=~/sortandpost-data          # put the `sync/` subfolder in OneDrive/Drive/Dropbox later
+# 3. run it
 uv run python -m sortandpost                # http://localhost:8080
 ```
 
-First boot creates `APP_DATA/local/` (machine-only) and `APP_DATA/sync/` (writes a
-default `config.yaml` + `tags.yaml`) and downloads the CLIP model (~600 MB, once —
-do this before going offline). Point your file-sync tool at `APP_DATA/sync/`.
+The first launch opens a short **welcome wizard**: pick a shared folder (ideally inside
+your cloud drive), your photo folders, and a few preferences. Nothing is scanned until you
+finish. On another computer, pick the same shared folder — your library, ratings, tags and
+settings carry over, and you only confirm that computer's photo folders. Machine-only files
+(working database, logs, trash) stay in `~/Library/Application Support/sortandpost`
+(`%LOCALAPPDATA%` on Windows, `~/.local/share` on Linux). The CLIP model (~600 MB) downloads
+once on first scan — do that before going offline.
+
+Setting `APP_DATA=<folder>` instead keeps the older single-folder layout
+(`<folder>/local` + `<folder>/sync`; sync only `sync/`) and skips the folder step.
 
 One-shot index (also runs continuously inside the app):
 
@@ -51,7 +57,7 @@ docker compose run --rm indexer --once
 
 ```bash
 uv sync --extra dev
-uv run python -m sortandpost            # web app against ./appdata by default
+uv run python -m sortandpost            # web app (first run: welcome wizard; or set APP_DATA)
 uv run pytest
 uv run ruff check . && uv run mypy src
 ```
