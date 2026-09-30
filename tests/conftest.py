@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import keyring
@@ -54,6 +55,23 @@ class MemoryKeyring(keyring.backend.KeyringBackend):
         if (service, username) not in self.store:
             raise keyring.errors.PasswordDeleteError(username)
         del self.store[(service, username)]
+
+
+def _dir_link(link: Path, target: Path) -> None:
+    if sys.platform == "win32":
+        # A symlink needs Developer Mode / admin on Windows; a junction doesn't.
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+@pytest.fixture
+def dir_link() -> Callable[[Path, Path], None]:
+    """``dir_link(link, target)``: make *link* a directory link to *target* -- a
+    symlink, or a junction on Windows."""
+    return _dir_link
 
 
 @pytest.fixture(autouse=True)

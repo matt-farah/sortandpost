@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +32,7 @@ from numpy.lib.format import open_memmap
 from sqlmodel import Session
 
 from sortandpost.db.models import EmbeddingsMeta
+from sortandpost.sync.publish import replace_file
 
 log = logging.getLogger(__name__)
 
@@ -205,7 +205,8 @@ class EmbeddingStore:
             self._mm = None
         dst.flush()
         del dst
-        os.replace(tmp, self.matrix_path)
+        # Windows: a concurrent search's read-only mapping blocks this briefly.
+        replace_file(tmp, self.matrix_path)
         self._mm = open_memmap(self.matrix_path, mode="r+")
         self._capacity = new_cap
 
@@ -224,7 +225,7 @@ class EmbeddingStore:
         }
         tmp = self.rowmap_path.parent / (self.rowmap_path.name + ".tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(tmp, self.rowmap_path)
+        replace_file(tmp, self.rowmap_path)
         self._dirty_rowmap = False
 
 

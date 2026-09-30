@@ -10,3 +10,4 @@
   - Status: shipped in v1.1.0.
   - Possible follow-up: window/cap the grid's DOM and chunk the scroll-restore render, so a reload after a very deep scroll stays cheap.
 - [ ] When scrolling through the library, there is a small gap between the top bar of the page and the top of the header for the group by category. I think it would look better with this gap removed
+- [ ] Firefox on Windows: paging through photos on `/photo/{pixel_hash}` with arrow keys flashes white for a moment on each navigation -- annoying but not blocking. Not investigated yet.

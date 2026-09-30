@@ -1,13 +1,47 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-29 (V2 P5 — macOS app: PyInstaller bundle, menu-bar tray, clean lifecycle)._
-_Working branch: `main`. P0–P5 merged (#28–#33). Nothing pending._
+_Last updated: 2026-09-30 (V2 P6 — Windows pass + `.exe` installer)._
+_Working branch: `v2-p6-windows`. P0–P5 merged (#28–#33); P6 in its PR._
 
-> **▶️ Next session (on the Windows machine):** V2 **P6 — Windows pass (#19) + `.exe`**
-> (`V2Plan.md`; **Sonnet**, Opus if packaging bites). First Windows session: start from
-> the checklist below.
+> **▶️ Next:** V2 **P7 — Linux AppImage** (`V2Plan.md`). Open questions from P6: commit
+> `uv.lock`? (Windows resolved sqlmodel 0.0.45 fresh, which broke indexing — see below.)
+> Rebuild the macOS app after merging: it picks up the sqlmodel pin and the tray restart fix.
 
-### P6 kickoff — Windows
+## 🪟 2026-09-30 — V2 P6: Windows pass (#19) + Windows `.exe` (`V2.md` #5, #19)
+
+The user installed and click-tested the Windows app (wizard, restart, tray Quit with the
+Recycle Bin question, installing over a running copy) and signed off. 609 tests pass on
+Windows (24 skipped: POSIX-only paths). ruff / format / mypy clean; `alembic check` empty.
+
+- **Packaging** (`packaging/windows/`): `build.ps1` → onedir `sortandpost.exe` (605 MB),
+  `sortandpost-1.1.0-win-x64.zip` (218 MB), Inno Setup `sortandpost-1.1.0-setup.exe`
+  (155 MB, per-user, no admin). exiftool 13.59's Windows zip, sha256-pinned. torchvision's
+  `*.pyd` + codec DLLs added explicitly (the `.so` fix's Windows twin). Unsigned.
+- **Tray on Windows** (`desktop._windows`): logoff / shutdown (`WM_QUERYENDSESSION` /
+  `WM_ENDSESSION`), a handle-based parent watch, Start at login via `HKCU\…\Run`, the Quit
+  question on its own thread, installer close via window title + mutex. Details in
+  CLAUDE.md → "Desktop app → Windows".
+- **Found in the user's click-test:**
+  - The wizard's restart `os.execv` spawns a new process on Windows; the tray lost its
+    server (no Quit question, dead Pause). Now the server exits 75 and the tray restarts it.
+  - The installer ran over a running copy and deleted its `cacert.pem`, which every tray
+    httpx call loaded (`SSL_CERT_FILE`) → Quit crashed. Now: one env-free loopback client,
+    tray calls tolerate any error, and the installer closes the app or refuses.
+  - A `MessageBoxW` opened inside pystray's menu callback took no input.
+- **Windows pass — real bugs the suite found:**
+  - Sync publish: `os.fsync` on a read-only fd fails on Windows (write handle now; no dir
+    fsync). Sync pull: the working DB couldn't be replaced while pooled connections held
+    it (dispose before replace). `replace_file` retries sharing violations ~3 s.
+  - `hydrate._under_roots` matched with `/`, so "Download & index" did nothing on Windows.
+  - The scanner followed junctions (possible endless walk).
+  - The shared exiftool idle timer could fire a tick early on Windows' clock and never
+    re-arm.
+  - **All platforms:** sqlmodel 0.0.45 (2026-09-21) made `datetime` columns reject naive
+    values; EXIF `taken_at` is naive. Pinned `sqlmodel<0.0.45`.
+- Test-only fixes: POSIX-path reveal tests skipped on Windows, a `dir_link` fixture
+  (junction on Windows), `/etc/passwd` → an OS-absolute path, etc.
+
+### Windows dev setup (from the P6 kickoff)
 
 **Working conventions** (these live in the Mac's Claude memory, which doesn't travel):
 - Models: Sonnet or Opus only, never Haiku. Plan in Opus (plan mode), then implement
@@ -35,7 +69,7 @@ uv run pytest -q; uv run ruff check .; uv run mypy src
   and a folder of sample photos (JPEG + HEIC + a RAW if possible).
 - Desktop flow from source: `uv run python -m sortandpost --tray`.
 
-**P6 checklist:**
+**P6 checklist** (✅ done — see the P6 entry above):
 1. **Windows pass (#19)** on the native app:
    - rawpy / pillow-heif decode
    - `send2trash` (delete → "Move all to system Trash", the Recycle Bin)

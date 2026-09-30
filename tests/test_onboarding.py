@@ -216,7 +216,7 @@ def test_indexer_cli_without_any_folder(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("APP_DATA", raising=False)
-    monkeypatch.chdir(onboarding.__file__.rsplit("/", 1)[0])  # no .env here
+    monkeypatch.chdir(Path(onboarding.__file__).parent)  # no .env here
     assert indexer_main(["--once"]) == 1
     assert "hasn't been set up" in capsys.readouterr().err
 

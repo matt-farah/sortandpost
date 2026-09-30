@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import sortandpost_helper as agent
 
 TOKEN = "test-token-abc"
+# Absolute on every OS (a bare /etc/passwd is drive-relative on Windows).
+OUTSIDE = str(Path("/etc/passwd").resolve())
 
 
 @pytest.fixture
@@ -100,7 +102,7 @@ def test_reveal_refuses_a_path_outside_every_root(
     server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(agent, "_spawn", lambda args: pytest.fail("must not spawn"))
-    code, body = _req(server, "/reveal", method="POST", body={"path": "/etc/passwd"})
+    code, body = _req(server, "/reveal", method="POST", body={"path": OUTSIDE})
     assert code == 403
     assert "registered library folder" in body["error"]
 
@@ -204,9 +206,7 @@ def test_reveal_multi_refuses_if_any_path_is_outside_every_root(
     lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
         "host"
     ]
-    code, _body = _req(
-        server, "/reveal", method="POST", body={"paths": [f"{lib}/a.jpg", "/etc/passwd"]}
-    )
+    code, _body = _req(server, "/reveal", method="POST", body={"paths": [f"{lib}/a.jpg", OUTSIDE]})
     assert code == 403
 
 
@@ -268,7 +268,7 @@ def test_listdir_permission_error_is_empty(server: str, monkeypatch: pytest.Monk
         raise PermissionError
 
     monkeypatch.setattr(Path, "iterdir", boom)
-    code, body = _req(server, "/listdir?path=/some/where")
+    code, body = _req(server, f"/listdir?path={Path('/some/where').resolve()}")
     assert code == 200 and body["entries"] == []
 
 

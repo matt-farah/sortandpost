@@ -78,10 +78,10 @@ class SharedExiftool:
         if client is not None:
             client.close()
 
-    def _arm_idle_timer(self) -> None:
+    def _arm_idle_timer(self, delay: float | None = None) -> None:
         if self._timer is not None:
             self._timer.cancel()
-        self._timer = threading.Timer(self._idle, self._close_if_idle)
+        self._timer = threading.Timer(self._idle if delay is None else delay, self._close_if_idle)
         self._timer.daemon = True
         self._timer.start()
 
@@ -89,8 +89,13 @@ class SharedExiftool:
         if not self._lock.acquire(blocking=False):
             return  # in use right now; that session re-arms the timer when it ends
         try:
-            if time.monotonic() - self._last_used >= self._idle:
+            remaining = self._idle - (time.monotonic() - self._last_used)
+            if remaining <= 0:
                 self._close_locked()
+            elif self._client is not None:
+                # The timer can fire a tick early by the monotonic clock
+                # (~16 ms steps on Windows): wait out the rest, don't give up.
+                self._arm_idle_timer(remaining)
         finally:
             self._lock.release()
 

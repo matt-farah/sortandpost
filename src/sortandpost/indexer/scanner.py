@@ -48,7 +48,9 @@ def _walk(directory: Path, pruned: set[Path], pruned_names: set[str]) -> Iterato
         if entry.name.startswith("."):
             continue
         try:
-            if entry.is_symlink():
+            # A Windows junction is a directory link that isn't a symlink; one
+            # pointing back up the tree would make the walk endless.
+            if entry.is_symlink() or entry.is_junction():
                 continue
             is_dir = entry.is_dir()
             is_file = entry.is_file()
