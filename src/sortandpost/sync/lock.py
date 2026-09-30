@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from sortandpost.sync.clock import isoformat, parse
+from sortandpost.sync.publish import replace_file
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,7 @@ def write_lock(path: Path, info: LockInfo) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp-{info.device_id}")
     tmp.write_text(info.to_json(), encoding="utf-8")
-    os.replace(tmp, path)
+    replace_file(tmp, path)  # the sync client may be reading it (Windows)
 
 
 def clear_lock(path: Path, *, device_id: str) -> bool:

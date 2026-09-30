@@ -7,6 +7,7 @@ import os
 import plistlib
 import socket
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -38,7 +39,8 @@ def test_instance_lock_is_exclusive_and_released(tmp_path: Path) -> None:
 def test_runtime_json_roundtrip_private_and_owned(tmp_path: Path) -> None:
     info = runtime.RuntimeInfo(pid=4242, host="127.0.0.1", port=8081, token="t0k", version="9")
     path = runtime.write_runtime(info, tmp_path)
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600  # the token gates the control API
+    if sys.platform != "win32":  # Windows: %LOCALAPPDATA%'s per-user ACL, no POSIX mode
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600  # the token gates the control API
     assert runtime.read_runtime(tmp_path) == info
     assert info.url == "http://sortandpost.localhost:8081/"  # what the browser opens
 
@@ -133,11 +135,111 @@ def test_control_not_installed_without_token(monkeypatch: pytest.MonkeyPatch) ->
 def test_parent_watch_shuts_down_when_orphaned() -> None:
     orphaned = threading.Event()
     ppid = {"v": 100}
-    control.start_parent_watch(100, orphaned.set, interval=0.01, getppid=lambda: ppid["v"])
+    control.start_parent_watch(100, orphaned.set, interval=0.01, alive=lambda: ppid["v"] == 100)
     time.sleep(0.05)
     assert not orphaned.is_set()
     ppid["v"] = 1  # re-parented to launchd: the tray died
     assert orphaned.wait(1.0)
+
+
+def test_tray_calls_survive_a_bundle_replaced_underneath(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An installer deleted the running bundle's cacert.pem, which SSL_CERT_FILE
+    # (set by the frozen app) still names: every call used to raise
+    # FileNotFoundError, which killed Quit and the status poll.
+    from sortandpost.desktop.supervisor import ServerProcess
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "gone" / "cacert.pem"))
+    port = runtime.pick_port(preferred=18_500)  # nothing listens there
+    server = ServerProcess(port=port, token="t", log_file=tmp_path / "out.log")
+    assert server.status() is None
+    assert server.set_paused(True) is False
+    assert server.flush_trash() is None
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(server._http, "get", boom)
+    assert server.status() is None  # any OSError, not only HTTP errors
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_quit_asks_off_the_menu_thread_on_windows_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    pytest.importorskip("pystray")
+    from sortandpost.desktop import tray as tray_mod
+    from sortandpost.desktop.supervisor import ServerProcess
+
+    app = tray_mod.TrayApp(
+        ServerProcess(port=1, token="t", log_file=tmp_path / "o.log"),
+        runtime.instance_lock(tmp_path),
+    )
+    ran_on: list[str] = []
+    done = threading.Event()
+
+    def sequence() -> None:
+        ran_on.append(threading.current_thread().name)
+        done.set()
+
+    monkeypatch.setattr(app, "_quit_sequence", sequence)
+    monkeypatch.setattr(tray_mod.sys, "platform", platform)
+    app._menu_quit(None, None)
+    app._menu_quit(None, None)  # clicked again while the question is up: ignored
+    assert done.wait(2)
+    time.sleep(0.1)
+    menu_thread = threading.current_thread().name
+    assert len(ran_on) == 1
+    assert (ran_on[0] != menu_thread) is (platform == "win32")
+
+
+def test_restart_under_the_tray_exits_for_the_tray_to_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sortandpost import app
+
+    monkeypatch.setenv(control.TOKEN_ENV, "t0k")
+    monkeypatch.setattr(app._RESTART, "is_set", lambda: True)
+    monkeypatch.setattr(app.logging, "shutdown", lambda: None)
+    monkeypatch.setattr(app.os, "execv", lambda *_a: pytest.fail("must not exec"))
+    with pytest.raises(SystemExit) as exc:
+        app._reexec_if_requested()
+    assert exc.value.code == control.RESTART_EXIT_CODE
+
+
+@pytest.mark.parametrize(("code", "restarted"), [(control.RESTART_EXIT_CODE, True), (0, False)])
+def test_tray_restarts_the_server_only_when_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, restarted: bool
+) -> None:
+    pytest.importorskip("pystray")
+    from sortandpost.desktop.supervisor import ServerProcess
+    from sortandpost.desktop.tray import TrayApp
+
+    server = ServerProcess(port=1, token="t", log_file=tmp_path / "out.log")
+    server.proc = subprocess.Popen([sys.executable, "-c", f"raise SystemExit({code})"])
+    tray = TrayApp(server, runtime.instance_lock(tmp_path))
+    calls: list[bool] = []
+    monkeypatch.setattr(tray, "_refresh_menu", lambda: None)
+    monkeypatch.setattr(tray, "_restart_server", lambda *, open_browser: calls.append(open_browser))
+    tray._watch_for_restart()
+    server.proc.wait()
+    time.sleep(0.3)
+    assert calls == ([False] if restarted else [])  # the page reloads itself: no new tab
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process handle")
+def test_parent_alive_check_follows_the_process_on_windows() -> None:
+    # Windows never re-parents an orphan, so the check holds a process handle.
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        alive = control.parent_alive_check(proc.pid)
+        assert alive()
+    finally:
+        proc.kill()
+        proc.wait()
+    assert not alive()
+    assert not control.parent_alive_check(proc.pid)()  # a pid that's already gone
 
 
 # --------------------------------------------------------------------------- #
@@ -164,6 +266,37 @@ def test_login_item_only_for_the_packaged_app() -> None:
     assert not login_item.supported()
 
 
+def test_login_item_packaged_windows_exe(monkeypatch: pytest.MonkeyPatch) -> None:
+    exe = Path(r"C:\Users\me\AppData\Local\Programs\sortandpost\sortandpost.exe")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert login_item.app_bundle() == exe.resolve()
+    assert login_item.run_command(exe) == f'"{exe}"'  # quoted: the path may hold spaces
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows registry")
+def test_login_item_run_value_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    import winreg
+
+    # A scratch key, never the real Run key.
+    scratch = r"Software\sortandpost-tests\Run"
+    monkeypatch.setattr(login_item, "RUN_KEY", scratch)
+    exe = Path(r"C:\Program Files\sortandpost\sortandpost.exe")
+    try:
+        assert not login_item.is_enabled()
+        login_item.enable(exe)
+        assert login_item.is_enabled()
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, scratch) as key:
+            assert winreg.QueryValueEx(key, "sortandpost")[0] == f'"{exe}"'
+        login_item.disable()
+        assert not login_item.is_enabled()
+        login_item.disable()  # idempotent
+    finally:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, scratch)
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\sortandpost-tests")
+
+
 # --------------------------------------------------------------------------- #
 # bundled exiftool lookup
 # --------------------------------------------------------------------------- #
@@ -171,7 +304,7 @@ def test_exiftool_path_precedence(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     monkeypatch.delenv(binaries.EXIFTOOL_ENV, raising=False)
     assert binaries.exiftool_path() == "exiftool"  # from source: whatever is on PATH
 
-    bundled = tmp_path / "exiftool" / "exiftool"
+    bundled = tmp_path / "exiftool" / ("exiftool.exe" if sys.platform == "win32" else "exiftool")
     bundled.parent.mkdir()
     bundled.write_text("#!/usr/bin/perl\n", encoding="utf-8")
     monkeypatch.setattr(sys, "frozen", True, raising=False)

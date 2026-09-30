@@ -54,7 +54,8 @@ def _pull_bytes(path: Path) -> None:
 def _under_roots(key: str, roots: list[str]) -> bool:
     if not roots:
         return True
-    return any(key == r or key.startswith(r.rstrip("/") + "/") for r in roots)
+    path = Path(key)  # OS-native: `\` separators + case-insensitive on Windows
+    return any(path.is_relative_to(r) for r in roots)
 
 
 def hydrate_online_only(settings: Settings) -> HydrateStats:

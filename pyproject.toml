@@ -7,7 +7,9 @@ requires-python = ">=3.12,<3.14"
 license = { file = "LICENSE" }
 dependencies = [
     "nicegui>=2.0",
-    "sqlmodel>=0.0.22",
+    # <0.0.45: 0.0.45 made every `datetime` column a UTC-aware type that rejects
+    # naive values, and EXIF `taken_at` is naive local wall-clock time.
+    "sqlmodel>=0.0.22,<0.0.45",
     "SQLAlchemy>=2.0",
     "alembic>=1.13",
     "pydantic>=2.7",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -24,12 +25,15 @@ def test_finds_images_recursively_sorted(tmp_path: Path) -> None:
     assert [p.name for p in found] == ["a.jpg", "b.jpg", "c.png"]
 
 
-def test_skips_hidden_and_symlinked_dirs(tmp_path: Path) -> None:
+def test_skips_hidden_and_symlinked_dirs(
+    tmp_path: Path, dir_link: Callable[[Path, Path], None]
+) -> None:
     _touch_image(tmp_path / "keep.jpg")
     _touch_image(tmp_path / ".hidden" / "skip.jpg")
     real = tmp_path / "real"
     _touch_image(real / "x.jpg")
-    (tmp_path / "link").symlink_to(real, target_is_directory=True)
+    dir_link(tmp_path / "link", real)  # a junction on Windows
+    dir_link(real / "loop", tmp_path)  # pointing back up: must not recurse forever
 
     names = sorted(p.name for p in iter_image_files([tmp_path]))
     assert names == ["keep.jpg", "x.jpg"]  # link/ traversal skipped, not doubled

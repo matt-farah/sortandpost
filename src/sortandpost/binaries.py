@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -49,3 +50,12 @@ def exiftool_path() -> str:
 
 def exiftool_available() -> bool:
     return shutil.which(exiftool_path()) is not None
+
+
+def no_console_flags() -> int:
+    """``creationflags`` for starting a console tool (``exiftool.exe``) from the
+    windowless packaged Windows app, which would otherwise flash a console window
+    for it. ``0`` (the default) everywhere else."""
+    if sys.platform == "win32":
+        return subprocess.CREATE_NO_WINDOW
+    return 0

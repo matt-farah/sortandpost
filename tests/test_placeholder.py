@@ -24,15 +24,18 @@ def test_a_real_local_file_is_not_online_only(tmp_path: object) -> None:
     assert is_online_only(os.stat(p)) is False
 
 
-def test_zero_blocks_with_a_real_size_looks_like_a_stub() -> None:
+def test_zero_blocks_with_a_real_size_looks_like_a_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(placeholder.sys, "platform", "linux")
     assert is_online_only(_stat(st_size=5_000_000, st_blocks=0)) is True
 
 
-def test_zero_blocks_but_tiny_is_below_the_floor() -> None:
+def test_zero_blocks_but_tiny_is_below_the_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(placeholder.sys, "platform", "linux")
     assert is_online_only(_stat(st_size=100, st_blocks=0)) is False
 
 
-def test_macos_dataless_flag_is_definitive() -> None:
+def test_macos_dataless_flag_is_definitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(placeholder.sys, "platform", "darwin")
     assert is_online_only(_stat(st_size=10, st_blocks=8, st_flags=0x40000000)) is True
 
 

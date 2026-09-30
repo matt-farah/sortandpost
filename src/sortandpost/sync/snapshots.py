@@ -15,6 +15,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from sortandpost.sync.publish import replace_file
+
 try:  # declared dep; degrade to uncompressed snapshots if absent
     import zstandard
 except ModuleNotFoundError:  # pragma: no cover - zstandard is in pyproject
@@ -90,4 +92,4 @@ def restore_snapshot(snapshot_path: Path, dest_db_path: Path) -> None:
     dest_db_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest_db_path.with_name(dest_db_path.name + ".restore-tmp")
     tmp.write_bytes(raw)
-    tmp.replace(dest_db_path)
+    replace_file(tmp, dest_db_path)
