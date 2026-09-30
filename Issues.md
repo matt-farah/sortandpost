@@ -10,6 +10,6 @@
   - Status: shipped in v1.1.0.
   - Possible follow-up: window/cap the grid's DOM and chunk the scroll-restore render, so a reload after a very deep scroll stays cheap.
 - [ ] When scrolling through the library, there is a small gap between the top bar of the page and the top of the header for the group by category. I think it would look better with this gap removed
-- [ ] Paging through photos on `/photo/{pixel_hash}` with arrow keys flashes the whole window white on some navigations -- Firefox on Windows and Mac (~1 in 3), Safari on Mac (~1 in 10); seen in dark mode.
-  - Not reproducible in headless Chromium. Not sufficient: an early `<head>` background + `color-scheme`, and `@view-transition{navigation:auto}` (no effect in either browser).
-  - Likely cause: each arrow press is a full page load (`location.replace`) and the browser blanks between documents. Proposed fix: swap the photo in place and update the URL with `history.replaceState`.
+- [x] Paging through photos on `/photo/{pixel_hash}` with arrow keys flashes the whole window white on some navigations -- Firefox on Windows and Mac (~1 in 3), Safari on Mac (~1 in 10); seen in dark mode.
+  - Cause: the theme CSS (`body{background-color:var(--sp-bg)}`) applies before Vue mounts, but the `body--dark` / `sp-season-*` classes only arrive at mount, so `--sp-bg` is the `:root` light default (`#faf8f4`) for that instant. Firefox / Safari sometimes paint it; Chromium holds the paint.
+  - Fixed: `themes.first_paint_css` (in the page `<head>`) also sets `--sp-bg` for the resolved look. Hands-on tested 2026-09-30.

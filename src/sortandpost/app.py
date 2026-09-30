@@ -186,6 +186,7 @@ from sortandpost.themes import (
     SEASONS,
     SeasonChoice,
     body_class,
+    first_paint_css,
     resolve_season,
     theme_css,
 )
@@ -589,6 +590,9 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
     ui.colors(positive="#3f9d6d", negative="#c0392b")
     dark = ui.dark_mode(_THEME_TO_DARK[State.theme])  # per-machine; None = follow the OS
     glyph_icon = _apply_season(State.season)
+    # right background on the first paint, before the body classes arrive via JS
+    paint = first_paint_css(resolve_season(State.season), _THEME_TO_DARK[State.theme])
+    ui.add_head_html(f"<style>{paint}</style>")
     with ui.header().classes("sp-appbar items-center justify-between gap-4"):
         with ui.row().classes("items-center gap-2 no-wrap"):
             ui.icon(glyph_icon).classes("sp-season-glyph text-lg").tooltip(
