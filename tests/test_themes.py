@@ -83,3 +83,13 @@ def test_theme_css_covers_every_season_and_mode() -> None:
         assert f"body.{body_class(season)}{{" in css
         assert f"body.body--dark.{body_class(season)}{{" in css
     assert "--q-primary:" in css and "!important" in css
+
+
+def test_first_paint_css_matches_tokens() -> None:
+    from sortandpost.themes import first_paint_css
+
+    assert f"--sp-bg:{TOKENS[('fall', True)].bg}" in first_paint_css("fall", True)
+    assert "color-scheme:light" in first_paint_css("fall", False)
+    both = first_paint_css("winter", None)
+    assert TOKENS[("winter", False)].bg in both and TOKENS[("winter", True)].bg in both
+    assert "prefers-color-scheme: dark" in both

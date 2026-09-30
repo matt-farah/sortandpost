@@ -3,8 +3,8 @@
 _Last updated: 2026-09-30 (V2 #24 — grid modifier-click selection)._
 _Working branch: `grid-selection-modifiers`. P0–P6 merged; #24 in its PR._
 
-> **▶️ Next:** the photo-page white flash between arrow-key navigations (`Issues.md`; needs an
-> in-place photo swap — see below), then V2 **P8 — targeted subtree rescan** (`V2Plan.md`).
+> **▶️ Next:** V2 **P8 — targeted subtree rescan** (`V2Plan.md`). (Photo-page white flash:
+> fixed, see below.)
 > **Linux AppImage (old P7) moved to V3** — needs a Linux VM; Windows/macOS come first.
 > Open question from P6: commit `uv.lock`? (Windows resolved sqlmodel 0.0.45 fresh, which
 > broke indexing.) Rebuild the macOS app after merging.
@@ -19,12 +19,15 @@ _Working branch: `grid-selection-modifiers`. P0–P6 merged; #24 in its PR._
   on macOS is a right-click (no `click` event) — Windows Ctrl-click not yet tried.
 - Linux AppImage (P7) moved to V3 (`V2Plan.md`, `V3.md`).
 
-### Open: white flash between photo-page navigations
-Firefox (Windows + Mac) flashes the whole window white on ~1 in 3 arrow-key navigations;
-Safari ~1 in 10. Not reproducible in headless Chromium (screencast, 0 bright frames). Tried
-and **not** sufficient: an early `<head>` background + `color-scheme` (`themes.first_paint_css`,
-uncommitted) and `@view-transition{navigation:auto}` (removed). Cause: full page load per
-`location.replace`. Proposed fix: swap the photo in place + `history.replaceState`.
+### Fixed: white flash between photo-page navigations
+Firefox (Windows + Mac) flashed the whole window white on ~1 in 3 arrow-key navigations;
+Safari ~1 in 10. Cause: NiceGUI's head script injects the theme CSS before Vue mounts, so
+`body{background-color:var(--sp-bg)}` painted the `:root` light default (`#faf8f4`) until the
+`body--dark` / `sp-season-*` classes arrived at mount (Chromium holds that paint, so headless
+never showed it). `themes.first_paint_css`, emitted per page in `<head>` by `_header`, sets
+the `<html>` background, `color-scheme` and `--sp-bg` (`html:root` outranks the `:root`
+default). Reproduce the pre-mount state headless by aborting the vue / quasar / nicegui.js
+requests. No in-place swap needed. Hands-on tested 2026-09-30 (Firefox + Safari).
 
 ## 🪟 2026-09-30 — V2 P6: Windows pass (#19) + Windows `.exe` (`V2.md` #5, #19)
 

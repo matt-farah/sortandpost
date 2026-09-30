@@ -288,3 +288,30 @@ def theme_css() -> str:
             f"body.{body_class(season)}{{--sp-season-stripe:linear-gradient(90deg,{stripe});}}"
         )
     return "\n".join(out)
+
+
+def first_paint_css(season: Season, dark: bool | None) -> str:
+    """``<html>`` background + ``color-scheme`` for the page's very first paint.
+
+    The ``body--dark`` / ``sp-season-*`` classes are applied by JS after the
+    socket connects, so on a full page load (photo prev/next) the browser paints
+    its default white first -- a flash in dark mode. This is emitted in the page
+    ``<head>`` so the right background is there from the start. *dark* ``None``
+    follows the OS (``prefers-color-scheme``).
+
+    It also sets ``--sp-bg``: the theme CSS (``body{background-color:var(--sp-bg)}``)
+    lands before Vue mounts, and until the body classes arrive the token is the
+    ``:root`` light default -- a full-window near-white body over this ``<html>``
+    background. ``html:root`` outranks that ``:root``; the season classes on
+    ``<body>`` still take over once they're applied."""
+    light_bg, dark_bg = TOKENS[(season, False)].bg, TOKENS[(season, True)].bg
+
+    def rule(bg: str, scheme: str) -> str:
+        return f"html:root{{background-color:{bg};color-scheme:{scheme};--sp-bg:{bg}}}"
+
+    if dark is None:
+        return (
+            rule(light_bg, "light")
+            + f"@media (prefers-color-scheme: dark){{{rule(dark_bg, 'dark')}}}"
+        )
+    return rule(dark_bg, "dark") if dark else rule(light_bg, "light")
