@@ -16,9 +16,12 @@ import contextlib
 import hashlib
 import os
 import sqlite3
+import sys
+import time
 from pathlib import Path
 
 _TMP_PREFIX = ".sortandpost.db.tmp-"
+_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)  # ~3 s in all
 
 
 def sha256_file(path: Path) -> str:
@@ -30,11 +33,30 @@ def sha256_file(path: Path) -> str:
 
 
 def _fsync_path(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
+    flags = os.O_RDONLY
+    if sys.platform == "win32":
+        if path.is_dir():
+            return  # Windows can't open a directory to flush it; NTFS journals the rename
+        flags = os.O_RDWR  # FlushFileBuffers needs a handle with write access
+    fd = os.open(path, flags)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def replace_file(tmp: Path, dst: Path) -> None:
+    """``os.replace``, retried briefly on Windows, where it fails while any
+    process has *dst* open -- a sync client uploading it, an antivirus scan, a
+    reader that hasn't closed yet. POSIX never needs the retry."""
+    delays = _REPLACE_RETRY_DELAYS if sys.platform == "win32" else ()
+    for delay in delays:
+        try:
+            os.replace(tmp, dst)
+            return
+        except PermissionError:
+            time.sleep(delay)
+    os.replace(tmp, dst)
 
 
 def atomic_replace(src: Path, dst: Path, *, tag: str) -> None:
@@ -43,7 +65,7 @@ def atomic_replace(src: Path, dst: Path, *, tag: str) -> None:
     tmp = dst.with_name(f".{dst.name}.tmp-{tag}")
     tmp.write_bytes(src.read_bytes())
     _fsync_path(tmp)
-    os.replace(tmp, dst)
+    replace_file(tmp, dst)
     # directory fsync is best-effort (not supported on every filesystem)
     with contextlib.suppress(OSError):
         _fsync_path(dst.parent)

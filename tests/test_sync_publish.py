@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
+
+from sortandpost.sync import publish
 from sortandpost.sync.publish import (
     atomic_publish,
     pull_published,
@@ -21,6 +25,41 @@ def test_atomic_publish_copies_bytes_and_leaves_no_tmp(tmp_path: Path) -> None:
 
     assert sha256_file(published) == sha256_file(working)
     assert not list((tmp_path / "sync").glob(".sortandpost.db.tmp-*"))
+
+
+def test_replace_retries_while_windows_holds_the_target_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src, dst = tmp_path / "new", tmp_path / "db"
+    src.write_text("new")
+    dst.write_text("old")
+    real_replace = os.replace
+    failures = iter([PermissionError(13, "in use"), PermissionError(13, "in use")])
+
+    def flaky(a: object, b: object) -> None:
+        err = next(failures, None)
+        if err is not None:
+            raise err
+        real_replace(a, b)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(publish.sys, "platform", "win32")
+    monkeypatch.setattr(publish.os, "replace", flaky)
+    monkeypatch.setattr(publish.time, "sleep", lambda _s: None)
+    publish.replace_file(src, dst)
+    assert dst.read_text() == "new"
+
+
+def test_replace_gives_up_after_the_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def always(_a: object, _b: object) -> None:
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(publish.sys, "platform", "win32")
+    monkeypatch.setattr(publish.os, "replace", always)
+    monkeypatch.setattr(publish.time, "sleep", lambda _s: None)
+    with pytest.raises(PermissionError):
+        publish.replace_file(tmp_path / "a", tmp_path / "b")
 
 
 def test_read_generation_reads_meta_or_zero(tmp_path: Path) -> None:

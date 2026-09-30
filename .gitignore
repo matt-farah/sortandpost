@@ -25,6 +25,10 @@ htmlcov/
 # CLIP weights downloaded during native dev
 /models/
 
+# Scratch app-data / sample photos used for native browser testing
+/scratch/
+/browser_test_data/
+
 # OS
 .DS_Store
 

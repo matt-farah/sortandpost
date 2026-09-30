@@ -81,7 +81,7 @@ updated as decisions are made or changed.
 | Filesystem watch   | `watchdog` |
 | Lint / format / types | `ruff check`, `ruff format`, `mypy` |
 | Tests              | `pytest` + `pytest-asyncio` |
-| Deployment         | Docker Compose, single container; **macOS app** = PyInstaller onedir `.app` + DMG (`packaging/macos/build.sh`) |
+| Deployment         | Docker Compose, single container; **macOS app** = PyInstaller onedir `.app` + DMG (`packaging/macos/build.sh`); **Windows app** = PyInstaller onedir + Inno Setup installer + zip (`packaging/windows/build.ps1`) |
 | Desktop tray       | `pystray` (+ PyObjC on macOS) — `desktop` optional extra |
 
 ---
@@ -118,6 +118,9 @@ docker compose run --rm app mypy src
 # Desktop app (macOS)
 uv run python -m sortandpost --tray    # menu-bar app from source (tray + server child)
 packaging/macos/build.sh               # -> dist/sortandpost.app + dist/sortandpost-<ver>-arm64.dmg
+
+# Desktop app (Windows, PowerShell)
+pwsh packaging\windows\build.ps1       # -> dist\sortandpost-<ver>-setup.exe + -win-x64.zip
 
 # Native dev (no Docker — requires exiftool + libraw on host)
 uv sync
@@ -674,8 +677,8 @@ uvicorn each want the main thread.
     itself talks to the server on `127.0.0.1`. `https://sortandpost.local` (hosts entry +
     locally trusted certificate) and a public-domain certificate were scoped and rejected:
     admin prompts / a certificate-issuing service, and no security gain on loopback.
-  - Menu: status, Open, Pause/Resume indexing, Start at login (a LaunchAgent that runs
-    `open -a …app`, packaged app only), Show logs, Quit.
+  - Menu: status, Open, Pause/Resume indexing, Start at login (macOS: a LaunchAgent that
+    runs `open -a …app`; Windows: an `HKCU\…\Run` value; packaged app only), Show logs, Quit.
   - Menu-bar only (`LSUIElement`). Relaunching from Finder opens the browser
     (`applicationShouldHandleReopen`).
 - **Server** = the normal web app. `desktop.control` mounts token-gated
@@ -701,6 +704,37 @@ uvicorn each want the main thread.
     `NOTARY_PROFILE` is also set.
   - `multiprocessing.freeze_support()` is the first call in `__main__.main`, because the
     spawn pool re-runs the executable.
+- **Restart** (a new data folder, the wizard's folder pick): under the tray the server exits
+  with `control.RESTART_EXIT_CODE` (75) and the tray starts a fresh server on the same port
+  (`TrayApp._watch_for_restart`). It never re-execs itself there: on Windows `os.execv`
+  spawns a new process, and the tray would be left holding a dead one.
+
+### Windows (V2 P6; `desktop._windows`, `packaging/windows/`)
+
+- **Build**: `pwsh packaging\windows\build.ps1` → `dist\sortandpost\` (onedir, `console=False`,
+  `.ico` + version info), `dist\sortandpost-<ver>-win-x64.zip`, and — with Inno Setup 6 —
+  `dist\sortandpost-<ver>-setup.exe`. Bundles exiftool's standalone Windows zip
+  (sha256-pinned; `exiftool(-k).exe` renamed to `exiftool.exe`). Unsigned.
+- **Installer** (`sortandpost.iss`): per-user (`%LOCALAPPDATA%\Programs\sortandpost`, no
+  admin prompt). It never touches the library, the shared folder or `%LOCALAPPDATA%\sortandpost`.
+  Before replacing / removing files it finds the tray by its window title
+  (`WINDOW_TITLE`), sends `WM_ENDSESSION` + `ENDSESSION_CLOSEAPP` (clean stop, then the tray
+  exits), waits for the `APP_MUTEX` to go, and **refuses** if it's still held. Never let it
+  replace files under a running app: the running copy loses its own files (it once broke Quit).
+  Uninstall removes the Start-at-login Run value.
+- **Tray specifics**: pystray answers every message it doesn't handle with 0 (not
+  `DefWindowProc`), so `_windows.install_session_end` handles `WM_QUERYENDSESSION` (0 there
+  would block logoff), `WM_ENDSESSION` (clean stop, synchronously, then exit) and
+  `WM_SETTEXT`. The Quit question (`MessageBoxW`, topmost) runs on its **own thread**: from
+  inside the menu callback it can't take input. Start at login = an `HKCU\…\Run` value.
+- **Server specifics**: the parent watch holds a process handle on the tray (Windows never
+  re-parents an orphan). `terminate()` is a hard kill there, so `/quit` is the only clean
+  stop. The tray's loopback `httpx.Client` ignores the environment (`trust_env=False`,
+  `verify=False`) so it never reads `SSL_CERT_FILE` / proxies; exiftool starts with
+  `CREATE_NO_WINDOW` (`binaries.no_console_flags`).
+- **File replacement**: Windows can't replace a file something holds open. The working DB's
+  pool is disposed *before* a pull / restore / conflict swap, and `sync.publish.replace_file`
+  retries sharing violations for ~3 s (publish, lock, embeddings matrix, rowmap).
 
 ---
 

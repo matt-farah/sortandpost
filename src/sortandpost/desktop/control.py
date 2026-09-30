@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -29,6 +30,11 @@ TOKEN_ENV = "SORTANDPOST_CONTROL_TOKEN"
 PARENT_ENV = "SORTANDPOST_PARENT_PID"
 TOKEN_HEADER = "X-Sortandpost-Token"
 PREFIX = "/_desktop"
+# The server's exit status when it wants a fresh start (a different data folder,
+# the first-run wizard's folder pick). The tray starts a new server on seeing
+# it -- rather than the server re-exec'ing itself, which on Windows would leave
+# the tray holding a dead process while the new one runs unsupervised.
+RESTART_EXIT_CODE = 75
 
 
 @dataclass
@@ -110,21 +116,44 @@ def install(app: FastAPI, hooks: ControlHooks) -> bool:
     return True
 
 
+def parent_alive_check(parent_pid: int) -> Callable[[], bool]:
+    """How to tell the tray is still running. POSIX: our parent pid changes
+    when it dies (we get re-parented to launchd / init). Windows never
+    re-parents, so hold a handle to the tray process -- taken now, while it's
+    certainly alive, so a recycled pid can't fool us -- and ask whether it has
+    exited."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        synchronize, wait_timeout = 0x00100000, 0x102
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        handle = kernel32.OpenProcess(synchronize, False, parent_pid)
+        if not handle:
+            return lambda: False  # already gone (or not ours to watch)
+        return lambda: bool(kernel32.WaitForSingleObject(handle, 0) == wait_timeout)
+    return lambda: os.getppid() == parent_pid
+
+
 def start_parent_watch(
     parent_pid: int,
     on_orphaned: Callable[[], None],
     *,
     interval: float = 2.0,
-    getppid: Callable[[], int] = os.getppid,
+    alive: Callable[[], bool] | None = None,
 ) -> threading.Thread:
     """If the tray process dies (crash, force quit, logout), shut down cleanly
-    instead of lingering as a second writer nobody can quit. Detected by our
-    parent pid changing (we get re-parented to launchd / init)."""
+    instead of lingering as a second writer nobody can quit
+    (:func:`parent_alive_check`)."""
+    parent_alive = alive or parent_alive_check(parent_pid)
 
     def _watch() -> None:
         while True:
             time.sleep(interval)
-            if getppid() != parent_pid:
+            if not parent_alive():
                 log.warning("desktop tray (pid %d) is gone; shutting down", parent_pid)
                 on_orphaned()
                 return

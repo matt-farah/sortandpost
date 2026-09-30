@@ -146,6 +146,7 @@ class ExiftoolClient:
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
+                creationflags=binaries.no_console_flags(),
             )
         except FileNotFoundError as exc:
             raise MetadataError(

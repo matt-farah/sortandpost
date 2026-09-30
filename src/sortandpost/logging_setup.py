@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import sys
 from pathlib import Path
 
 _CONFIGURED = False
@@ -26,7 +27,8 @@ def configure(
     root = logging.getLogger()
     root.setLevel(level)
 
-    if console:
+    # A windowed Windows app started from Explorer has no stderr at all.
+    if console and sys.stderr is not None:
         stream = logging.StreamHandler()
         stream.setFormatter(fmt)
         root.addHandler(stream)

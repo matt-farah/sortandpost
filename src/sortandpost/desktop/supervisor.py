@@ -25,6 +25,14 @@ log = logging.getLogger(__name__)
 HOST = "127.0.0.1"  # a desktop app never listens on the LAN
 QUIT_TIMEOUT_SEC = 60.0  # indexer stop + final publish; generous for a slow sync folder
 TERM_TIMEOUT_SEC = 15.0
+# Anything a control call can raise. The tray must survive every one of them:
+# a Quit or status poll that raises leaves the menu dead.
+_ERRORS = (httpx.HTTPError, OSError, ValueError)
+_TERMINATE = (
+    "terminating it (no final publish; the write lock goes stale)"
+    if sys.platform == "win32"
+    else "sending SIGTERM"
+)
 
 
 def server_command() -> list[str]:
@@ -43,6 +51,11 @@ class ServerProcess:
         self.proc: subprocess.Popen[bytes] | None = None
         self._log_fh: IO[bytes] | None = None
         self.quitting = False  # set once we asked it to stop, so an exit isn't a crash
+        # One client for the tray's lifetime, built now. Loopback plain HTTP needs
+        # no certificates and must not go through a proxy: ignore the environment
+        # (SSL_CERT_FILE points into the bundle, which an installer may replace
+        # under a running app) and skip loading a CA store at all.
+        self._http = httpx.Client(trust_env=False, verify=False)
 
     @property
     def base_url(self) -> str:
@@ -88,9 +101,9 @@ class ServerProcess:
             if not self.alive():
                 return False
             try:
-                httpx.get(self.base_url + "/", timeout=2.0, follow_redirects=False)
+                self._http.get(self.base_url + "/", timeout=2.0, follow_redirects=False)
                 return True
-            except httpx.HTTPError:
+            except _ERRORS:
                 time.sleep(0.4)
         return False
 
@@ -98,23 +111,30 @@ class ServerProcess:
         """Clean stop: ask via the control API (on_shutdown hooks: indexer stop,
         final publish, lock release), wait; then SIGTERM, which uvicorn also
         turns into a clean shutdown; SIGKILL only as a last resort. Returns
-        whether it exited cleanly (without a kill)."""
+        whether it exited cleanly (without a kill).
+
+        On Windows ``terminate()`` is ``TerminateProcess`` -- already a kill,
+        with no final publish -- so there the control API is the only clean
+        path; the lock it leaves behind goes stale and is taken over later."""
         proc = self.proc
         if proc is None or proc.poll() is not None:
             self._close_log()
             return True
         self.quitting = True
+        clean = True
+        term_is_kill = sys.platform == "win32"
         try:
             self._post("/quit", timeout=5.0)
-        except httpx.HTTPError as exc:
-            log.warning("quit request failed (%s); sending SIGTERM", exc)
+        except _ERRORS as exc:
+            log.warning("quit request failed (%s); %s", exc, _TERMINATE)
             proc.terminate()
-        clean = True
+            clean = not term_is_kill
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            log.warning("server still running after %.0fs; sending SIGTERM", timeout)
+            log.warning("server still running after %.0fs; %s", timeout, _TERMINATE)
             proc.terminate()
+            clean = not term_is_kill
             try:
                 proc.wait(timeout=TERM_TIMEOUT_SEC)
             except subprocess.TimeoutExpired:
@@ -141,33 +161,33 @@ class ServerProcess:
         return {TOKEN_HEADER: self.token}
 
     def _post(self, path: str, *, timeout: float = 5.0) -> dict[str, Any]:
-        r = httpx.post(self.base_url + PREFIX + path, headers=self._headers(), timeout=timeout)
+        r = self._http.post(self.base_url + PREFIX + path, headers=self._headers(), timeout=timeout)
         r.raise_for_status()
         data: dict[str, Any] = r.json()
         return data
 
     def status(self, *, timeout: float = 3.0) -> dict[str, Any] | None:
         try:
-            r = httpx.get(
+            r = self._http.get(
                 self.base_url + PREFIX + "/status", headers=self._headers(), timeout=timeout
             )
             r.raise_for_status()
             data: dict[str, Any] = r.json()
             return data
-        except (httpx.HTTPError, ValueError):
+        except _ERRORS:
             return None
 
     def set_paused(self, paused: bool) -> bool:
         try:
             self._post("/pause" if paused else "/resume")
             return True
-        except httpx.HTTPError as exc:
+        except _ERRORS as exc:
             log.warning("pause/resume failed: %s", exc)
             return False
 
     def flush_trash(self) -> dict[str, Any] | None:
         try:
             return self._post("/flush-trash", timeout=120.0)
-        except httpx.HTTPError as exc:
+        except _ERRORS as exc:
             log.warning("moving deleted photos to the system Trash failed: %s", exc)
             return None

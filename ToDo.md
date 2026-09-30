@@ -2,6 +2,6 @@
 - [ ] Build website
 - [ ] Publish to brew
 - [ ] Publish to winget
-- [ ] Test on Windows
+- [x] Test on Windows
 - [ ] Test on Linux
 - [ ] Test on NAS

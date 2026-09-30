@@ -22,6 +22,7 @@ from typing import Any
 
 from sortandpost import __version__
 from sortandpost.desktop import login_item
+from sortandpost.desktop.control import RESTART_EXIT_CODE
 from sortandpost.desktop.icon import render_tray_icon
 from sortandpost.desktop.runtime import (
     InstanceLock,
@@ -51,8 +52,8 @@ def _logs_dir() -> Path:
 def _open_path(path: Path) -> None:
     if sys.platform == "darwin":
         subprocess.Popen(["open", str(path)])
-    elif sys.platform == "win32":  # pragma: no cover - P6
-        os.startfile(str(path))  # type: ignore[attr-defined]
+    elif sys.platform == "win32":  # pragma: no cover - Windows only
+        os.startfile(str(path))  # type: ignore[attr-defined,unused-ignore]
     else:  # pragma: no cover - P7
         subprocess.Popen(["xdg-open", str(path)])
 
@@ -62,13 +63,15 @@ def _ask(title: str, message: str, *, yes: str, no: str) -> bool:
         from sortandpost.desktop import _macos
 
         return _macos.ask(title, message, yes=yes, no=no)
-    if sys.platform == "win32":  # pragma: no cover - P6
-        import ctypes
+    if sys.platform == "win32":  # pragma: no cover - Windows only
+        from sortandpost.desktop import _windows
 
-        mb_yesno, idyes = 0x04, 6
-        text = f"{message}\n\n{yes} = Yes · {no} = No"
-        return bool(ctypes.windll.user32.MessageBoxW(0, text, title, mb_yesno) == idyes)  # type: ignore[attr-defined]
+        return _windows.ask(title, message, yes=yes, no=no)
     return False  # no system Trash flush on Linux anyway
+
+
+# What the OS calls its trash, for the Quit question.
+TRASH_NAME = "Recycle Bin" if sys.platform == "win32" else "Trash"
 
 
 class TrayApp:
@@ -85,6 +88,7 @@ class TrayApp:
         self._stop_polling = threading.Event()
         self._shutdown_done = threading.Event()
         self._shutdown_lock = threading.Lock()
+        self._quit_started = threading.Event()
         item, sep = pystray.MenuItem, pystray.Menu.SEPARATOR
         self.icon = pystray.Icon(
             "sortandpost",
@@ -151,7 +155,9 @@ class TrayApp:
             from sortandpost.desktop import _macos
 
             _macos.call_on_main(fn)
-        else:  # pragma: no cover - pystray's win32 / appindicator backends are thread-safe here
+        else:  # pragma: no cover
+            # win32: menu callbacks already run on pystray's message-loop thread,
+            # and update_menu only rebuilds an HMENU, which any thread may do.
             fn()
 
     # -- actions ------------------------------------------------------------ #
@@ -191,29 +197,64 @@ class TrayApp:
         self._refresh_menu()
         threading.Thread(target=self._restart_server, daemon=True).start()
 
-    def _restart_server(self) -> None:
+    def _restart_server(self, *, open_browser: bool = True) -> None:
         if not port_free(self.server.port, HOST):
             self.server.port = pick_port()
             self._write_runtime()
         self.server.start()
-        self._await_ready(open_browser=True)
+        self._watch_for_restart()
+        self._await_ready(open_browser=open_browser)
+
+    def _watch_for_restart(self) -> None:
+        """The server exits with RESTART_EXIT_CODE to be started afresh (a new
+        data folder); start the new one right away. Its browser page reloads by
+        itself once the new server answers."""
+        proc = self.server.proc
+
+        def _wait() -> None:
+            if proc is None or proc.wait() != RESTART_EXIT_CODE:
+                return
+            if self.quitting or self.server.quitting or self.server.proc is not proc:
+                return
+            log.info("server asked for a restart")
+            self.ready = False
+            self._refresh_menu()
+            self._restart_server(open_browser=False)
+
+        threading.Thread(target=_wait, name="sortandpost-server-watch", daemon=True).start()
 
     def _menu_quit(self, _icon: object, _item: object) -> None:
-        # Runs on the main thread, so the question can be a native modal.
+        if self.quitting or self._quit_started.is_set():
+            return  # a second click while the question is up
+        self._quit_started.set()
+        if sys.platform == "win32":
+            # The menu callback runs inside pystray's window procedure, while
+            # Windows waits for it to return: a modal box opened there can't be
+            # clicked. Ask from a thread of its own (MessageBoxW runs its own
+            # message loop) and let the menu handler return at once.
+            threading.Thread(target=self._quit_sequence, name="sortandpost-quit-ask").start()
+        else:
+            self._quit_sequence()  # macOS: AppKit's alert must run on the main thread
+
+    def _quit_sequence(self) -> None:
         move_trash = False
-        st = self.server.status() if self.ready and not self.crashed else None
-        n = int((st or {}).get("trash_photos") or 0)
+        try:
+            st = self.server.status() if self.ready and not self.crashed else None
+            n = int((st or {}).get("trash_photos") or 0)
+        except Exception:  # never let the trash question stand between the user and Quit
+            log.exception("quit: could not read the server status")
+            st, n = None, 0
         if n and (st or {}).get("system_trash"):
             move_trash = _ask(
-                "Move deleted photos to the Trash?",
+                f"Move deleted photos to the {TRASH_NAME}?",
                 f"{n} photo(s) you deleted are still in sortandpost's “Recently deleted”, "
-                "where they can be put back. Move them to the system Trash now? "
-                "(You can still restore them from the Trash afterwards.)",
-                yes="Move to Trash",
+                f"where they can be put back. Move them to the {TRASH_NAME} now? "
+                f"(You can still restore them from the {TRASH_NAME} afterwards.)",
+                yes=f"Move to {TRASH_NAME}",
                 no="Keep",
             )
         self.quitting = True
-        self.icon.update_menu()
+        self._refresh_menu()
 
         def _work() -> None:
             if move_trash:
@@ -265,17 +306,33 @@ class TrayApp:
         while not self._stop_polling.wait(STATUS_POLL_SEC):
             if self.quitting:
                 return
-            if self.ready and not self.server.alive() and not self.server.quitting:
-                self.crashed, self.ready = True, False
-                log.error("server exited unexpectedly (code %s)", self.server.exit_code())
-            elif self.ready:
-                st = self.server.status()
-                if st is not None:
-                    self.status = st
-            self._refresh_menu()
+            try:
+                self._poll_once()
+            except Exception:  # one bad tick must not end the polling for good
+                log.exception("tray status poll failed")
+
+    def _poll_once(self) -> None:
+        if (
+            self.ready
+            and not self.server.alive()
+            and not self.server.quitting
+            and self.server.exit_code() != RESTART_EXIT_CODE  # _watch_for_restart's
+        ):
+            self.crashed, self.ready = True, False
+            log.error("server exited unexpectedly (code %s)", self.server.exit_code())
+        elif self.ready:
+            st = self.server.status()
+            if st is not None:
+                self.status = st
+        self._refresh_menu()
 
     def _setup(self, icon: Any) -> None:
         icon.visible = True
+        if sys.platform == "win32":  # pragma: no cover - Windows only
+            from sortandpost.desktop import _windows
+
+            _windows.name_window(icon)
+        self._watch_for_restart()
         self._await_ready(open_browser=True)
         threading.Thread(target=self._poll, name="sortandpost-tray-poll", daemon=True).start()
 
@@ -289,6 +346,11 @@ class TrayApp:
                 on_reopen=lambda: self.open_browser() if self.ready else None,
                 on_terminate=self.shutdown,
             )
+        elif sys.platform == "win32":  # pragma: no cover - Windows only
+            from sortandpost.desktop import _windows
+
+            _windows.hold_app_mutex()
+            _windows.install_session_end(self.icon, on_end=self.shutdown)
         try:
             self.icon.run(setup=self._setup)
         finally:

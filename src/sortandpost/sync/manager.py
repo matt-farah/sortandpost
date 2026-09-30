@@ -232,6 +232,7 @@ class SyncManager:
         # highest generation wins; keep the working copy on a tie
         base = max(candidates, key=lambda p: (gens[p], p == wdb))
         if base != wdb:
+            self._reset_working_engine()  # Windows can't replace a file SQLite holds open
             atomic_replace(base, wdb, tag=self.device_id)
             self._reset_working_engine()
             gens[wdb] = gens[base]
@@ -268,6 +269,7 @@ class SyncManager:
         remote = read_generation(self.paths.published_db)
         local = read_generation(self.paths.working_db)
         if remote > local:
+            self._reset_working_engine()  # Windows can't replace a file SQLite holds open
             pull_published(self.paths.published_db, self.paths.working_db, device_id=self.device_id)
             self._reset_working_engine()
             self._last_publish_hash = sha256_file(self.paths.working_db)
@@ -283,6 +285,7 @@ class SyncManager:
         if snap is None:
             raise RuntimeError("working DB failed quick_check and no snapshot exists to restore")
         log.error("working DB failed quick_check; restoring %s", snap.name)
+        self._reset_working_engine()  # Windows can't replace a file SQLite holds open
         restore_snapshot(snap, self.paths.working_db)
         self._reset_working_engine()
         self.restored_from_snapshot = snap
@@ -290,6 +293,7 @@ class SyncManager:
 
     def _pull_if_newer(self) -> None:
         if read_generation(self.paths.published_db) > read_generation(self.paths.working_db):
+            self._reset_working_engine()  # Windows can't replace a file SQLite holds open
             pull_published(self.paths.published_db, self.paths.working_db, device_id=self.device_id)
             self._reset_working_engine()
 
@@ -330,6 +334,9 @@ class SyncManager:
         without invalidating the engine object (which the web app shares); the
         next connection opens the current file. In-flight transactions on a
         checked-out connection are left to finish and close normally.
+
+        Called *before* the replace too: Windows refuses to replace a file that
+        is open at all, so the idle pooled handles must be closed first.
         """
         if self._engine is not None:
             self._engine.dispose()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -41,7 +42,10 @@ def clock() -> FakeClock:
 
 
 def test_single_writer_then_read_only_second_machine(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clock: FakeClock,
+    dir_link: Callable[[Path, Path], None],
 ) -> None:
     a_data = tmp_path / "a"
     settings_a = _settings(monkeypatch, a_data)
@@ -49,7 +53,7 @@ def test_single_writer_then_read_only_second_machine(
     # machine B shares machine A's sync/ folder
     b_data = tmp_path / "b"
     b_data.mkdir()
-    (b_data / "sync").symlink_to(settings_a.paths.sync, target_is_directory=True)
+    dir_link(b_data / "sync", settings_a.paths.sync)
     settings_b = _settings(monkeypatch, b_data)
 
     mgr_a = SyncManager(settings_a, clock=clock)
@@ -69,7 +73,10 @@ def test_single_writer_then_read_only_second_machine(
 
 
 def test_pull_disposes_stale_engine_connections(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clock: FakeClock,
+    dir_link: Callable[[Path, Path], None],
 ) -> None:
     """A read-only machine that pulls a newer published DB on start must not keep
     serving the pre-pull file: ``os.replace`` unlinks the inode the engine's
@@ -81,7 +88,7 @@ def test_pull_disposes_stale_engine_connections(
 
     b_data = tmp_path / "b"
     b_data.mkdir()
-    (b_data / "sync").symlink_to(settings_a.paths.sync, target_is_directory=True)
+    dir_link(b_data / "sync", settings_a.paths.sync)
     monkeypatch.setenv("APP_DATA", str(b_data))
     settings_b = Settings.resolve()
     make_db(settings_b.paths.working_db, photos=[], generation=1)  # emptier + older
@@ -110,12 +117,15 @@ def test_pull_disposes_stale_engine_connections(
 
 
 def test_read_only_machine_takes_over_a_stale_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clock: FakeClock,
+    dir_link: Callable[[Path, Path], None],
 ) -> None:
     settings_a = _settings(monkeypatch, tmp_path / "a")
     b_data = tmp_path / "b"
     b_data.mkdir()
-    (b_data / "sync").symlink_to(settings_a.paths.sync, target_is_directory=True)
+    dir_link(b_data / "sync", settings_a.paths.sync)
     settings_b = _settings(monkeypatch, b_data)
 
     mgr_a = SyncManager(settings_a, clock=clock)

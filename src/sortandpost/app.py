@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -5123,10 +5124,18 @@ def _reexec_if_requested() -> None:
         return
     log.info("restarting sortandpost")
     logging.shutdown()
+    if desktop_control.control_token() is not None:
+        # The desktop tray supervises us: it starts the new server itself, so it
+        # keeps its handle on the process (control API, parent watch, Quit).
+        raise SystemExit(desktop_control.RESTART_EXIT_CODE)
     if getattr(sys, "frozen", False):  # a packaged app (P5)
         argv = [sys.executable, *sys.argv[1:]]
     else:
         argv = [sys.executable, *sys.orig_argv[1:]]
+    if sys.platform == "win32":
+        # Windows has no in-place exec: os.execv starts a new process and ends
+        # this one, detaching the server from the terminal that started it.
+        raise SystemExit(subprocess.call(argv))
     os.execv(sys.executable, argv)
 
 

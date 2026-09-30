@@ -101,6 +101,7 @@ def test_priority_helpers_swallow_os_errors(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(os, "nice", boom, raising=False)
     monkeypatch.setattr(os, "setpriority", boom, raising=False)
+    monkeypatch.setattr(os, "PRIO_PROCESS", 0, raising=False)  # absent on Windows
     monkeypatch.setattr(sys, "platform", "linux")
     cpu.lower_process_priority()
     cpu.set_thread_priority(False)

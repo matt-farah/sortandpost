@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from sortandpost import reveal
+
+# The macOS / Linux branches, fed POSIX paths that Path.resolve() turns into
+# C:\... on Windows (where those branches never run anyway).
+posix_paths = pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths")
+
+
+def _abs(p: str) -> str:
+    return str(Path(p).resolve())
 
 
 @pytest.fixture
@@ -34,6 +43,7 @@ def test_reveal_supported(
     assert reveal.reveal_supported() is expected
 
 
+@posix_paths
 def test_reveal_in_file_manager_macos_selects_file(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -47,7 +57,7 @@ def test_reveal_in_file_manager_windows_selects_file(
 ) -> None:
     monkeypatch.setattr(reveal, "_os", lambda: "win")
     reveal.reveal_in_file_manager(Path("/photos/a.jpg"))
-    assert spawned == [["explorer", "/select,/photos/a.jpg"]]
+    assert spawned == [["explorer", f"/select,{_abs('/photos/a.jpg')}"]]
 
 
 def test_reveal_in_file_manager_linux_opens_containing_dir(
@@ -60,6 +70,7 @@ def test_reveal_in_file_manager_linux_opens_containing_dir(
     assert spawned == [["xdg-open", str(tmp_path)]]
 
 
+@posix_paths
 def test_open_in_default_app_macos(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -79,6 +90,7 @@ def test_reveal_multiple_empty_is_a_noop(
     assert spawned == []
 
 
+@posix_paths
 def test_reveal_multiple_darwin_single_path_uses_open_dash_r(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -87,6 +99,7 @@ def test_reveal_multiple_darwin_single_path_uses_open_dash_r(
     assert spawned == [["open", "-R", "/photos/a.jpg"]]
 
 
+@posix_paths
 def test_reveal_multiple_darwin_builds_one_applescript_call(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -116,13 +129,18 @@ def test_reveal_multiple_windows_falls_back_to_one_explorer_per_file(
     monkeypatch.setattr(reveal, "_os", lambda: "win")
     monkeypatch.setattr(reveal, "_win_select_grouped", lambda paths: False)
     reveal.reveal_multiple_in_file_manager([Path("/photos/a.jpg"), Path("/photos/b.jpg")])
-    assert spawned == [["explorer", "/select,/photos/a.jpg"], ["explorer", "/select,/photos/b.jpg"]]
+    assert spawned == [
+        ["explorer", f"/select,{_abs('/photos/a.jpg')}"],
+        ["explorer", f"/select,{_abs('/photos/b.jpg')}"],
+    ]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="it's on Windows")
 def test_win_select_grouped_is_a_noop_off_windows() -> None:
     assert reveal._win_select_grouped([Path("/photos/a.jpg")]) is False
 
 
+@posix_paths
 def test_reveal_multiple_linux_uses_dbus_when_available(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -151,6 +169,7 @@ def test_reveal_multiple_linux_falls_back_to_unique_parent_folders(
     assert spawned == [["xdg-open", str(tmp_path)], ["xdg-open", str(tmp_path / "sub")]]
 
 
+@posix_paths
 def test_open_multiple_in_default_app_macos_opens_all_in_one_call(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -159,6 +178,7 @@ def test_open_multiple_in_default_app_macos_opens_all_in_one_call(
     assert spawned == [["open", "/photos/a.jpg", "/photos/b.jpg"]]
 
 
+@posix_paths
 def test_open_multiple_in_default_app_linux_opens_each(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -170,6 +190,7 @@ def test_open_multiple_in_default_app_linux_opens_each(
 # --- open with a specific app -------------------------------------------------
 
 
+@posix_paths
 def test_open_with_app_macos_uses_open_dash_a(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -183,9 +204,10 @@ def test_open_with_app_windows_runs_the_exe_directly(
 ) -> None:
     monkeypatch.setattr(reveal, "_os", lambda: "win")
     reveal.open_with_app(Path("/photos/a.jpg"), "C:\\Apps\\Viewer.exe")
-    assert spawned == [["C:\\Apps\\Viewer.exe", "/photos/a.jpg"]]
+    assert spawned == [["C:\\Apps\\Viewer.exe", _abs("/photos/a.jpg")]]
 
 
+@posix_paths
 def test_open_with_app_linux_runs_the_command_directly(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -202,6 +224,7 @@ def test_open_multiple_with_app_empty_is_a_noop(
     assert spawned == []
 
 
+@posix_paths
 def test_open_multiple_with_app_macos_opens_all_in_one_call(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
@@ -214,6 +237,7 @@ def test_open_multiple_with_app_macos_opens_all_in_one_call(
     ]
 
 
+@posix_paths
 def test_open_multiple_with_app_linux_passes_all_paths_to_one_process(
     monkeypatch: pytest.MonkeyPatch, spawned: list[list[str]]
 ) -> None:
