@@ -9,3 +9,4 @@
   - Fix: `ui.run(tailwind=False)` + a prebuilt `src/sortandpost/resources/tailwind.css` (Tailwind 4.1.13, same as NiceGUI bundles) from `tools/tailwind/build.sh`. At ~320 tiles: 21 stalls >100ms (worst 450ms) -> 0. Computed styles identical on all 203 class strings shared by prod and dev across every page. Test: `tests/test_tailwind_css.py`.
   - Status: shipped in v1.1.0.
   - Possible follow-up: window/cap the grid's DOM and chunk the scroll-restore render, so a reload after a very deep scroll stays cheap.
+- [ ] When scrolling through the library, there is a small gap between the top bar of the page and the top of the header for the group by category. I think it would look better with this gap removed
