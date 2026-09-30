@@ -468,8 +468,11 @@ sweep, trashes the still-present local file and purges the derived rows.
 Concurrency: `ProcessPoolExecutor` for decode/hash/thumbnails, sized by `clip.speed` (`slow` ≈ 30% of
 cores at lowered priority, the default; `fast` = `cpu_count - 1`); CLIP inference runs in the app/indexer
 process with the same thread budget. `watchdog`
-observers on the library roots, debounced, plus a periodic full reconcile scan
-(`full_scan_interval_min`). The indexer only runs when this machine holds the write lock.
+observers on the library roots, debounced into a **scoped** pass over just the changed paths
+(`scan_once(scope=…)`: folders walked, files checked alone, presence swept only under them;
+hidden / excluded / app-data / non-image events dropped, a symlinked root's resolved event
+paths mapped back onto the root's spelling; > 500 paths → full pass), plus a periodic full
+reconcile scan (`full_scan_interval_min`) as the safety net for missed events. The indexer only runs when this machine holds the write lock.
 
 ---
 

@@ -99,3 +99,17 @@ def test_an_unstatable_entry_is_skipped_not_fatal(
     monkeypatch.setattr(Path, "is_symlink", guard)
     names = sorted(p.name for p in iter_image_files([tmp_path]))
     assert names == ["a.jpg", "b.jpg"]
+
+
+def test_collapse_scope(tmp_path: Path) -> None:
+    from sortandpost.indexer.scanner import collapse_scope
+
+    lib = tmp_path / "lib"
+    got = collapse_scope(
+        [lib / "a" / "x.jpg", lib / "a", lib / "a-b", tmp_path / "outside", lib / "a" / "c"],
+        [lib],
+    )
+    assert got == [lib / "a", lib / "a-b"]
+    assert collapse_scope([lib / "a", lib], [lib]) is None
+    assert collapse_scope([tmp_path], [lib]) is None  # contains a root
+    assert collapse_scope([], [lib]) == []
