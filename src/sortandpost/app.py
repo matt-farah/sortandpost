@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
@@ -578,13 +579,32 @@ class State:
 _THEME_TO_DARK: dict[Theme, bool | None] = {"system": None, "light": False, "dark": True}
 
 
+# Each tab's app-bar season glyph + its tooltip, so a season picked in Settings
+# updates the header in place instead of on the next page load.
+_SEASON_GLYPHS: weakref.WeakKeyDictionary[Any, tuple[ui.icon, ui.tooltip]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _season_tooltip(choice: SeasonChoice) -> str:
+    return f"{SEASON_LABELS[resolve_season(choice)]} theme" + (
+        " (auto)" if choice == "auto" else ""
+    )
+
+
 def _apply_season(choice: SeasonChoice) -> str:
-    """Put the season's class on <body> (dropping any other season's); returns
-    the Material icon for the resolved season. The token CSS is keyed on it."""
+    """Put the season's class on <body> (dropping any other season's) and
+    update this tab's header glyph; returns the Material icon for the resolved
+    season. The token CSS is keyed on the class."""
     season = resolve_season(choice)
     ui.query("body").classes(
         add=body_class(season), remove=" ".join(body_class(s) for s in SEASONS)
     )
+    glyph = _SEASON_GLYPHS.get(ui.context.client)
+    if glyph is not None:
+        icon, tip = glyph
+        icon.set_name(SEASON_ICONS[season])
+        tip.set_text(_season_tooltip(choice))
     return SEASON_ICONS[season]
 
 
@@ -620,10 +640,9 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
     ui.add_body_html(_APPBAR_HEIGHT_JS)
     with ui.header().classes("sp-appbar items-center justify-between gap-4"):
         with ui.row().classes("items-center gap-2 no-wrap"):
-            ui.icon(glyph_icon).classes("sp-season-glyph text-lg").tooltip(
-                f"{SEASON_LABELS[resolve_season(State.season)]} theme"
-                + (" (auto)" if State.season == "auto" else "")
-            )
+            with ui.icon(glyph_icon).classes("sp-season-glyph text-lg") as glyph:
+                tip = ui.tooltip(_season_tooltip(State.season))
+            _SEASON_GLYPHS[ui.context.client] = (glyph, tip)
             ui.link("sortandpost", "/").classes("sp-display text-xl font-semibold sp-nav")
             ui.label(__version__).classes("sp-faint text-[11px]")
         if minimal:  # the welcome wizard: nothing else to navigate to yet
