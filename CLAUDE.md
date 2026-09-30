@@ -597,6 +597,11 @@ How they're applied:
   `--sp-focus`, `--sp-statusbar-*`) plus Quasar's `--q-primary/secondary/accent`.
   `theme_css()` emits them keyed on `<body>` classes `sp-season-<s>` (+ Quasar's `body--dark`);
   the palette also shows as a hairline stripe under the app bar.
+- **First paint**: those body classes only land when Vue mounts, but the theme CSS is already
+  applied, so every full page load has a moment where `--sp-bg` is the `:root` light default.
+  `first_paint_css()` (emitted per page in `<head>` by `_header`) sets the `<html>` background,
+  `color-scheme` and `--sp-bg` for the resolved look, so Firefox / Safari don't flash white.
+  Any token that paints large areas before mount must be set there too.
 - Palette colors are used as-is where they read well; where a role needs more contrast
   (body text, a pastel primary used as text) the value is a **derived** shade, commented as such.
   Rough roles: Spring — blush bg, peach status bar, deepened coral primary (pastel `#fec5bb` as
