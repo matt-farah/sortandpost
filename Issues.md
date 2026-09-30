@@ -9,3 +9,4 @@
   - Fix: `ui.run(tailwind=False)` + a prebuilt `src/sortandpost/resources/tailwind.css` (Tailwind 4.1.13, same as NiceGUI bundles) from `tools/tailwind/build.sh`. At ~320 tiles: 21 stalls >100ms (worst 450ms) -> 0. Computed styles identical on all 203 class strings shared by prod and dev across every page. Test: `tests/test_tailwind_css.py`.
   - Status: shipped in v1.1.0.
   - Possible follow-up: window/cap the grid's DOM and chunk the scroll-restore render, so a reload after a very deep scroll stays cheap.
+- [ ] Firefox on Windows: paging through photos on `/photo/{pixel_hash}` with arrow keys flashes white for a moment on each navigation -- annoying but not blocking. Not investigated yet.
