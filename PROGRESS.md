@@ -1,13 +1,33 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-30 (V2 #24 — grid modifier-click selection)._
-_Working branch: `grid-selection-modifiers`. P0–P6 merged; #24 in its PR._
+_Last updated: 2026-09-30 (V2 P8 — targeted subtree rescan)._
+_Working branch: `subtree-rescan`. P0–P6 + #24 merged; P8 in its PR._
 
-> **▶️ Next:** V2 **P8 — targeted subtree rescan** (`V2Plan.md`). (Photo-page white flash:
-> fixed, see below.)
+> **▶️ Next:** all planned V2 phases are done (P7 → V3). Remaining: the backlog
+> (#12, #17, #18 — "fix if it bites") and ToDo.md items.
 > **Linux AppImage (old P7) moved to V3** — needs a Linux VM; Windows/macOS come first.
 > Open question from P6: commit `uv.lock`? (Windows resolved sqlmodel 0.0.45 fresh, which
 > broke indexing.) Rebuild the macOS app after merging.
+
+## 📋 2026-09-30 — V2 P8: targeted subtree rescan (`V2.md` #15)
+
+- `indexer/service.py`: `_Debouncer` now collects event paths into a `PendingScan`
+  (`paths` or `full`; > 500 paths → full). `_ScopeFilter` maps each watchdog event to a
+  scope path or drops it: outside roots, hidden, excluded names (incl. ancestors), under
+  `paths.roots()` (our own thumbnail / DB writes), existing non-images, dir "modified". A
+  vanished path is kept whatever its name (Windows reports a deleted folder as a file event).
+  Resolved FSEvents paths are mapped back onto a symlinked root's spelling (else duplicate
+  `scan_state` keys).
+- Loop: a due full pass clears pending events first; otherwise a ready `PendingScan` runs
+  scoped, doesn't reset the full timer, and is requeued if paused / quit mid-pass.
+- `scan_once(scope=…)`: `scanner.collapse_scope` (drop outside-root + nested paths; a root
+  → full) + `iter_scoped_files`; per-path `ScanState` lookups instead of loading all rows.
+  `sweep_presence(scope=…)` judges only `photo_paths` at/under the scope and re-checks their
+  photos **plus** photos whose `primary_path` is in scope (an edited file moves its unique
+  `photo_paths` row to the new hash). `ScanStats.scoped` shows in the log line.
+- Tests: debouncer, filter (noise, symlinked root), scoped scan / sweep / move / edit /
+  exclusions, a real-watchdog loop test. Hands-on tested by the user 2026-09-30.
+- Trade-off: a missed event now waits for the next full pass (≤ 15 min).
 
 ## 📋 2026-09-30 — V2 #24: grid modifier-click selection (`V2.md` #24)
 

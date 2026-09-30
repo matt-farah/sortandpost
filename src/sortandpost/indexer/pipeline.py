@@ -14,6 +14,7 @@ distinction falls out of how many rows are ``present`` after a scan.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntFlag
@@ -326,17 +327,30 @@ class SweepResult:
     repointed_primary: list[str] = field(default_factory=list)
 
 
-def sweep_presence(session: Session, seen_paths: set[str], *, now: datetime) -> SweepResult:
-    """Reconcile ``present``/``missing_since`` after a full scan pass.
+def sweep_presence(
+    session: Session,
+    seen_paths: set[str],
+    *,
+    now: datetime,
+    scope: list[Path] | None = None,
+) -> SweepResult:
+    """Reconcile ``present``/``missing_since`` after a scan pass.
 
     Any ``photo_paths`` row whose path was not visited this pass becomes absent;
     a :class:`Photo` with no present path gets ``missing_since`` (never purged --
     hard constraint #8). ``primary_path`` is repointed to the lexically first
     present path when the current one is gone.
+
+    With *scope* (a scoped pass that walked only those paths) only rows at or
+    under a scope path are judged, and only their photos are re-checked.
     """
     result = SweepResult()
 
-    for pp in session.exec(select(PhotoPath)).all():
+    if scope is None:
+        rows = list(session.exec(select(PhotoPath)).all())
+    else:
+        rows = _in_scope(session, PhotoPath, "path", scope)
+    for pp in rows:
         should_be_present = pp.path in seen_paths
         if pp.present and not should_be_present:
             pp.present = False
@@ -344,7 +358,16 @@ def sweep_presence(session: Session, seen_paths: set[str], *, now: datetime) -> 
         elif not pp.present and should_be_present:
             pp.present = True
 
-    for photo in session.exec(select(Photo)).all():
+    if scope is None:
+        photos = list(session.exec(select(Photo)).all())
+    else:
+        # also photos whose primary path is in scope: a file whose pixels
+        # changed moved its ``photo_paths`` row to the new hash, leaving the
+        # old photo pointing at a path it no longer has
+        hashes = {pp.pixel_hash for pp in rows}
+        hashes |= {p.pixel_hash for p in _in_scope(session, Photo, "primary_path", scope)}
+        photos = [p for h in sorted(hashes) if (p := session.get(Photo, h)) is not None]
+    for photo in photos:
         present = session.exec(
             select(PhotoPath).where(
                 PhotoPath.pixel_hash == photo.pixel_hash,
@@ -364,3 +387,22 @@ def sweep_presence(session: Session, seen_paths: set[str], *, now: datetime) -> 
             result.marked_missing += 1
 
     return result
+
+
+def _in_scope[T: (Photo, PhotoPath)](
+    session: Session, model: type[T], field_name: str, scope: list[Path]
+) -> list[T]:
+    """Rows of *model* whose path field *field_name* is equal to or under a scope path.
+    SQLite's LIKE is case-insensitive, so it only narrows the query; the exact
+    check is here."""
+    out: dict[int, T] = {}
+    for base in scope:
+        key = str(base)
+        prefix = key.rstrip(os.sep) + os.sep
+        column = col(getattr(model, field_name))
+        query = select(model).where((column == key) | column.startswith(prefix, autoescape=True))
+        for row in session.exec(query).all():
+            value = getattr(row, field_name)
+            if value == key or value.startswith(prefix):
+                out[id(row)] = row
+    return list(out.values())

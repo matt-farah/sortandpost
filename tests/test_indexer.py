@@ -321,3 +321,85 @@ def test_embedded_metadata_lands_on_photo_row(settings: Settings) -> None:
         assert row.taken_at is not None and row.taken_at.year == 2019
         assert row.camera_make == "Nikon"
         assert row.camera_model == "Z6"
+
+
+# --------------------------------------------------------------------------- #
+# scoped passes (the indexer loop's filesystem events)
+# --------------------------------------------------------------------------- #
+def test_scoped_scan_only_walks_its_scope(settings: Settings) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "a" / "one.jpg", (10, 20, 30))
+    _jpeg(lib / "b" / "two.jpg", (200, 50, 50))
+
+    stats = scan_once(settings, scope=[lib / "a"])
+    assert stats.scoped == 1
+    assert stats.seen == 1 and stats.indexed == 1
+    with _session(settings) as s:
+        assert [p.primary_path for p in s.exec(select(Photo)).all()] == [str(lib / "a" / "one.jpg")]
+
+    # a single file in scope is checked on its own
+    stats = scan_once(settings, scope=[lib / "b" / "two.jpg"])
+    assert stats.seen == 1 and stats.indexed == 1
+
+
+def test_scoped_sweep_marks_only_its_scope_missing(settings: Settings) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "a" / "one.jpg", (10, 20, 30))
+    _jpeg(lib / "b" / "two.jpg", (200, 50, 50))
+    scan_once(settings)
+
+    shutil.rmtree(lib / "a")
+    (lib / "b" / "two.jpg").unlink()  # also gone, but outside this pass's scope
+    stats = scan_once(settings, scope=[lib / "a"])
+    assert stats.marked_absent == 1 and stats.marked_missing == 1
+    with _session(settings) as s:
+        missing = {p.primary_path: p.missing_since is not None for p in s.exec(select(Photo))}
+    assert missing == {str(lib / "a" / "one.jpg"): True, str(lib / "b" / "two.jpg"): False}
+
+    full = scan_once(settings)  # the periodic full pass catches the rest
+    assert full.marked_missing == 1
+
+
+def test_scoped_scan_resolves_a_move_between_folders(settings: Settings) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "a" / "one.jpg", (10, 20, 30))
+    scan_once(settings)
+
+    (lib / "b").mkdir()
+    (lib / "a" / "one.jpg").rename(lib / "b" / "one.jpg")
+    stats = scan_once(settings, scope=[lib / "a" / "one.jpg", lib / "b" / "one.jpg"])
+    assert stats.marked_missing == 0
+    with _session(settings) as s:
+        photo = s.exec(select(Photo)).one()
+        assert photo.primary_path == str(lib / "b" / "one.jpg")
+        assert photo.missing_since is None
+        present = {pp.path: pp.present for pp in s.exec(select(PhotoPath))}
+    assert present == {str(lib / "a" / "one.jpg"): False, str(lib / "b" / "one.jpg"): True}
+
+
+def test_scoped_scan_rechecks_the_old_photo_when_a_file_is_edited(settings: Settings) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "a" / "one.jpg", (10, 20, 30))
+    scan_once(settings)
+    _jpeg(lib / "a" / "one.jpg", (250, 250, 0))  # new pixels, same path
+
+    scan_once(settings, scope=[lib / "a" / "one.jpg"])
+    with _session(settings) as s:
+        photos = s.exec(select(Photo)).all()
+    assert len(photos) == 2
+    assert sorted(p.missing_since is None for p in photos) == [False, True]
+
+
+def test_scoped_scan_respects_excluded_folders(settings: Settings) -> None:
+    settings.config.indexer.exclude_dir_names = ["RAW"]
+    lib = _lib(settings)
+    _jpeg(lib / "RAW" / "x" / "one.jpg")
+    assert scan_once(settings, scope=[lib / "RAW" / "x"]).seen == 0
+    assert scan_once(settings, scope=[lib / "RAW"]).seen == 0
+
+
+def test_scope_covering_a_root_is_a_full_scan(settings: Settings) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "a" / "one.jpg")
+    stats = scan_once(settings, scope=[lib, lib / "a"])
+    assert stats.scoped is None and stats.seen == 1

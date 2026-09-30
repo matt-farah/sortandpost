@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import threading
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import nullcontext
@@ -55,7 +55,7 @@ from sortandpost.indexer.pipeline import (
     sweep_presence,
 )
 from sortandpost.indexer.progress import PROGRESS
-from sortandpost.indexer.scanner import iter_image_files
+from sortandpost.indexer.scanner import collapse_scope, iter_image_files, iter_scoped_files
 from sortandpost.indexer.workers import DecodedFile, DecodeJob, decode_file, decode_local
 from sortandpost.library_roots import container_roots
 from sortandpost.metadata import ExiftoolClient
@@ -96,6 +96,7 @@ class ScanStats:
     ratings_written: int = 0
     keywords_imported: int = 0
     interrupted: bool = False  # stopped early (pause / quit); no presence sweep this pass
+    scoped: int | None = None  # a scoped pass: how many paths it walked (None = full scan)
 
     def __str__(self) -> str:
         reconciled = ""
@@ -111,8 +112,9 @@ class ScanStats:
                 f"{self.tombstones_applied} tombstone(s) applied"
             )
         online = f"; {self.online_only} online-only (skipped)" if self.online_only else ""
+        scope = f"scoped to {self.scoped} path(s): " if self.scoped is not None else ""
         return (
-            f"{self.seen} files seen, {self.indexed} indexed "
+            f"{scope}{self.seen} files seen, {self.indexed} indexed "
             f"({self.new_photos} new, {self.thumbnails} thumbnails), "
             f"{self.skipped} unchanged, {self.errors} errors; "
             f"{self.marked_absent} paths now absent, {self.marked_missing} photos now missing"
@@ -129,8 +131,15 @@ def scan_once(
     *,
     workers: int | None = None,
     interrupt: Callable[[], bool] | None = None,
+    scope: Iterable[Path | str] | None = None,
 ) -> ScanStats:
-    """One full pass over the library roots (stages 1-6).
+    """One pass over the library roots (stages 1-6).
+
+    ``scope`` (the indexer loop's debounced filesystem events) limits the pass
+    to those paths: a folder is walked, a file checked on its own, and the
+    presence sweep judges only paths at or under them. A scope that covers a
+    root is a full pass. The periodic full pass stays the safety net for any
+    event the watcher missed.
 
     Stages 2-4 (decode, pixel + perceptual hash, thumbnails) are CPU-bound and
     run in a ``ProcessPoolExecutor`` (hard constraint #7); the main process does
@@ -154,7 +163,7 @@ def scan_once(
     """
     with _INDEX_LOCK:
         try:
-            return _scan_once_locked(settings, workers=workers, interrupt=interrupt)
+            return _scan_once_locked(settings, workers=workers, interrupt=interrupt, scope=scope)
         finally:
             PROGRESS.finish()
 
@@ -164,6 +173,7 @@ def _scan_once_locked(
     *,
     workers: int | None = None,
     interrupt: Callable[[], bool] | None = None,
+    scope: Iterable[Path | str] | None = None,
 ) -> ScanStats:
     stop_now = interrupt or (lambda: False)
     paths = settings.paths
@@ -192,18 +202,25 @@ def _scan_once_locked(
         else nullcontext(None)
     )
 
-    stats = ScanStats()
+    scoped = collapse_scope(scope, roots) if scope is not None else None
+    exclude_names = settings.config.indexer.exclude_dir_names
+    if scoped is None:
+        walk = iter_image_files(roots, exclude=paths.roots(), exclude_names=exclude_names)
+    else:
+        walk = iter_scoped_files(roots, scoped, exclude=paths.roots(), exclude_names=exclude_names)
+
+    stats = ScanStats(scoped=len(scoped) if scoped is not None else None)
     seen_paths: set[str] = set()
     PROGRESS.begin("discovering")
     with Session(engine) as session, et_ctx as exiftool:
-        # -- discover + fast-path filter (main thread, one ScanState query) --- #
-        scan_rows = {s.path: s for s in session.exec(select(ScanState)).all()}
+        # -- discover + fast-path filter (main thread) ------------------------ #
+        # A full pass loads every ScanState in one query; a scoped one (a few
+        # files) looks each up instead of loading the whole library.
+        scan_rows = (
+            {s.path: s for s in session.exec(select(ScanState)).all()} if scoped is None else None
+        )
         todo: list[str] = []
-        for path in iter_image_files(
-            roots,
-            exclude=paths.roots(),
-            exclude_names=settings.config.indexer.exclude_dir_names,
-        ):
+        for path in walk:
             if stop_now():
                 stats.interrupted = True
                 break
@@ -220,7 +237,8 @@ def _scan_once_locked(
                 session.commit()
                 stats.errors += 1
                 continue
-            if not needs_reindex(scan_rows.get(key), st.st_size, st.st_mtime_ns):
+            scan_row = scan_rows.get(key) if scan_rows is not None else session.get(ScanState, key)
+            if not needs_reindex(scan_row, st.st_size, st.st_mtime_ns):
                 stats.skipped += 1
                 continue
             todo.append(key)
@@ -258,7 +276,7 @@ def _scan_once_locked(
             log.info("scan interrupted: %s", stats)
             return stats
 
-        result = sweep_presence(session, seen_paths, now=_utcnow())
+        result = sweep_presence(session, seen_paths, now=_utcnow(), scope=scoped)
         session.commit()
         stats.marked_absent = result.marked_absent
         stats.marked_missing = result.marked_missing

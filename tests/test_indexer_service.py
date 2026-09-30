@@ -16,7 +16,9 @@ from sortandpost.db import make_engine
 from sortandpost.db.models import Photo
 from sortandpost.indexer.service import (
     IndexerLoopConfig,
+    PendingScan,
     _Debouncer,
+    _ScopeFilter,
     run_indexer,
     watchdog_available,
 )
@@ -29,26 +31,98 @@ def test_debouncer_waits_for_quiet_then_rearms() -> None:
     clock = {"t": 0.0}
     deb = _Debouncer(2.0, time_fn=lambda: clock["t"])
 
-    assert deb.take_if_ready() is False  # nothing pending
+    assert deb.take_if_ready() is None  # nothing pending
 
-    deb.bump()
+    deb.bump([Path("/lib/a.jpg")])
     clock["t"] = 1.9
-    assert deb.take_if_ready() is False  # still inside the quiet window
+    assert deb.take_if_ready() is None  # still inside the quiet window
     clock["t"] = 2.0
-    assert deb.take_if_ready() is True  # quiet elapsed
-    assert deb.take_if_ready() is False  # consumed / re-armed
+    assert deb.take_if_ready() == PendingScan(frozenset({Path("/lib/a.jpg")}))
+    assert deb.take_if_ready() is None  # consumed / re-armed
 
 
-def test_debouncer_later_bump_pushes_the_deadline_out() -> None:
+def test_debouncer_later_bump_pushes_the_deadline_out_and_collects_paths() -> None:
     clock = {"t": 0.0}
     deb = _Debouncer(2.0, time_fn=lambda: clock["t"])
-    deb.bump()  # due at 2.0
+    deb.bump([Path("/lib/a.jpg")])  # due at 2.0
     clock["t"] = 1.5
-    deb.bump()  # due at 3.5
+    deb.bump([Path("/lib/b"), Path("/lib/a.jpg")])  # due at 3.5
     clock["t"] = 2.5
-    assert deb.take_if_ready() is False
+    assert deb.take_if_ready() is None
     clock["t"] = 3.5
-    assert deb.take_if_ready() is True
+    pending = deb.take_if_ready()
+    assert pending is not None and not pending.full
+    assert pending.paths == {Path("/lib/a.jpg"), Path("/lib/b")}
+
+
+def test_debouncer_too_many_paths_becomes_a_full_scan() -> None:
+    clock = {"t": 0.0}
+    deb = _Debouncer(0.0, time_fn=lambda: clock["t"], max_paths=3)
+    deb.bump([Path(f"/lib/{i}.jpg") for i in range(4)])
+    deb.bump([Path("/lib/more.jpg")])  # stays full
+    assert deb.take_if_ready() == PendingScan(full=True)
+
+
+def test_debouncer_requeue_is_due_at_once_and_clear_drops_everything() -> None:
+    clock = {"t": 10.0}
+    deb = _Debouncer(5.0, time_fn=lambda: clock["t"])
+    deb.requeue(PendingScan(frozenset({Path("/lib/x")})))
+    assert deb.take_if_ready() == PendingScan(frozenset({Path("/lib/x")}))
+    deb.bump([Path("/lib/y")])
+    deb.clear()
+    clock["t"] = 100.0
+    assert deb.take_if_ready() is None
+
+
+# --------------------------------------------------------------------------- #
+# event -> scope filter
+# --------------------------------------------------------------------------- #
+def _filter(tmp_path: Path, **kw: object) -> tuple[_ScopeFilter, Path]:
+    lib = tmp_path / "lib"
+    (lib / "sub").mkdir(parents=True)
+    Image.new("RGB", (4, 4)).save(lib / "sub" / "a.jpg")
+    (lib / "sub" / "notes.txt").write_text("x")
+    return _ScopeFilter([lib], **kw), lib  # type: ignore[arg-type]
+
+
+def test_scope_filter_keeps_images_folders_and_vanished_paths(tmp_path: Path) -> None:
+    f, lib = _filter(tmp_path)
+    img = str(lib / "sub" / "a.jpg")
+    assert f.scope_for(img, is_directory=False, event_type="modified") == lib / "sub" / "a.jpg"
+    assert f.scope_for(str(lib / "sub"), is_directory=True, event_type="created") == lib / "sub"
+    # gone: kept whatever it looks like (Windows reports a deleted folder as a file)
+    gone = str(lib / "Trip")
+    assert f.scope_for(gone, is_directory=False, event_type="deleted") == lib / "Trip"
+
+
+def test_scope_filter_drops_noise(tmp_path: Path) -> None:
+    appdata = tmp_path / "lib" / "appdata"
+    f, lib = _filter(tmp_path, exclude=[appdata], exclude_names=["RAW"])
+    appdata.mkdir()
+    cases = [
+        (str(tmp_path / "elsewhere.jpg"), False, "created"),  # outside every root
+        (str(lib / "sub" / "notes.txt"), False, "modified"),  # existing non-image
+        (str(lib / ".hidden" / "a.jpg"), False, "created"),  # hidden folder
+        (str(lib / "RAW" / "a.jpg"), False, "created"),  # excluded folder name
+        (str(lib / "RAW"), True, "deleted"),  # the excluded folder itself
+        (str(appdata / "thumbnails" / "x.webp"), False, "created"),  # our own writes
+        (str(lib / "sub"), True, "modified"),  # "folder contents changed"
+    ]
+    for raw, is_dir, kind in cases:
+        assert f.scope_for(raw, is_directory=is_dir, event_type=kind) is None, raw
+
+
+def test_scope_filter_maps_a_resolved_path_back_onto_a_symlinked_root(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    f = _ScopeFilter([link])
+    got = f.scope_for(str(real / "sub"), is_directory=True, event_type="created")
+    assert got == link / "sub"  # the spelling scan_state keys use
 
 
 def test_watchdog_available_is_a_bool() -> None:
@@ -260,3 +334,54 @@ def test_interrupt_stops_indexing_mid_list(settings: Settings, tmp_path: Path) -
     rest = scan_once(settings, workers=1)  # resumable: the next pass finishes the job
     assert not rest.interrupted
     assert _photo_count(settings) == 5
+
+
+@pytest.mark.skipif(not watchdog_available(), reason="needs watchdog")
+def test_fs_event_runs_a_scoped_pass_not_a_full_one(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sortandpost.indexer import service
+    from sortandpost.indexer.scan import scan_once as real_scan_once
+
+    scopes: list[list[Path] | None] = []
+
+    def _recording_scan(settings: Settings, **kw: object):  # type: ignore[no-untyped-def]
+        scopes.append(kw.get("scope"))  # type: ignore[arg-type]
+        return real_scan_once(settings, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(service, "scan_once", _recording_scan)
+    library = Path(settings.library_roots[0].container)
+    cfg = IndexerLoopConfig(
+        full_scan_interval_sec=3600, debounce_sec=0.2, poll_sec=0.02, watch=True, run_clip=False
+    )
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=run_indexer,
+        kwargs={
+            "settings": settings,
+            "is_writable": lambda: True,
+            "stop": stop,
+            "loop_config": cfg,
+        },
+        daemon=True,
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _photo_count(settings) == 0:
+            time.sleep(0.05)
+        assert scopes == [None]  # the startup full pass
+        time.sleep(0.5)  # let the observer settle
+        (library / "trip").mkdir()
+        Image.new("RGB", (16, 16), (200, 10, 10)).save(library / "trip" / "b.jpg", "JPEG")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and _photo_count(settings) < 2:
+            time.sleep(0.05)
+        assert _photo_count(settings) == 2
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert scopes[0] is None
+    assert len(scopes) >= 2 and all(s is not None for s in scopes[1:])
+    walked = {p for s in scopes[1:] for p in (s or [])}
+    assert walked and all(p.is_relative_to(library) for p in walked)
