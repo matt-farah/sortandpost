@@ -4788,12 +4788,18 @@ class _GridSelection:
         self._boxes[pixel_hash] = (box, icon)
         box.on("click.stop.prevent", lambda h=pixel_hash: self.click(h))
 
-    def click(self, pixel_hash: str) -> None:
+    def tile_click(self, pixel_hash: str, shift: bool) -> None:
+        """A shift / cmd / ctrl click anywhere on a tile (the JS handler in
+        ``_thumb_cell`` already cancelled the link): shift extends the range,
+        cmd / ctrl toggles that one photo."""
+        self.click(pixel_hash, shift=shift)
+
+    def click(self, pixel_hash: str, shift: bool | None = None) -> None:
         idx = self._pos.get(pixel_hash)
         if idx is None:
             return
         before = set(self.selected)
-        if self.shift_down and self._anchor is not None:
+        if (self.shift_down if shift is None else shift) and self._anchor is not None:
             lo, hi = sorted((self._anchor, idx))
             self.selected.update(self._order[lo : hi + 1])
         else:
@@ -4947,6 +4953,14 @@ def _thumb_cell(
             ).tooltip("marked for editing")
         if selection is not None:
             selection.checkbox(photo.pixel_hash)
+            # shift / cmd / ctrl-click anywhere on the tile selects instead of
+            # following the link (or opening a new tab); plain clicks navigate.
+            cell.on(
+                "click",
+                lambda e, h=photo.pixel_hash: selection.tile_click(h, bool(e.args["shift"])),
+                js_handler="(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) "
+                "{ e.preventDefault(); emit({shift: e.shiftKey}); } }",
+            )
         if on_rate is not None:
             _grid_rating(photo.pixel_hash, stars, on_rate, rating_registry)
 
