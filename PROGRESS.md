@@ -3,11 +3,24 @@
 _Last updated: 2026-09-30 (V2 P8 — targeted subtree rescan)._
 _Working branch: `subtree-rescan`. P0–P6 + #24 merged; P8 in its PR._
 
-> **▶️ Next:** all planned V2 phases are done (P7 → V3). Remaining: the backlog
-> (#12, #17, #18 — "fix if it bites") and ToDo.md items.
+> **▶️ Next:** all planned V2 phases are done (P7 → V3). Before the macOS rebuild: V2.md #5
+> docs fix, then rebuild. Backlog (#12, #17, #18) stays "fix if it bites".
 > **Linux AppImage (old P7) moved to V3** — needs a Linux VM; Windows/macOS come first.
-> Open question from P6: commit `uv.lock`? (Windows resolved sqlmodel 0.0.45 fresh, which
-> broke indexing.) Rebuild the macOS app after merging.
+
+## 📦 2026-09-30 — `uv.lock` adopted on every build (P6 open question)
+
+- `uv.lock` was committed (`eb028d2`) but unused on the Mac: no `uv` installed, a pip-built
+  3.13 `.venv` 27 packages off the lock (huggingface-hub 1.31 vs **2.0**, filelock 3 vs 4,
+  nicegui 3.16 vs 3.17, sqlmodel 0.0.42 vs 0.0.44…). The Mac and Windows apps shipped
+  different dependency sets.
+- Now: `brew install uv`; `.python-version` → **3.13** (what the venv + both apps actually
+  run); `playwright` declared in the `dev` extra (an exact sync would have removed it);
+  `.venv` synced with `uv sync --locked --extra dev --extra desktop`. `build.sh` /
+  `build.ps1` require `uv` and sync `--locked` (fail on a stale lock) unless `PYTHON` is set.
+- Verified on the new versions: full pytest (Playwright tests ran), mypy, real CLIP offline
+  load on MPS + `check_cached` / `ensure_downloaded` under huggingface-hub 2.0; user
+  click-through. Docker still `uv pip install --torch-backend=cpu .` (lock's Linux torch is
+  CUDA) — left for V3.
 
 ## 📋 2026-09-30 — V2 P8: targeted subtree rescan (`V2.md` #15)
 

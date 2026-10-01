@@ -2,10 +2,11 @@
 #
 #   pwsh packaging\windows\build.ps1
 #
-# Needs: Windows x64, the repo venv with the `desktop` extra (`uv sync --extra
-# desktop`), network access for the one-time exiftool download, and Inno Setup 6
-# for the installer (`winget install JRSoftware.InnoSetup`; without it only the
-# zip is made).
+# Needs: Windows x64, `uv` (`winget install astral-sh.uv`), network access for
+# the one-time exiftool download, and Inno Setup 6 for the installer (`winget
+# install JRSoftware.InnoSetup`; without it only the zip is made). The repo venv
+# is synced to `uv.lock` first (`--locked`: the build fails if the lock is stale
+# rather than re-resolving). $env:PYTHON builds from that env and skips the sync.
 #
 # Unsigned: the first launch shows SmartScreen's "Windows protected your PC"
 # (More info -> Run anyway). Code signing is out of scope, as on macOS.
@@ -22,9 +23,10 @@ $ExiftoolSha256 = '44b512b25af500724ba579d0a53c8fc5851628b692dd5e5d94ae4a15c2cba
 $ExiftoolUrl = "https://sourceforge.net/projects/exiftool/files/exiftool-${ExiftoolVersion}_64.zip/download"
 
 if (-not [Environment]::Is64BitOperatingSystem) { throw 'build on 64-bit Windows' }
-if (Get-Command uv -ErrorAction SilentlyContinue) {
-    # --inexact: keep whatever else the dev venv has (pytest, ruff, ...).
-    Push-Location $Repo; try { uv sync --extra desktop --inexact; if ($LASTEXITCODE) { throw 'uv sync failed' } } finally { Pop-Location }
+if (-not $env:PYTHON) {
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { throw 'needs uv (winget install astral-sh.uv)' }
+    # the dev extra too, so an exact sync keeps pytest / ruff / playwright
+    Push-Location $Repo; try { uv sync --locked --extra dev --extra desktop; if ($LASTEXITCODE) { throw 'uv sync failed' } } finally { Pop-Location }
 }
 & $Py -c 'import PyInstaller, pystray, torch, open_clip'
 if ($LASTEXITCODE) { throw "missing desktop build deps: install the 'desktop' extra into $Py's env" }

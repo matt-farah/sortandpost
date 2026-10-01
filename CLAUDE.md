@@ -68,8 +68,8 @@ updated as decisions are made or changed.
 
 | Concern            | Choice |
 |--------------------|--------|
-| Language / runtime | Python 3.12 |
-| Package manager    | `uv` + `pyproject.toml` |
+| Language / runtime | Python 3.12–3.13 (`.python-version` pins **3.13**: dev venv + desktop builds) |
+| Package manager    | `uv` + `pyproject.toml` + committed **`uv.lock`** (desktop builds sync `--locked`; Docker still `uv pip install .`) |
 | Web UI             | NiceGUI (browser mode, not native), served by its bundled uvicorn |
 | CSS                | Tailwind **prebuilt** (`tools/tailwind/build.sh` → `resources/tailwind.css`, run after changing classes); NiceGUI runs `tailwind=False` — its in-browser compiler froze the infinite-scroll grid |
 | DB                 | SQLite via SQLModel/SQLAlchemy, migrations via Alembic |
@@ -123,7 +123,7 @@ packaging/macos/build.sh               # -> dist/sortandpost.app + dist/sortandp
 pwsh packaging\windows\build.ps1       # -> dist\sortandpost-<ver>-setup.exe + -win-x64.zip
 
 # Native dev (no Docker — requires exiftool + libraw on host)
-uv sync
+uv sync --locked --extra dev --extra desktop   # exact: the venv == uv.lock
 uv run python -m sortandpost           # web app
 uv run python -m sortandpost.indexer --once
 uv run pytest tests/path::test_name -q
