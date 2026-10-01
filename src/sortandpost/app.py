@@ -423,6 +423,9 @@ body, .q-page, .nicegui-content {
   box-shadow: var(--sp-shadow);
 }
 .sp-section-header {
+  /* flush under the app bar, whose height depends on font rendering and
+     wrapping: `_APPBAR_HEIGHT_JS` publishes the measured height */
+  top: var(--sp-appbar-h, 60px);
   background-color: color-mix(in srgb, var(--sp-bg) 86%, transparent);
   border-bottom: 1px solid var(--sp-border);
   -webkit-backdrop-filter: blur(7px);
@@ -585,6 +588,27 @@ def _apply_season(choice: SeasonChoice) -> str:
     return SEASON_ICONS[season]
 
 
+# Publishes the app bar's rendered height as `--sp-appbar-h` so sticky elements
+# (the group-by section headers) sit flush under it instead of at a guessed
+# offset -- the bar is ~60px, not Tailwind's `top-16` 64px, and grows when its
+# nav wraps on a narrow window. The header mounts with Vue, so wait for it.
+_APPBAR_HEIGHT_JS = """
+<script>
+(function () {
+  function watch() {
+    const bar = document.querySelector('.q-header');
+    if (!bar) { requestAnimationFrame(watch); return; }
+    const publish = () => document.documentElement.style.setProperty(
+      '--sp-appbar-h', bar.getBoundingClientRect().height + 'px');
+    publish();
+    new ResizeObserver(publish).observe(bar);
+  }
+  watch();
+})();
+</script>
+"""
+
+
 def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
     # primary / secondary / accent come from the season (sortandpost.themes)
     ui.colors(positive="#3f9d6d", negative="#c0392b")
@@ -593,6 +617,7 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
     # right background on the first paint, before the body classes arrive via JS
     paint = first_paint_css(resolve_season(State.season), _THEME_TO_DARK[State.theme])
     ui.add_head_html(f"<style>{paint}</style>")
+    ui.add_body_html(_APPBAR_HEIGHT_JS)
     with ui.header().classes("sp-appbar items-center justify-between gap-4"):
         with ui.row().classes("items-center gap-2 no-wrap"):
             ui.icon(glyph_icon).classes("sp-season-glyph text-lg").tooltip(
@@ -1032,7 +1057,7 @@ def build_ui(settings: Settings) -> None:
             hdr = (
                 ui.element("div")
                 .classes(
-                    "sp-section-header sticky top-16 z-30 flex w-full items-baseline "
+                    "sp-section-header sticky z-30 flex w-full items-baseline "
                     "gap-2 px-2 py-1.5 cursor-pointer"
                 )
                 .style("user-select: none")
