@@ -1,11 +1,44 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-30 (V2 P8 — targeted subtree rescan)._
-_Working branch: `subtree-rescan`. P0–P6 + #24 merged; P8 in its PR._
+_Last updated: 2026-09-30 (macOS rebuild + release prep notes)._
+_Working branch: `main`. All V2 phases merged (P7 → V3); #39 / #41 / #42 merged._
 
-> **▶️ Next:** all planned V2 phases are done (P7 → V3). Before the macOS rebuild: V2.md #5
-> docs fix, then rebuild. Backlog (#12, #17, #18) stays "fix if it bites".
+> **▶️ Next:** fix the **Keychain freeze** (Issues.md) → bump to **2.0.0** → rebuild macOS +
+> Windows → GitHub release (see "Release process" below). Waiting on the user's call on an
+> Apple Developer ID and on the private repo. Backlog (#12, #17, #18) stays "fix if it bites".
 > **Linux AppImage (old P7) moved to V3** — needs a Linux VM; Windows/macOS come first.
+
+## 🍎 2026-09-30 — macOS rebuild on the locked deps; release prep
+
+- `packaging/macos/build.sh` from `main` (uv-locked) → `dist/sortandpost.app` (659 MB),
+  `dist/sortandpost-1.1.0-arm64.dmg` (260 MB), ad-hoc signed, signature verifies. Frozen
+  `--serve` smoke: scan of 411 files + CLIP on MPS fine. **Not for release**: still 1.1.0
+  (already a GitHub release) and it has the Keychain freeze below.
+- **Found: Keychain freeze** — `/settings` (`posts_ui.py:784` `_key_row`) calls
+  `get_robopost_key()` → `keyring` → `SecItemCopyMatching` **on the event loop**. A rebuilt
+  ad-hoc app has a new signature, so macOS shows a Keychain access prompt, and every page
+  hangs until it's answered (`sample <pid>` showed the uvloop thread in
+  `SecKeychainItemCopyContent`). Dev runs never prompt (stable Python binary). Deferred by the
+  user to the next build. Fix plan: keychain reads off-loop (`run.io_bound`, "Checking
+  keychain…" placeholder), cache the key in memory per process, a test that `/settings`
+  renders while a read hangs. Also check `posts_ui.py:600` (send dialog) and `post_send.py`.
+  A Developer-ID-signed app keeps the Keychain "Always Allow" across updates; ad-hoc doesn't.
+
+### Release process (GitHub) — agreed outline, not done yet
+1. Decide: the repo is **private** (release assets need repo access) → make it public or
+   publish from a separate public `sortandpost-releases` repo. Apple Developer Program
+   ($99/yr) for Developer ID + notarization (`SORTANDPOST_SIGN_ID` + `NOTARY_PROFILE`;
+   `build.sh` already handles both) — user deciding later. Windows ships unsigned at first
+   (SmartScreen "More info → Run anyway").
+2. Release PR: `__version__` → **2.0.0** (V2 = 2.0.0 per "Versioning"), release notes.
+3. Build each platform from merged `main` (both scripts `uv sync --locked`; the Windows
+   machine now needs `uv`): `.dmg` on the Mac, `setup.exe` + `win-x64.zip` on Windows.
+4. Smoke-test each installer on a clean account (wizard, quit, relaunch).
+5. `git tag -a v2.0.0` → push → `gh release create v2.0.0 … *.dmg *setup.exe *.zip
+   SHA256SUMS.txt` with per-platform install notes (macOS 15+: Gatekeeper → System Settings
+   → Privacy & Security → Open Anyway when unsigned; Apple Silicon only).
+6. Later: brew cask / winget point at the release assets; optional GitHub Actions build on
+   tag (macos-14 arm64 + windows runners; billed minutes on a private repo).
 
 ## 📦 2026-09-30 — `uv.lock` adopted on every build (P6 open question)
 

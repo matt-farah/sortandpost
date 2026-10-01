@@ -9,7 +9,10 @@
 # so the app bundles exactly the locked versions. PYTHON=<python> builds from
 # that interpreter's env instead and skips the sync.
 #
-# Signing: ad-hoc by default (first launch: right-click -> Open). Set
+# Signing: ad-hoc by default. On macOS 15+ a downloaded ad-hoc app can't be
+# opened with right-click -> Open any more: open it once, then System Settings ->
+# Privacy & Security -> Open Anyway. Each ad-hoc build also re-asks for Keychain
+# access (new signature). Set
 # SORTANDPOST_SIGN_ID="Developer ID Application: …" to sign with the hardened
 # runtime, and additionally NOTARY_PROFILE=<notarytool keychain profile> to
 # notarize + staple the DMG.
