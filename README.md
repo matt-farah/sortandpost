@@ -71,7 +71,7 @@ docker compose run --rm indexer --once
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --locked --extra dev --extra desktop
 uv run python -m sortandpost            # web app (first run: welcome wizard; or set APP_DATA)
 uv run pytest
 uv run ruff check . && uv run mypy src

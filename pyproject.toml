@@ -45,6 +45,7 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "types-PyYAML",
+    "playwright>=1.45",  # headless UI tests (they skip without it) + browser checks
 ]
 
 [build-system]

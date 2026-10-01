@@ -3,9 +3,11 @@
 #
 #   packaging/macos/build.sh
 #
-# Needs: macOS on Apple Silicon, the repo venv with the `desktop` extra
-# (`uv sync --extra desktop`, or `.venv/bin/pip install -e '.[desktop]'`),
-# network access for the one-time exiftool download.
+# Needs: macOS on Apple Silicon, `uv` (`brew install uv`), network access for
+# the one-time exiftool download. The repo venv is synced to `uv.lock` first
+# (`--locked`: the build fails if the lock is stale rather than re-resolving),
+# so the app bundles exactly the locked versions. PYTHON=<python> builds from
+# that interpreter's env instead and skips the sync.
 #
 # Signing: ad-hoc by default (first launch: right-click -> Open). Set
 # SORTANDPOST_SIGN_ID="Developer ID Application: …" to sign with the hardened
@@ -23,7 +25,10 @@ EXIFTOOL_SHA256="668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65
 EXIFTOOL_URL="https://sourceforge.net/projects/exiftool/files/Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz/download"
 
 [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || { echo "build on an Apple Silicon Mac" >&2; exit 1; }
-if command -v uv >/dev/null 2>&1; then (cd "$REPO" && uv sync --extra desktop); fi
+if [[ -z "${PYTHON:-}" ]]; then
+  command -v uv >/dev/null 2>&1 || { echo "needs uv (brew install uv)" >&2; exit 1; }
+  (cd "$REPO" && uv sync --locked --extra dev --extra desktop)
+fi
 "$PY" -c "import PyInstaller, pystray, AppKit, torch, open_clip" \
   || { echo "missing desktop build deps: install the 'desktop' extra into $PY's env" >&2; exit 1; }
 VERSION="$("$PY" -c 'import sortandpost; print(sortandpost.__version__)')"
