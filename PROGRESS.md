@@ -1,12 +1,24 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-02 (security review: C1 + H2 fixed)._
+_Last updated: 2026-10-02 (photo-page tags)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); #39 / #41 / #42 merged._
 
 > **▶️ Next:** fix the **Keychain freeze** (Issues.md) → bump to **2.0.0** → rebuild macOS +
 > Windows → GitHub release (see "Release process" below). Waiting on the user's call on an
 > Apple Developer ID and on the private repo. Backlog (#12, #17, #18) stays "fix if it bites".
 > **Linux AppImage (old P7) moved to V3** — needs a Linux VM; Windows/macOS come first.
+
+## 🏷️ 2026-10-02 — Photo-page tags (Issues.md "shows no tags")
+
+- `/photo/{pixel_hash}` gets a **Tags** section in the info column (facts → tags → Paths):
+  applied pills (✕ on manual tags), dashed ghost pills for pending CLIP suggestions (✓ approve,
+  ✕ dismiss, score tooltip), and an add-tag input. `_photo_tag_state` + `_apply_photo_tag`
+  (`app.py`) run via `run.io_bound` and reuse `add_manual_tag` / `remove_manual_tag` /
+  `approve` / `reject`: `changes` row + keyword re-embed into the file, read-only mode hides
+  the controls. No schema change.
+- Collections chips are now rounded-square with a larger font so they read differently from tags.
+- `tailwind.css` rebuilt for the new classes. Hands-on tested by the user.
+- Not done: ✕ on CLIP-approved tags; tags fan out to stack members (photo page = one photo).
 
 ## 🔒 2026-10-02 — Security review; C1 + H2 fixed (`Security.md`)
 
