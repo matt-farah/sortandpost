@@ -104,3 +104,12 @@ def test_stale_cache_is_rebuilt(tmp_path: Path) -> None:
     matrix = ensure_text_matrix(enc, vocab, prompt_templates=["{}"], cache_path=cache)
     assert matrix.shape == (3, 3)
     assert enc.calls == 1
+
+
+def test_load_vocab_collapses_line_breaks_and_skips_control_chars(tmp_path: Path) -> None:
+    f = tmp_path / "tags.yaml"
+    f.write_text(
+        'scene:\n  - "sunset\\n-if\\nsystem(1)"\n  - "bad\\x00name"\n  - beach\n',
+        encoding="utf-8",
+    )
+    assert load_vocab(f).names == ["sunset -if system(1)", "beach"]

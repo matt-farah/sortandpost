@@ -390,7 +390,11 @@ The "Delete photos" action is the one destructive operation. On the machine that
    constraint #1): one batch folder per delete, `<APP_DATA>/local/trash/<batch>/` with
    `files/<seq>/<original name>`, `thumbs/<pixel_hash>.webp` and a `manifest.json` that also
    saves each photo's user state (rating, tags, CLIP prediction states). RAW included.
-   Duplicates (one `pixel_hash`, several present paths) all go together.
+   Duplicates (one `pixel_hash`, several present paths) all go together. A file is moved
+   **only** if it resolves inside one of this machine's library roots **and** still holds
+   the deleted pixels (unchanged `size`/`mtime_ns`, else re-hashed): `photo_paths` rides
+   the shared DB, so a recorded path may name another machine's or a replaced file
+   (Security.md H2). Refused files stay put and are reported as not moved.
 2. The DB rows for that `pixel_hash` are purged — `photos`, `photo_paths`, `ratings`,
    `photo_tags`, `predictions`, `embedding_rows`, `scan_state` — the embedding matrix is
    compacted, and the content-addressed thumbnails are deleted.
@@ -489,6 +493,10 @@ The **only** module allowed to write under a library root. Wraps a persistent
   mtime update so sync tools and other apps notice the change.
 - **Never** writes CLIP predictions, UUIDs, or anything else. RAW paths are rejected at this
   layer as a safety net.
+- `-stay_open` reads **one argument per line**: `_execute` refuses any argument containing
+  `\n` / `\r` / NUL, since a line break would inject exiftool options (`-Directory=` moves
+  the file, `-if` runs Perl — Security.md C1). Tag names are normalized / validated by
+  `sortandpost.tag_names` wherever they're created.
 
 ---
 

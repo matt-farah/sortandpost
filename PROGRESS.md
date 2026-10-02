@@ -1,12 +1,29 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-09-30 (macOS rebuild + release prep notes)._
+_Last updated: 2026-10-02 (security review: C1 + H2 fixed)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); #39 / #41 / #42 merged._
 
 > **▶️ Next:** fix the **Keychain freeze** (Issues.md) → bump to **2.0.0** → rebuild macOS +
 > Windows → GitHub release (see "Release process" below). Waiting on the user's call on an
 > Apple Developer ID and on the private repo. Backlog (#12, #17, #18) stays "fix if it bites".
 > **Linux AppImage (old P7) moved to V3** — needs a Linux VM; Windows/macOS come first.
+
+## 🔒 2026-10-02 — Security review; C1 + H2 fixed (`Security.md`)
+
+- Full review written up in **`Security.md`** (severity + status per finding). Docker-release
+  work (login, bind to localhost, Host/Origin checks, pinned builds) planned in **`Docker.md`**;
+  README now warns to run only on trusted networks.
+- **C1 fixed** — a tag name with a line break became extra exiftool `-stay_open` arguments
+  (reproduced: `-Directory=` moved a photo out of the library, `-if` ran a shell command).
+  `ExiftoolClient._execute` refuses `\n`/`\r`/NUL in any arg; new `sortandpost.tag_names`
+  normalizes/validates names in `add_manual_tag` + `load_vocab`; `embeddable_keywords` drops
+  unsafe names from older/merged rows.
+- **H2 fixed** — delete / tombstone sweep moved any `photo_paths` path. Now only files under
+  this machine's library roots that still hold the deleted pixels (size+mtime, else re-hash);
+  `delete_photos` / `apply_pending_tombstones` take `roots`.
+- Accepted: H1 (no login on `0.0.0.0` source/Docker runs, until the Docker release), H3 (sync
+  folder trusted; single-user). M1/M2/L1–L3 deferred. Hands-on tested by the user.
+- Found while testing: the photo page has never shown tags → Issues.md.
 
 ## 🍎 2026-09-30 — macOS rebuild on the locked deps; release prep
 

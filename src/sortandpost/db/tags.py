@@ -23,6 +23,7 @@ from sqlmodel import Session, col, select
 from sortandpost.db.models import ChangeOp, PhotoPath, PhotoTag, Tag, TagKind, TagSource
 from sortandpost.metadata import ExiftoolClient, MetadataError, can_embed_metadata, is_raw
 from sortandpost.sync.changelog import record_change
+from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +35,16 @@ RESERVED_TAG_NAMES = frozenset({"to-edit"})
 
 
 def embeddable_keywords(names: list[str]) -> list[str]:
-    """Drop reserved workflow markers from a keyword list bound for a file."""
-    return [n for n in names if n.casefold() not in RESERVED_TAG_NAMES]
+    """Drop reserved workflow markers -- and any name that isn't safe to hand
+    exiftool (a line break, e.g. from an older DB or a merged copy; see
+    :mod:`sortandpost.tag_names`) -- from a keyword list bound for a file."""
+    out = []
+    for n in names:
+        if not is_safe_tag_name(n):
+            log.warning("not writing unsafe keyword %r into photo files", n)
+        elif n.casefold() not in RESERVED_TAG_NAMES:
+            out.append(n)
+    return out
 
 
 def add_manual_tag(
@@ -52,9 +61,11 @@ def add_manual_tag(
     Returns ``True`` if it was newly added; a duplicate is a no-op that writes
     nothing. The caller commits.
     """
-    name = tag_name.strip()
+    name = normalize_tag_name(tag_name)
     if not name:
         raise ValueError("tag name must be non-empty")
+    if not is_safe_tag_name(name):
+        raise ValueError(f"tag name contains control characters: {name!r}")
 
     tag = _get_or_create_tag(session, name)
     assert tag.id is not None

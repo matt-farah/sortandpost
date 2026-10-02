@@ -29,6 +29,7 @@ from sortandpost.db.models import (
 from sortandpost.db.ratings import set_rating
 from sortandpost.db.tags import add_manual_tag, photo_keywords
 from sortandpost.indexer import scan_once
+from sortandpost.library_roots import container_roots
 from sortandpost.trash import list_batches
 from sortandpost.undelete import put_back_batch
 
@@ -59,6 +60,7 @@ def _delete(settings: Settings, ph: str) -> str:
             s,
             pixel_hashes=[ph],
             paths=settings.paths,
+            roots=container_roots(settings.library_roots),
             clip_model=MODEL,
             thumb_sizes=settings.config.thumbnails.sizes,
             device_id=settings.device_id,

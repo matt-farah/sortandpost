@@ -287,6 +287,7 @@ def _scan_once_locked(
         tomb = apply_pending_tombstones(
             session,
             paths=paths,
+            roots=roots,
             clip_model=settings.config.clip.model,
             thumb_sizes=tuple(tcfg.sizes),
             now=_utcnow(),

@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 
 from sortandpost.db import add_manual_tag, remove_manual_tag
 from sortandpost.db.models import Change, ChangeOp, Photo, PhotoTag, Tag, TagSource
+from sortandpost.db.tags import embeddable_keywords
 
 NOW = datetime(2026, 1, 2, tzinfo=UTC)
 PH = "a" * 64
@@ -107,3 +108,26 @@ def test_add_empty_name_rejected(engine: Engine) -> None:
         _photo(s)
         with pytest.raises(ValueError):
             add_manual_tag(s, pixel_hash=PH, tag_name="   ", device_id="d1", now=NOW)
+
+
+# A line break in a tag name would become extra exiftool arguments on its
+# -stay_open stdin (-Directory= moves the file, -if runs Perl) -- see
+# sortandpost.tag_names.
+def test_add_collapses_line_breaks_in_the_name(engine: Engine) -> None:
+    with Session(engine) as s:
+        _photo(s)
+        add_manual_tag(
+            s, pixel_hash=PH, tag_name="sunset\n-Directory=/tmp/x", device_id="d1", now=NOW
+        )
+        assert [t.name for t in s.exec(select(Tag)).all()] == ["sunset -Directory=/tmp/x"]
+
+
+def test_add_rejects_control_characters(engine: Engine) -> None:
+    with Session(engine) as s:
+        _photo(s)
+        with pytest.raises(ValueError):
+            add_manual_tag(s, pixel_hash=PH, tag_name="sun\x00set", device_id="d1", now=NOW)
+
+
+def test_embeddable_keywords_drops_unsafe_names_from_older_or_merged_rows() -> None:
+    assert embeddable_keywords(["beach", "x\n-if\n1", "to-edit", "a\u2028b"]) == ["beach"]

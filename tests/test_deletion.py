@@ -7,11 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from sortandpost.clip.store import EmbeddingStore
 from sortandpost.db.deletion import (
+    DeleteResult,
     apply_pending_tombstones,
     delete_photos,
     is_tombstoned,
@@ -32,6 +34,7 @@ from sortandpost.db.models import (
     Tag,
     Tombstone,
 )
+from sortandpost.hashing import pixel_hash_of_image
 from sortandpost.indexer.pipeline import persist_decoded
 from sortandpost.indexer.workers import DecodedFile
 from sortandpost.paths import Paths
@@ -79,7 +82,7 @@ def _make_photo(
             pixel_hash=ph,
             path=str(src),
             size=src.stat().st_size,
-            mtime_ns=1_000,
+            mtime_ns=src.stat().st_mtime_ns,
             present=present,
         )
     )
@@ -146,6 +149,7 @@ def test_delete_purges_every_derived_row_and_trashes_the_file(
             s,
             pixel_hashes=[ph],
             paths=paths,
+            roots=[library],
             clip_model=MODEL,
             thumb_sizes=SIZES,
             device_id="d1",
@@ -184,6 +188,7 @@ def test_delete_writes_unindex_change_and_tombstone(
             s,
             pixel_hashes=[ph],
             paths=paths,
+            roots=[library],
             clip_model=MODEL,
             thumb_sizes=SIZES,
             device_id="dev-1",
@@ -216,6 +221,7 @@ def test_delete_compacts_the_embedding_matrix_and_repoints_rows(
             s,
             pixel_hashes=[b],
             paths=paths,
+            roots=[library],
             clip_model=MODEL,
             thumb_sizes=SIZES,
             device_id="d1",
@@ -251,6 +257,7 @@ def test_delete_of_already_missing_photo_still_tombstones(
             s,
             pixel_hashes=[ph],
             paths=paths,
+            roots=[library],
             clip_model=MODEL,
             thumb_sizes=SIZES,
             device_id="d1",
@@ -277,6 +284,7 @@ def test_apply_pending_tombstones_lazily_purges_and_trashes(
         result = apply_pending_tombstones(
             s,
             paths=paths,
+            roots=[library],
             clip_model=MODEL,
             thumb_sizes=SIZES,
             now=NOW,
@@ -292,7 +300,13 @@ def test_apply_pending_tombstones_lazily_purges_and_trashes(
 
         # idempotent: a second sweep does nothing
         again = apply_pending_tombstones(
-            s, paths=paths, clip_model=MODEL, thumb_sizes=SIZES, now=NOW, trash_local_files=True
+            s,
+            paths=paths,
+            roots=[library],
+            clip_model=MODEL,
+            thumb_sizes=SIZES,
+            now=NOW,
+            trash_local_files=True,
         )
         assert again.purged == []
 
@@ -334,6 +348,7 @@ def test_managed_trash_is_recoverable(engine: Engine, paths: Paths, tmp_path: Pa
             s,
             pixel_hashes=[ph],
             paths=paths,
+            roots=[library],
             clip_model=MODEL,
             thumb_sizes=SIZES,
             device_id="d1",
@@ -357,3 +372,140 @@ def test_managed_trash_is_recoverable(engine: Engine, paths: Paths, tmp_path: Pa
     restored = put_back(trash_dir)
     assert all(i.ok for i in restored.items)
     assert (library / "a.jpg").read_bytes().startswith(b"jpeg-bytes-a")
+
+
+# --------------------------------------------------------------------------- #
+# Only this machine's library files that still hold the deleted pixels move.
+# ``photo_paths`` rides the shared DB, so a path may name another machine's
+# file or a file replaced since the last scan.
+# --------------------------------------------------------------------------- #
+def _delete_one(s: Session, paths: Paths, ph: str, roots: list[Path]) -> DeleteResult:
+    result = delete_photos(
+        s,
+        pixel_hashes=[ph],
+        paths=paths,
+        roots=roots,
+        clip_model=MODEL,
+        thumb_sizes=SIZES,
+        device_id="d1",
+        now=NOW,
+    )
+    s.commit()
+    return result
+
+
+def test_delete_never_moves_a_file_outside_the_library_roots(
+    engine: Engine, paths: Paths, tmp_path: Path
+) -> None:
+    library = tmp_path / "library"
+    elsewhere = tmp_path / "Documents"
+    library.mkdir()
+    elsewhere.mkdir()
+    with Session(engine) as s:
+        ph = _make_photo(s, paths, "a", library=elsewhere)  # e.g. a hostile synced DB row
+        s.commit()
+        result = _delete_one(s, paths, ph, [library])
+
+        assert (elsewhere / "a.jpg").exists()
+        assert result.files_trashed == 0 and result.files_failed == 1
+        assert result.trash is not None
+        assert result.trash.failed[0].error == "outside the library folders"
+        assert s.get(Tombstone, ph) is not None  # the delete itself still happened
+
+
+def test_delete_never_follows_a_symlink_out_of_the_library(
+    engine: Engine, paths: Paths, tmp_path: Path
+) -> None:
+    library = tmp_path / "library"
+    elsewhere = tmp_path / "Documents"
+    library.mkdir()
+    elsewhere.mkdir()
+    (library / "escape").symlink_to(elsewhere, target_is_directory=True)
+    with Session(engine) as s:
+        ph = _make_photo(s, paths, "a", library=library / "escape")
+        s.commit()
+        result = _delete_one(s, paths, ph, [library])
+
+    assert (elsewhere / "a.jpg").exists()
+    assert result.files_trashed == 0
+
+
+def test_delete_skips_a_file_replaced_since_it_was_indexed(
+    engine: Engine, paths: Paths, tmp_path: Path
+) -> None:
+    """Same path, different photo (machine B's IMG_0001.JPG, or a re-shoot that
+    overwrote the file): the pixel hash no longer matches, so it stays."""
+    library = tmp_path / "library"
+    library.mkdir()
+    with Session(engine) as s:
+        ph = _make_photo(s, paths, "a", library=library)
+        s.commit()
+        Image.new("RGB", (8, 8), (200, 10, 10)).save(library / "a.jpg", "JPEG")
+        result = _delete_one(s, paths, ph, [library])
+
+    assert (library / "a.jpg").exists()
+    assert result.files_trashed == 0 and result.files_failed == 1
+    assert result.trash is not None
+    assert result.trash.failed[0].error == "the file has changed since it was indexed"
+
+
+def test_delete_rehashes_a_touched_file_and_moves_it_if_the_pixels_match(
+    engine: Engine, paths: Paths, tmp_path: Path
+) -> None:
+    """A metadata-only change (our own EXIF write, a sync tool resetting mtime)
+    misses the size+mtime fast path but keeps the pixel hash."""
+    library = tmp_path / "library"
+    library.mkdir()
+    src = library / "real.jpg"
+    Image.new("RGB", (8, 8), (10, 120, 30)).save(src, "JPEG")
+    with Image.open(src) as img:
+        ph = pixel_hash_of_image(img)
+    with Session(engine) as s:
+        s.add(
+            Photo(
+                pixel_hash=ph,
+                primary_path=str(src),
+                width=8,
+                height=8,
+                format="JPEG",
+                file_size=1,
+                file_mtime_ns=1_000,
+                first_indexed_at=NOW,
+                last_indexed_at=NOW,
+            )
+        )
+        s.add(PhotoPath(pixel_hash=ph, path=str(src), size=1, mtime_ns=1_000, present=True))
+        s.commit()
+        result = _delete_one(s, paths, ph, [library])
+
+    assert not src.exists()
+    assert result.files_trashed == 1 and result.files_failed == 0
+
+
+def test_tombstone_sweep_leaves_another_machines_path_alone(
+    engine: Engine, paths: Paths, tmp_path: Path
+) -> None:
+    """Machine B applying A's delete: A's recorded path happens to exist on B but
+    outside B's library folders -- it is not touched."""
+    library = tmp_path / "library"
+    other = tmp_path / "other-machine-root"
+    library.mkdir()
+    other.mkdir()
+    with Session(engine) as s:
+        ph = _make_photo(s, paths, "a", library=other)
+        s.add(Tombstone(pixel_hash=ph, deleted_at=NOW, deleted_by_device="A", applied=False))
+        s.commit()
+        result = apply_pending_tombstones(
+            s,
+            paths=paths,
+            roots=[library],
+            clip_model=MODEL,
+            thumb_sizes=SIZES,
+            now=NOW,
+            trash_local_files=True,
+        )
+        s.commit()
+
+        assert (other / "a.jpg").exists()
+        assert result.purged == [ph]
+        assert s.get(Tombstone, ph).applied is True

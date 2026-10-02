@@ -39,6 +39,8 @@ EMBED_CAPABLE_SUFFIXES = frozenset({".jpg", ".jpeg", ".tif", ".tiff", ".png", ".
 
 # stars 0-5 -> RatingPercent, the Microsoft / Windows Explorer convention.
 _RATING_PERCENT = (0, 1, 25, 50, 75, 99)
+# Characters that end an argument on exiftool's -stay_open stdin (see _execute).
+_ARG_BREAKERS = ("\n", "\r", "\x00")
 
 # Tags requested on every read. ``-G0`` prefixes JSON keys with the family-0
 # group so XMP/EXIF/IPTC values never collide; ``-n`` yields numeric orientation
@@ -278,6 +280,15 @@ class ExiftoolClient:
         if proc is None or proc.poll() is not None:
             raise MetadataError("exiftool is not running; use `with ExiftoolClient() as et: ...`")
         assert proc.stdin is not None and proc.stdout is not None
+
+        # -stay_open reads one argument per line, so a line break inside a value
+        # would smuggle in extra options (-Directory= moves the file; -if runs
+        # Perl). Refuse it outright -- this is the one place every arg passes.
+        for arg in args:
+            if any(c in arg for c in _ARG_BREAKERS):
+                raise MetadataError(
+                    f"refusing an exiftool argument with a line break or NUL: {arg!r}"
+                )
 
         self._seq += 1
         sentinel = f"{{ready{self._seq}}}"
