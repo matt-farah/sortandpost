@@ -23,6 +23,7 @@ after a "Put back" (see :mod:`sortandpost.undelete`).
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -48,10 +49,11 @@ from sortandpost.db.models import (
     TagSource,
     Tombstone,
 )
+from sortandpost.hashing import pixel_hash_of_image
 from sortandpost.paths import Paths
 from sortandpost.sync.changelog import record_change
 from sortandpost.sync.clock import parse as parse_ts
-from sortandpost.trash import TrashResult, move_to_trash
+from sortandpost.trash import TrashedItem, TrashResult, move_to_trash
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +83,7 @@ def delete_photos(
     *,
     pixel_hashes: Sequence[str],
     paths: Paths,
+    roots: Sequence[Path],
     clip_model: str,
     thumb_sizes: Sequence[int],
     device_id: str,
@@ -88,7 +91,9 @@ def delete_photos(
     trash_files: bool = True,
     emit_change: bool = True,
 ) -> DeleteResult:
-    """Delete *pixel_hashes* on this machine. Caller commits the session."""
+    """Delete *pixel_hashes* on this machine. Only files under *roots* (this
+    machine's library folders) are moved -- see :func:`_trash_with_state`.
+    Caller commits the session."""
     wanted: list[str] = list(dict.fromkeys(pixel_hashes))
     result = DeleteResult()
     if not wanted:
@@ -98,7 +103,13 @@ def delete_photos(
 
     if trash_files and existing:
         result.trash = _trash_with_state(
-            session, existing, paths=paths, thumb_sizes=thumb_sizes, now=now, reason="delete"
+            session,
+            existing,
+            paths=paths,
+            roots=roots,
+            thumb_sizes=thumb_sizes,
+            now=now,
+            reason="delete",
         )
 
     for h in wanted:
@@ -134,6 +145,7 @@ def apply_pending_tombstones(
     session: Session,
     *,
     paths: Paths,
+    roots: Sequence[Path],
     clip_model: str,
     thumb_sizes: Sequence[int],
     now: datetime,
@@ -152,7 +164,13 @@ def apply_pending_tombstones(
 
     if trash_local_files and existing:
         result.trash = _trash_with_state(
-            session, existing, paths=paths, thumb_sizes=thumb_sizes, now=now, reason="tombstone"
+            session,
+            existing,
+            paths=paths,
+            roots=roots,
+            thumb_sizes=thumb_sizes,
+            now=now,
+            reason="tombstone",
         )
 
     for t in pending:
@@ -313,17 +331,62 @@ def restore_photo_state(session: Session, pixel_hash: str, state: dict[str, Any]
 # --------------------------------------------------------------------------- #
 # Internals
 # --------------------------------------------------------------------------- #
+def _under_roots(path: Path, roots: Sequence[Path]) -> bool:
+    """Is *path* inside one of *roots*? Both sides are resolved, so a symlinked
+    root (stored under its own spelling by the scanner) still matches."""
+    try:
+        target = os.path.normcase(os.path.realpath(path))
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            base = os.path.normcase(os.path.realpath(root))
+        except OSError:
+            continue
+        if target == base or target.startswith(base.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def _still_same_photo(row: PhotoPath) -> bool:
+    """Is the file at ``row.path`` still the photo ``row.pixel_hash`` names?
+    Unchanged ``(size, mtime_ns)`` is trusted, like the scanner's fast path;
+    anything else is decoded and re-hashed (the pixel hash is the identity,
+    constraint #3). A file that won't decode is not ours to move."""
+    try:
+        st = Path(row.path).stat()
+    except OSError:
+        return False
+    if st.st_size == row.size and st.st_mtime_ns == row.mtime_ns:
+        return True
+    # Imported here: sortandpost.indexer imports this module.
+    from sortandpost.indexer.decode import DecodeError, load_image
+
+    try:
+        with load_image(Path(row.path)) as img:
+            return pixel_hash_of_image(img) == row.pixel_hash
+    except (DecodeError, OSError) as exc:
+        log.warning("not trashing %s: could not re-check its pixels (%s)", row.path, exc)
+        return False
+
+
 def _trash_with_state(
     session: Session,
     hashes: Sequence[str],
     *,
     paths: Paths,
+    roots: Sequence[Path],
     thumb_sizes: Sequence[int],
     now: datetime,
     reason: str,
 ) -> TrashResult | None:
     """Move the on-disk copies of *hashes* into one managed trash batch, saving
-    each photo's user state + smallest thumbnail beside them for a put-back."""
+    each photo's user state + smallest thumbnail beside them for a put-back.
+
+    Only a file inside one of this machine's library *roots* that still holds
+    the deleted pixels is moved. ``photo_paths`` is shared across machines, so a
+    path recorded elsewhere -- or a file replaced since the last scan -- may now
+    name an unrelated file; those are reported as failed items and left alone."""
     rows = session.exec(
         select(PhotoPath).where(
             col(PhotoPath.pixel_hash).in_(list(hashes)),
@@ -333,24 +396,51 @@ def _trash_with_state(
     on_disk = [r for r in rows if Path(r.path).exists()]
     if not on_disk:
         return None
-    hash_of = {r.path: r.pixel_hash for r in on_disk}
-    wanted = set(hash_of.values())
-    small = min(thumb_sizes) if thumb_sizes else None
-    thumbs = {}
-    if small is not None:
-        for h in wanted:
-            t = paths.thumbnail_file(h, small)
-            if t.is_file():
-                thumbs[h] = t
-    return move_to_trash(
-        [r.path for r in on_disk],
-        local_dir=paths.local,
-        now=now,
-        pixel_hash_of=hash_of,
-        photo_state={h: capture_photo_state(session, h) for h in wanted},
-        thumbs=thumbs,
-        reason=reason,
-    )
+    eligible: list[PhotoPath] = []
+    refused: list[TrashedItem] = []
+    for r in on_disk:
+        if not _under_roots(Path(r.path), roots):
+            log.warning("not trashing %s: outside this machine's library folders", r.path)
+            refused.append(
+                TrashedItem(
+                    r.path, ok=False, error="outside the library folders", pixel_hash=r.pixel_hash
+                )
+            )
+        elif not _still_same_photo(r):
+            log.warning("not trashing %s: it no longer holds photo %s", r.path, r.pixel_hash)
+            refused.append(
+                TrashedItem(
+                    r.path,
+                    ok=False,
+                    error="the file has changed since it was indexed",
+                    pixel_hash=r.pixel_hash,
+                )
+            )
+        else:
+            eligible.append(r)
+
+    result = TrashResult()
+    if eligible:
+        hash_of = {r.path: r.pixel_hash for r in eligible}
+        wanted = set(hash_of.values())
+        small = min(thumb_sizes) if thumb_sizes else None
+        thumbs = {}
+        if small is not None:
+            for h in wanted:
+                t = paths.thumbnail_file(h, small)
+                if t.is_file():
+                    thumbs[h] = t
+        result = move_to_trash(
+            [r.path for r in eligible],
+            local_dir=paths.local,
+            now=now,
+            pixel_hash_of=hash_of,
+            photo_state={h: capture_photo_state(session, h) for h in wanted},
+            thumbs=thumbs,
+            reason=reason,
+        )
+    result.items.extend(refused)
+    return result
 
 
 def _all_paths(session: Session, pixel_hash: str) -> list[str]:

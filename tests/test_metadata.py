@@ -204,3 +204,19 @@ def test_suffix_helpers() -> None:
     assert can_embed_metadata(Path("d.JPEG"))
     assert can_embed_metadata(Path("e.heic"))
     assert not can_embed_metadata(Path("f.gif"))
+
+
+@pytest.mark.parametrize("breaker", ["\n", "\r", "\x00"])
+def test_a_line_break_in_a_keyword_cannot_inject_exiftool_options(
+    et: ExiftoolClient, jpg: Path, tmp_path: Path, breaker: str
+) -> None:
+    """-stay_open reads one argument per line; a smuggled ``-Directory=`` would
+    move the photo out of the library (and ``-if`` would run Perl)."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    with pytest.raises(MetadataError):
+        et.write_keywords(jpg, [f"sunset{breaker}-Directory={elsewhere}"])
+    assert jpg.exists()
+    assert list(elsewhere.iterdir()) == []
+    et.write_keywords(jpg, ["sunset"])  # the client is still usable afterwards
+    assert et.read(jpg).keywords == ("sunset",)

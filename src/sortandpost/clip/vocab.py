@@ -25,6 +25,8 @@ from typing import Protocol
 import numpy as np
 import yaml
 
+from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
+
 log = logging.getLogger(__name__)
 
 
@@ -68,8 +70,11 @@ def load_vocab(tags_file: Path) -> Vocab:
             if not isinstance(items, list):
                 continue
             for item in items:
-                name = str(item).strip()
+                name = normalize_tag_name(str(item))
                 if not name or name in seen:
+                    continue
+                if not is_safe_tag_name(name):
+                    log.warning("skipping tag %r in %s: control characters", name, tags_file)
                     continue
                 seen.add(name)
                 terms.append(VocabTerm(name=name, facet=str(facet)))
