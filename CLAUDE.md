@@ -559,8 +559,10 @@ The **only** module allowed to write under a library root. Wraps a persistent
   **Group-by defaults to Month** (no `group` param); `group=flat` is the ungrouped grid.
   Filters keep `taken_at` order + group-by; a text query ranks by CLIP relevance with group-by off.
   Subject/tag also matches un-rejected CLIP suggestions.
-- `/photo/{pixel_hash}` — large preview, star widget, EXIF panel, manual tag editor, CLIP
-  suggestion chips (approve/reject), "more like this". Links carry the grid's query string;
+- `/photo/{pixel_hash}` — large preview, star widget, EXIF panel, a **Tags** section between
+  the facts and Paths (applied pills; dashed ghost pills for pending CLIP suggestions with
+  ✓ approve / ✕ dismiss; an add-tag input — each change re-embeds the keywords into the
+  file, one photo only, not its stack), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
   prev/next walk the same resolved view (`resolve_view`, cached per query for 30 min).
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/review` — pending CLIP predictions grouped by tag for bulk approve/reject.

@@ -81,7 +81,7 @@ from sortandpost.collections import (
 )
 from sortandpost.config import Env, Settings
 from sortandpost.cpu import default_workers
-from sortandpost.db import add_manual_tag, init_db, make_engine, set_rating
+from sortandpost.db import add_manual_tag, init_db, make_engine, remove_manual_tag, set_rating
 from sortandpost.db.browse import (
     get_paths,
     get_photo,
@@ -100,7 +100,17 @@ from sortandpost.db.flags import (
     set_edit_flag,
 )
 from sortandpost.db.meta import get_generation
-from sortandpost.db.models import EmbeddingRow, Photo, Prediction, PredictionState, Rating
+from sortandpost.db.models import (
+    EmbeddingRow,
+    Photo,
+    PhotoTag,
+    Prediction,
+    PredictionState,
+    Rating,
+    Tag,
+    TagSource,
+)
+from sortandpost.db.tags import RESERVED_TAG_NAMES
 from sortandpost.desktop import control as desktop_control
 from sortandpost.grouping import PhotoGroup, parse_folder_sort
 from sortandpost.helper import HelperInfo, read_helper_info
@@ -180,6 +190,7 @@ from sortandpost.searches import (
 from sortandpost.stacks import build_stacks
 from sortandpost.sync import SyncManager, WriteMode
 from sortandpost.sync.clock import utcnow
+from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
 from sortandpost.themes import (
     PALETTES,
     SEASON_CHOICES,
@@ -1684,6 +1695,8 @@ def build_ui(settings: Settings) -> None:
                 flag_switch = _edit_flag_button(settings, engine, pixel_hash, flagged)
                 ui.label("← → move · 1-5 rate · 0 clear · f flag").classes("text-[11px] sp-faint")
                 _facts(photo)
+                # tags live in the info column, between the facts and the paths
+                tags_wrap = ui.column().classes("w-full gap-1 mt-2")
                 ui.separator()
                 ui.label("Paths").classes("font-bold mt-2")
                 native_reveal = reveal_supported()
@@ -1713,13 +1726,11 @@ def build_ui(settings: Settings) -> None:
                     return
                 with ui.row().classes("items-center gap-1 flex-wrap"):
                     for c in member_of:
-                        with ui.row().classes(
-                            "items-center gap-0 rounded-full sp-placeholder pl-2"
-                        ):
+                        with ui.row().classes("items-center gap-0 rounded-lg sp-placeholder pl-2"):
                             ui.button(
                                 f"{c.name}  ·  {c.count}",
                                 on_click=lambda c=c: ui.navigate.to(f"/collections/{c.id}"),
-                            ).props("flat dense no-caps size=sm")
+                            ).props("flat dense no-caps size=md")
                             ui.button(
                                 icon="close", on_click=lambda c=c: _leave_collection(c)
                             ).props("flat dense round size=xs").tooltip(f'remove from "{c.name}"')
@@ -1730,6 +1741,81 @@ def build_ui(settings: Settings) -> None:
             _paint_collections()
 
         _paint_collections()
+
+        # -- tags: applied pills, ghost CLIP suggestions, a box for manual ones -- #
+        tags_writable = State.write_mode == WriteMode.writable
+
+        async def _paint_tags() -> None:
+            state = await nicegui_run.io_bound(_photo_tag_state, settings, engine, pixel_hash)
+            if state is None:  # the pool was shut down under us (app closing)
+                return
+            have, suggested = state
+            with client:
+                tags_wrap.clear()
+                with tags_wrap:
+                    ui.label("Tags").classes("font-bold text-sm")
+                    with ui.row().classes("items-center gap-1 flex-wrap"):
+                        for name, source in have:
+                            with ui.row().classes(
+                                "items-center gap-0 rounded-full sp-placeholder px-2"
+                            ):
+                                ui.label(name).classes("text-sm py-0.5")
+                                if tags_writable and source == TagSource.manual:
+                                    ui.button(
+                                        icon="close",
+                                        on_click=lambda n=name: _tag_action(n, "remove"),
+                                    ).props("flat dense round size=xs").tooltip(f'remove "{name}"')
+                        if not have:
+                            ui.label("No tags yet.").classes("text-xs sp-muted")
+                    if suggested:
+                        ui.label("Suggested").classes("text-xs sp-muted mt-1")
+                        with ui.row().classes("items-center gap-1 flex-wrap"):
+                            for name, score in suggested:
+                                # ghost pill: dashed + faded = "not applied yet"
+                                with (
+                                    ui.row()
+                                    .classes("items-center gap-0 rounded-full px-2")
+                                    .style(
+                                        "border:1px dashed var(--sp-border); opacity:.75;"
+                                        " background:transparent"
+                                    )
+                                ):
+                                    ui.label(name).classes("text-sm py-0.5 sp-muted").tooltip(
+                                        f"CLIP score {score:.2f}"
+                                    )
+                                    if tags_writable:
+                                        ui.button(
+                                            icon="check",
+                                            on_click=lambda n=name: _tag_action(n, "approve"),
+                                        ).props("flat dense round size=xs").tooltip(f'add "{name}"')
+                                        ui.button(
+                                            icon="close",
+                                            on_click=lambda n=name: _tag_action(n, "reject"),
+                                        ).props("flat dense round size=xs").tooltip(
+                                            f'dismiss "{name}"'
+                                        )
+                    if tags_writable:
+                        new_tag = (
+                            ui.input(placeholder="Add a tag…")
+                            .props("dense outlined clearable")
+                            .classes("w-64")
+                        )
+                        new_tag.on("keydown.enter", lambda: _add_typed(new_tag))
+
+        async def _tag_action(name: str, action: str) -> None:
+            await nicegui_run.io_bound(_apply_photo_tag, settings, engine, pixel_hash, name, action)
+            await _paint_tags()
+
+        async def _add_typed(box: ui.input) -> None:
+            name = normalize_tag_name(box.value or "")
+            if not name:
+                return
+            if not is_safe_tag_name(name):
+                ui.notify("that tag name has characters that can't be used", type="warning")
+                return
+            await _tag_action(name, "add")
+
+        await _paint_tags()
         with ui.column().classes("w-full gap-1 px-4"):
             posted_note(settings, pixel_hash)
 
@@ -3080,6 +3166,94 @@ def _apply_review_one(
             )
         session.commit()
     return True
+
+
+def _photo_tag_state(
+    settings: Settings, engine: Engine, pixel_hash: str
+) -> tuple[list[tuple[str, TagSource]], list[tuple[str, float]]]:
+    """Off the event loop: the photo page's tag section -- the tags it has
+    (``(name, source)``, reserved workflow markers hidden) and its still-pending CLIP
+    suggestions (``(name, score)``, best first)."""
+    with Session(engine) as session:
+        have = session.exec(
+            select(Tag.name, PhotoTag.source)
+            .join(PhotoTag, col(PhotoTag.tag_id) == col(Tag.id))
+            .where(PhotoTag.pixel_hash == pixel_hash)
+            .order_by(col(Tag.name))
+        ).all()
+        pending = session.exec(
+            select(Prediction.tag_name, Prediction.score)
+            .where(
+                Prediction.pixel_hash == pixel_hash,
+                Prediction.model == settings.config.clip.model,
+                Prediction.state == PredictionState.pending,
+            )
+            .order_by(col(Prediction.score).desc(), col(Prediction.tag_name))
+        ).all()
+    have_names = {n.casefold() for n, _ in have}
+    return (
+        [(n, TagSource(s)) for n, s in have if n.casefold() not in RESERVED_TAG_NAMES],
+        [(n, float(sc)) for n, sc in pending if n.casefold() not in have_names],
+    )
+
+
+def _apply_photo_tag(
+    settings: Settings, engine: Engine, pixel_hash: str, tag_name: str, action: str
+) -> bool:
+    """Off the event loop: one tag change from the photo page. ``add`` / ``remove``
+    are manual tags; ``approve`` / ``reject`` decide a CLIP suggestion. Each writes
+    its ``changes`` row and (add / remove / approve) re-embeds the photo's keywords
+    through exiftool (hard constraints #4, #5, #7). ``False`` = nothing changed."""
+    model_name = settings.config.clip.model
+    with Session(engine) as session:
+        if action == "reject":
+            reject(
+                session,
+                device_id=settings.device_id,
+                model=model_name,
+                pixel_hash=pixel_hash,
+                tag_name=tag_name,
+                now=utcnow(),
+            )
+            session.commit()
+            return True
+        with _exif(settings) as exiftool:
+            if action == "approve":
+                if not is_pending(
+                    session, model=model_name, pixel_hash=pixel_hash, tag_name=tag_name
+                ):
+                    return False
+                approve(
+                    session,
+                    device_id=settings.device_id,
+                    model=model_name,
+                    pixel_hash=pixel_hash,
+                    tag_name=tag_name,
+                    facet=load_vocab(settings.paths.tags_file).facet_of(tag_name),
+                    now=utcnow(),
+                    exiftool=exiftool,
+                )
+                changed = True
+            elif action == "add":
+                changed = add_manual_tag(
+                    session,
+                    pixel_hash=pixel_hash,
+                    tag_name=tag_name,
+                    device_id=settings.device_id,
+                    now=utcnow(),
+                    exiftool=exiftool,
+                )
+            else:
+                changed = remove_manual_tag(
+                    session,
+                    pixel_hash=pixel_hash,
+                    tag_name=tag_name,
+                    device_id=settings.device_id,
+                    now=utcnow(),
+                    exiftool=exiftool,
+                )
+        session.commit()
+    return changed
 
 
 def _apply_rating(settings: Settings, engine: Engine, pixel_hash: str, stars: int) -> bool:
