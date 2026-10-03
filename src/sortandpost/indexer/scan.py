@@ -188,6 +188,7 @@ def _scan_once_locked(
         thumbnail_quality=tcfg.quality,
         thumbnail_path=paths.thumbnail_file,
         online_only_mode=settings.config.indexer.online_only,
+        stacking=settings.config.stacking,
     )
     n_workers = settings.config.worker_count() if workers is None else max(1, workers)
     lower_priority = settings.config.clip.speed == "slow"
@@ -261,6 +262,7 @@ def _scan_once_locked(
                     exiftool=exiftool,
                     device_id=settings.device_id,
                     now=_utcnow(),
+                    stacking=pcfg.stacking,
                 )
                 session.commit()
             except Exception as exc:  # never let one bad file kill the pass

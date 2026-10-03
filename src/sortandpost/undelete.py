@@ -86,6 +86,7 @@ def put_back_batch(
             thumbnail_quality=tcfg.quality,
             thumbnail_path=settings.paths.thumbnail_file,
             online_only_mode="download",  # we just moved real bytes back; never a stub
+            stacking=settings.config.stacking,
         )
         et_ctx = (
             ExiftoolClient(

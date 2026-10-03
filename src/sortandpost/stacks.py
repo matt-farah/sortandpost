@@ -13,7 +13,10 @@ A stack groups photos in the **same parent folder** whose filenames match a rule
 Grouping runs over ``photo_paths`` (duplicates at several paths are handled) and
 is rolled up to distinct ``pixel_hash`` members. The **representative** -- the
 face shown in the grid -- is the member whose newest file ``mtime`` is greatest.
-Ratings/tags are applied to every member (see ``_apply_rating`` in the app).
+Ratings/tags are applied to every member in the DB, but only the stack's
+:func:`embed_target` gets the embedded EXIF/XMP write (see ``_apply_rating`` in
+the app): writing a member's file bumps its mtime, which would make it the new
+representative, and the user's originals stay untouched.
 """
 
 from __future__ import annotations
@@ -21,12 +24,13 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from sqlmodel import Session, col, select
 
 from sortandpost.config import StackingConfig
 from sortandpost.db.models import Photo, PhotoPath
+from sortandpost.metadata import can_embed_metadata, is_raw
 
 _LEADING_COPY = re.compile(r"^\s*copy(?:\s+of)?\s+", re.IGNORECASE)
 # trailing "- Copy", "copy", "copy 2", "copy (3)", or "(1)"
@@ -113,25 +117,39 @@ class StackIndex:
 EMPTY = StackIndex({}, {})
 
 
-def build_stacks(session: Session, cfg: StackingConfig) -> StackIndex:
+def build_stacks(session: Session, cfg: StackingConfig, *, folder: str | None = None) -> StackIndex:
     """Group every present photo per *cfg*. Cheap enough to run on each page
-    load at the ~25k-photo design target (one indexed join, then in memory)."""
+    load at the ~25k-photo design target (one indexed join, then in memory).
+
+    *folder* limits it to the photos directly in that folder -- stacks never
+    cross folders, so that's exact for them, and cheap enough per file (the
+    indexer). A photo with copies elsewhere is then seen through this folder's
+    copy only."""
     if not cfg.enabled or not (cfg.raw_jpeg or cfg.similar_names):
         return EMPTY
 
-    rows = session.exec(
+    stmt = (
         select(PhotoPath.pixel_hash, PhotoPath.path, PhotoPath.mtime_ns, Photo.is_raw)
         .join(Photo, col(Photo.pixel_hash) == col(PhotoPath.pixel_hash))
         .where(col(PhotoPath.present).is_(True))
-    ).all()
+    )
+    want_parent: str | None = None
+    if folder is not None:
+        sep = "\\" if "\\" in folder else "/"
+        prefix = folder.rstrip(sep) + sep
+        want_parent = _split(prefix + "x")[0]
+        stmt = stmt.where(col(PhotoPath.path).startswith(prefix, autoescape=True))
+    rows = session.exec(stmt).all()
+    if want_parent is not None:  # drop photos in subfolders of *folder*
+        rows = [r for r in rows if _split(r[1])[0] == want_parent]
 
     uf = _UnionFind()
     seen_hashes: set[str] = set()
     newest: dict[str, int] = {}
-    for pixel_hash, path, mtime_ns, is_raw in rows:
+    for pixel_hash, path, mtime_ns, raw in rows:
         seen_hashes.add(pixel_hash)
         newest[pixel_hash] = max(newest.get(pixel_hash, -1), mtime_ns or 0)
-        for key in _keys_for(path, bool(is_raw), cfg):
+        for key in _keys_for(path, bool(raw), cfg):
             uf.union(("h", pixel_hash), ("k", key))
 
     groups: dict[object, set[str]] = defaultdict(set)
@@ -149,3 +167,25 @@ def build_stacks(session: Session, cfg: StackingConfig) -> StackIndex:
         for h in ordered:
             rep_of[h] = rep
     return StackIndex(rep_of, members_of)
+
+
+def embed_target(session: Session, stacks: StackIndex, pixel_hash: str) -> str:
+    """The one member of *pixel_hash*'s stack whose file gets embedded
+    ratings / keywords: the newest member with a present copy that can carry
+    metadata (not a RAW -- so a RAW+JPEG pair writes its JPEG). A photo that
+    isn't stacked, or a stack with no such member, is its own target (the
+    writers skip RAW / non-embeddable copies themselves)."""
+    members = stacks.members(pixel_hash)
+    if len(members) < 2:
+        return pixel_hash
+    for member in members:  # newest first
+        paths = session.exec(
+            select(PhotoPath.path).where(
+                PhotoPath.pixel_hash == member, col(PhotoPath.present).is_(True)
+            )
+        ).all()
+        for raw in paths:
+            path = Path(raw)
+            if not is_raw(path) and can_embed_metadata(path) and path.is_file():
+                return member
+    return pixel_hash

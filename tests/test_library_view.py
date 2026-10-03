@@ -35,6 +35,7 @@ from sortandpost.library_view import (
     dates_label,
     dates_to_picker,
     folder_choices,
+    locate,
     neighbors,
     parse_date_range,
     picker_to_dates,
@@ -442,6 +443,14 @@ def test_neighbors() -> None:
     assert neighbors(ids, "b") == ("a", "c")
     assert neighbors(ids, "c") == ("b", None)
     assert neighbors(ids, "zz") == (None, None)
+
+
+def test_locate_finds_a_stack_whose_top_photo_changed() -> None:
+    # the grid order was taken while "old_top" fronted the stack; it's now "new_top"
+    ids = ["a", "old_top", "c"]
+    assert locate(ids, ["new_top", "new_top", "old_top"]) == "old_top"
+    assert locate(ids, ["a", "c"]) == "a"  # first match wins
+    assert locate(ids, ["zz"]) is None
 
 
 # --------------------------------------------------------------------------- #
