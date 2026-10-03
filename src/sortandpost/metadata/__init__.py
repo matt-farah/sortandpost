@@ -99,6 +99,18 @@ def stars_to_rating_percent(stars: int) -> int:
     return _RATING_PERCENT[stars]
 
 
+def _keyword_tags(keywords: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for raw in keywords:
+        keyword = raw.strip()
+        if keyword and keyword not in cleaned:
+            cleaned.append(keyword)
+    tags = ["-XMP:Subject=", "-IPTC:Keywords="]  # replace, do not append
+    for keyword in cleaned:
+        tags += [f"-XMP:Subject={keyword}", f"-IPTC:Keywords={keyword}"]
+    return tags
+
+
 class ExiftoolClient:
     """Context manager around one long-lived ``exiftool -stay_open`` process.
 
@@ -210,9 +222,27 @@ class ExiftoolClient:
     # -- writes ----------------------------------------------------------- #
 
     def write_rating(self, path: Path, stars: int) -> None:
+        self._guard_writable(path)
+        self._commit(path, self._rating_tags(stars))
+
+    def write_keywords(self, path: Path, keywords: list[str]) -> None:
+        self._guard_writable(path)
+        self._commit(path, _keyword_tags(keywords))
+
+    def restamp(self, path: Path, stars: int, keywords: list[str]) -> None:
+        """Write *stars* and *keywords* in one go, always rewriting the file so
+        its mtime moves (the stack's "make top" action). Unrated is an explicit
+        ``XMP:Rating=0``, not a delete: deleting tags a file doesn't have leaves
+        it unchanged."""
+        self._guard_writable(path)
+        rating = self._rating_tags(stars)
+        if stars == 0:
+            rating[0] = "-XMP:Rating=0"
+        self._commit(path, [*rating, *_keyword_tags(keywords)])
+
+    def _rating_tags(self, stars: int) -> list[str]:
         if not 0 <= stars <= 5:
             raise MetadataError(f"stars must be 0-5, got {stars}")
-        self._guard_writable(path)
         if stars == 0:
             tags = ["-XMP:Rating="]
             if self.write_windows_compat_tags:
@@ -230,19 +260,7 @@ class ExiftoolClient:
                     f"-EXIF:RatingPercent={pct}",
                     f"-XMP-microsoft:RatingPercent={pct}",
                 ]
-        self._commit(path, tags)
-
-    def write_keywords(self, path: Path, keywords: list[str]) -> None:
-        self._guard_writable(path)
-        cleaned: list[str] = []
-        for raw in keywords:
-            keyword = raw.strip()
-            if keyword and keyword not in cleaned:
-                cleaned.append(keyword)
-        tags = ["-XMP:Subject=", "-IPTC:Keywords="]  # replace, do not append
-        for keyword in cleaned:
-            tags += [f"-XMP:Subject={keyword}", f"-IPTC:Keywords={keyword}"]
-        self._commit(path, tags)
+        return tags
 
     # -- internals ------------------------------------------------------- #
 

@@ -25,7 +25,7 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -103,6 +103,7 @@ from sortandpost.db.meta import get_generation
 from sortandpost.db.models import (
     EmbeddingRow,
     Photo,
+    PhotoPath,
     PhotoTag,
     Prediction,
     PredictionState,
@@ -110,7 +111,7 @@ from sortandpost.db.models import (
     Tag,
     TagSource,
 )
-from sortandpost.db.tags import RESERVED_TAG_NAMES
+from sortandpost.db.tags import RESERVED_TAG_NAMES, embeddable_keywords, photo_keywords
 from sortandpost.desktop import control as desktop_control
 from sortandpost.grouping import PhotoGroup, parse_folder_sort
 from sortandpost.helper import HelperInfo, read_helper_info
@@ -144,7 +145,7 @@ from sortandpost.library_view import (
     resolve_view,
     tag_choices,
 )
-from sortandpost.metadata import ExiftoolClient
+from sortandpost.metadata import ExiftoolClient, MetadataError, can_embed_metadata, is_raw
 from sortandpost.metadata.shared import EXIFTOOL
 from sortandpost.onboarding import (
     FolderInspection,
@@ -1826,7 +1827,26 @@ def build_ui(settings: Settings) -> None:
             posted_note(settings, pixel_hash)
 
         if len(members) > 1:
-            _stack_filmstrip(pixel_hash, members, thumb_small, link_query)
+
+            async def _make_top() -> None:
+                why = await nicegui_run.io_bound(_apply_make_top, settings, engine, pixel_hash)
+                with client:
+                    if why:
+                        ui.notify(f"Couldn't make this the top photo: {why}", type="warning")
+                        return
+                    ui.notify("now the top of its stack")
+                    # reload: the filmstrip regroups with this photo first
+                    url = _photo_url(pixel_hash, link_query)
+                    ui.run_javascript(f"location.replace({json.dumps(url)})")
+
+            can_make_top = State.write_mode == WriteMode.writable and members[0] != pixel_hash
+            _stack_filmstrip(
+                pixel_hash,
+                members,
+                thumb_small,
+                link_query,
+                on_make_top=_make_top if can_make_top else None,
+            )
 
         with ui.row().classes("w-full items-center justify-between m-4"):
             ui.button("← Back to library", on_click=lambda: ui.navigate.back()).props("flat")
@@ -3312,6 +3332,49 @@ def _bulk_targets(session: Session, settings: Settings, hashes: list[str]) -> li
     if not settings.config.stacking.enabled:
         return list(hashes)
     return _expand_stacks(_stacks(session, settings), hashes)
+
+
+def _apply_make_top(settings: Settings, engine: Engine, pixel_hash: str) -> str | None:
+    """Off the event loop: make *pixel_hash* its stack's top photo. The top is
+    the member whose file changed last, so this rewrites the photo's own rating
+    and keywords into its file(s) through exiftool -- a metadata write
+    (constraint #1), never a RAW -- which moves its mtime. ``photo_paths`` is
+    refreshed right away so the stack regroups without waiting for a rescan.
+    Returns ``None`` on success, else why it couldn't."""
+    with Session(engine) as session, _exif(settings) as exiftool:
+        if exiftool is None:
+            return "exiftool isn't installed"
+        stacks = _stacks(session, settings)
+        if stacks.size(pixel_hash) < 2:
+            return "this photo isn't in a stack"
+        if stacks.representative(pixel_hash) == pixel_hash:
+            return "this photo is already the top of its stack"
+        rows = session.exec(
+            select(PhotoPath).where(
+                PhotoPath.pixel_hash == pixel_hash, col(PhotoPath.present).is_(True)
+            )
+        ).all()
+        writable = [
+            r for r in rows if not is_raw(Path(r.path)) and can_embed_metadata(Path(r.path))
+        ]
+        if not writable:
+            return "RAW files and this file type are never written, so it can't be made the top"
+        stars = get_rating(session, pixel_hash) or 0
+        keywords = embeddable_keywords(photo_keywords(session, pixel_hash))
+        done = 0
+        for row in writable:
+            path = Path(row.path)
+            try:
+                exiftool.restamp(path, stars, keywords)
+                st = path.stat()
+            except (MetadataError, OSError) as exc:
+                log.warning("make-top write failed for %s: %s", path, exc)
+                continue
+            row.size, row.mtime_ns = st.st_size, st.st_mtime_ns
+            session.add(row)
+            done += 1
+        session.commit()
+    return None if done else "the file couldn't be written (see the log)"
 
 
 def _expand_stacks(stacks: StackIndex, hashes: list[str]) -> list[str]:
@@ -4991,15 +5054,35 @@ def _path_row(
             _open_with_button(_open_native, size="xs")
 
 
-def _stack_filmstrip(current: str, members: list[str], size: int, link_query: str = "") -> None:
+def _stack_filmstrip(
+    current: str,
+    members: list[str],
+    size: int,
+    link_query: str = "",
+    *,
+    on_make_top: Callable[[], Awaitable[None]] | None = None,
+) -> None:
     """The other photos in this stack. ``members[0]`` is the representative
-    (newest mtime); the photo being viewed is outlined.
+    (newest mtime); the photo being viewed is outlined. *on_make_top* (only
+    when the viewed photo isn't the top, and the app is writable) adds the
+    "Make this the top photo" button.
 
     Filmstrip cells navigate with ``location.replace`` rather than a real link,
     so hopping between stack members never grows the history -- Back (in-app or
     browser) always returns to wherever you opened the stack from."""
     with ui.column().classes("w-full px-4 gap-1"):
-        ui.label(f"Stack · {len(members)} photos — rating is shared").classes("font-bold text-sm")
+        with ui.row().classes("items-center gap-3"):
+            ui.label(f"Stack · {len(members)} photos — rating is shared").classes(
+                "font-bold text-sm"
+            )
+            if on_make_top is not None:
+                ui.button("Make this the top photo", icon="vertical_align_top").props(
+                    "flat dense no-caps size=sm"
+                ).on_click(on_make_top).tooltip(
+                    "Rewrites this photo's rating and tags into its file, which makes it the "
+                    "newest file in the stack -- the top photo, and the one ratings and tags "
+                    "are written to from now on"
+                )
         with ui.row().classes("gap-2 flex-wrap"):
             for i, member in enumerate(members):
                 is_current = member == current
