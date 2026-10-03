@@ -497,6 +497,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   only the stack's `stacks.embed_target` (its newest non-RAW, embed-capable member) gets
   the file write (`app._file_exif`; reconcile's write-back too). Writing every member
   changed the originals' mtimes and flipped the stack's top photo.
+  The photo page's **"Make this the top photo"** (`app._apply_make_top`) picks the top on
+  purpose: `ExiftoolClient.restamp` rewrites that photo's rating + keywords (unrated as an
+  explicit `XMP:Rating=0`, so the file always changes) and refreshes `photo_paths`.
 - `-stay_open` reads **one argument per line**: `_execute` refuses any argument containing
   `\n` / `\r` / NUL, since a line break would inject exiftool options (`-Directory=` moves
   the file, `-if` runs Perl — Security.md C1). Tag names are normalized / validated by

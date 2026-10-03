@@ -21,7 +21,13 @@ from PIL import Image
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
-from sortandpost.app import _apply_bulk_rating, _apply_bulk_tag, _apply_photo_tag, _apply_rating
+from sortandpost.app import (
+    _apply_bulk_rating,
+    _apply_bulk_tag,
+    _apply_make_top,
+    _apply_photo_tag,
+    _apply_rating,
+)
 from sortandpost.config import Settings, StackingConfig
 from sortandpost.db import init_db, make_engine
 from sortandpost.db.models import PhotoPath, Rating
@@ -213,3 +219,47 @@ def test_build_stacks_folder_ignores_subfolders(
         stacks = build_stacks(session, ALL_ON, folder=str(library))
     assert sorted(stacks.members(orig)) == sorted([orig, copy])
     assert stacks.members(nested) == [nested]
+
+
+# -- "Make this the top photo" ---------------------------------------------- #
+def test_make_top_restamps_only_that_file_and_regroups(
+    library: Path, db: Engine, settings: Settings, copy_stack: tuple[str, str]
+) -> None:
+    orig, copy = copy_stack
+    assert _apply_rating(settings, db, copy, 4)  # stack rating; written to the copy only
+    _apply_bulk_tag(settings, db, [copy], "sunset")
+    before = snapshot_folder(library)
+
+    assert _apply_make_top(settings, db, orig) is None
+
+    assert_only_changed(before, snapshot_folder(library), "IMG.jpg")
+    assert _top(db, copy) == orig, "photo_paths wasn't refreshed / the top didn't move"
+    with ExiftoolClient() as exiftool:
+        md = exiftool.read(library / "IMG.jpg")
+    assert md.rating == 4
+    assert "sunset" in md.keywords
+
+
+def test_make_top_on_an_unrated_untagged_photo_still_moves_it(
+    library: Path, db: Engine, settings: Settings, copy_stack: tuple[str, str]
+) -> None:
+    orig, copy = copy_stack
+    before = snapshot_folder(library)
+
+    assert _apply_make_top(settings, db, orig) is None
+
+    assert_only_changed(before, snapshot_folder(library), "IMG.jpg")
+    assert _top(db, copy) == orig
+    with ExiftoolClient() as exiftool:
+        assert not exiftool.read(library / "IMG.jpg").rating  # explicit 0 = unrated
+
+
+def test_make_top_refuses_the_current_top_and_unstacked_photos(
+    library: Path, db: Engine, settings: Settings, copy_stack: tuple[str, str]
+) -> None:
+    _orig, copy = copy_stack
+    before = snapshot_folder(library)
+    assert _apply_make_top(settings, db, copy) is not None
+    settings.config.stacking.enabled = False
+    assert _apply_make_top(settings, db, copy) is not None
+    assert_only_changed(before, snapshot_folder(library))
