@@ -68,7 +68,11 @@ def reconcile_metadata(
     device_id: str,
     file_mtime_ns: int,
     now: datetime,
+    write_back: bool = True,
 ) -> ReconcileOutcome:
+    """*write_back* ``False`` = never write the DB rating into this file (a
+    stacked photo that isn't its stack's embed target); file -> DB import still
+    runs."""
     out = ReconcileOutcome()
     if is_raw(path):
         return out  # RAW: the DB is the only home for its rating/tags
@@ -83,7 +87,7 @@ def reconcile_metadata(
         device_id=device_id,
         file_mtime_ns=file_mtime_ns,
         now=now,
-        embed_capable=can_embed_metadata(path),
+        embed_capable=write_back and can_embed_metadata(path),
     )
     _reconcile_keywords(session, out, pixel_hash=pixel_hash, md=md, device_id=device_id, now=now)
     return out

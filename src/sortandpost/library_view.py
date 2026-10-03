@@ -516,6 +516,15 @@ def neighbors(ids: list[str], anchor: str) -> tuple[str | None, str | None]:
     return (ids[i - 1] if i > 0 else None), (ids[i + 1] if i + 1 < len(ids) else None)
 
 
+def locate(ids: list[str], candidates: Iterable[str]) -> str | None:
+    """The first of *candidates* that is in *ids* (``None`` if none is). The
+    photo page passes the photo, its stack's representative and the other
+    members: a stack's top photo can change after the grid order was taken
+    (its newest file wins), and prev/next must still find the photo's place."""
+    present = set(ids)
+    return next((c for c in candidates if c in present), None)
+
+
 # --------------------------------------------------------------------------- #
 # filter-bar choices
 # --------------------------------------------------------------------------- #

@@ -22,11 +22,13 @@ from pathlib import Path
 
 from sqlmodel import Session, col, select
 
+from sortandpost.config import StackingConfig
 from sortandpost.db.models import Photo, PhotoPath, ScanState, Tombstone
 from sortandpost.indexer.reconcile import ReconcileOutcome, reconcile_metadata
 from sortandpost.indexer.thumbnails import ThumbPathFn
 from sortandpost.indexer.workers import DecodedFile, decode_local
 from sortandpost.metadata import EmbeddedMetadata, ExiftoolClient, MetadataError, is_raw
+from sortandpost.stacks import build_stacks, embed_target
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +68,7 @@ class PipelineConfig:
     thumbnail_quality: int
     thumbnail_path: ThumbPathFn
     online_only_mode: str = "skip"  # "skip" defers cloud placeholders; "download" decodes them
+    stacking: StackingConfig | None = None  # None = no stacks (reconcile writes back to any file)
 
 
 # --------------------------------------------------------------------------- #
@@ -105,7 +108,14 @@ def index_file(
         quality=config.thumbnail_quality,
         online_only_mode=config.online_only_mode,
     )
-    return persist_decoded(session, decoded, exiftool=exiftool, device_id=device_id, now=now)
+    return persist_decoded(
+        session,
+        decoded,
+        exiftool=exiftool,
+        device_id=device_id,
+        now=now,
+        stacking=config.stacking,
+    )
 
 
 def persist_decoded(
@@ -115,11 +125,15 @@ def persist_decoded(
     exiftool: ExiftoolClient | None,
     device_id: str,
     now: datetime,
+    stacking: StackingConfig | None = None,
 ) -> IndexOutcome:
     """Apply one worker's :class:`DecodedFile` to the DB: stage 3 identity
     (``photos`` / ``photo_paths``), stage 5 metadata read, stage 6 reconcile,
     and the ``scan_state`` bookkeeping. Runs on the main process only (holds the
-    ``Session`` and the persistent ``exiftool``). Caller commits."""
+    ``Session`` and the persistent ``exiftool``). Caller commits.
+
+    With *stacking*, reconcile writes a DB rating back only into a stack's
+    embed target, never into its other members (their originals stay as-is)."""
     key = decoded.path
     path = Path(key)
 
@@ -204,6 +218,7 @@ def persist_decoded(
                 device_id=device_id,
                 file_mtime_ns=decoded.mtime_ns,
                 now=now,
+                write_back=_is_embed_target(session, stacking, pixel_hash, path),
             )
         except MetadataError as exc:
             log.warning("metadata reconcile failed for %s: %s", path, exc)
@@ -223,6 +238,19 @@ def persist_decoded(
 # --------------------------------------------------------------------------- #
 # Stage helpers
 # --------------------------------------------------------------------------- #
+def _is_embed_target(
+    session: Session, stacking: StackingConfig | None, pixel_hash: str, path: Path
+) -> bool:
+    """May reconcile write into *path*'s file? Not when it's a stacked photo
+    other than its stack's embed target. Stacks never cross folders, so only
+    *path*'s folder is grouped."""
+    if stacking is None or not stacking.enabled:
+        return True
+    session.flush()  # this file's own photo_paths row
+    stacks = build_stacks(session, stacking, folder=str(path.parent))
+    return embed_target(session, stacks, pixel_hash) == pixel_hash
+
+
 def needs_reindex(scan: ScanState | None, size: int, mtime_ns: int) -> bool:
     if scan is None:
         return True

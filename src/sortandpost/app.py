@@ -138,6 +138,7 @@ from sortandpost.library_view import (
     dates_label,
     dates_to_picker,
     folder_choices,
+    locate,
     neighbors,
     picker_to_dates,
     resolve_view,
@@ -187,7 +188,7 @@ from sortandpost.searches import (
     load_searches,
     remove_search,
 )
-from sortandpost.stacks import build_stacks
+from sortandpost.stacks import StackIndex, build_stacks, embed_target
 from sortandpost.sync import SyncManager, WriteMode
 from sortandpost.sync.clock import utcnow
 from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
@@ -1668,12 +1669,17 @@ def build_ui(settings: Settings) -> None:
             return
 
         # -- prev/next: the same order the grid showed ----------------------- #
-        ordered = _cached_view(link_query)
-        if ordered is None:
+        # Look the photo up as itself, its stack's top photo, or any member --
+        # the top can change after the order was taken (a newer file wins). A
+        # cached order that has none of them is stale: resolve it again once.
+        candidates = [stacks.representative(pixel_hash) if stacks else pixel_hash, *members]
+        ordered = _cached_view(link_query) or []
+        anchor = locate(ordered, candidates)
+        if anchor is None:
             view = await nicegui_run.io_bound(_resolve, settings, engine, lq)
             ordered = view.ids if view is not None else []
-        anchor = stacks.representative(pixel_hash) if stacks is not None else pixel_hash
-        prev_hash, next_hash = neighbors(ordered, anchor)
+            anchor = locate(ordered, candidates)
+        prev_hash, next_hash = neighbors(ordered, anchor) if anchor else (None, None)
 
         ui.button("← Back", on_click=lambda: ui.navigate.back()).props("flat dense").classes(
             "mx-4 mt-2"
@@ -3089,6 +3095,25 @@ def _exif(settings: Settings) -> AbstractContextManager[ExiftoolClient | None]:
     )
 
 
+def _stacks(session: Session, settings: Settings) -> StackIndex:
+    return build_stacks(session, settings.config.stacking)
+
+
+def _file_exif(
+    session: Session,
+    stacks: StackIndex,
+    pixel_hash: str,
+    exiftool: ExiftoolClient | None,
+) -> ExiftoolClient | None:
+    """*exiftool* when *pixel_hash*'s own file should get the embedded write,
+    else ``None`` (DB only). In a stack only its :func:`embed_target` is
+    written: writing every member changed the originals' modified dates, and
+    the last member written became the stack's new top photo."""
+    if exiftool is None or embed_target(session, stacks, pixel_hash) != pixel_hash:
+        return None
+    return exiftool
+
+
 def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decision: str) -> int:
     """Off the event loop (``run.io_bound``): approve/reject every pending
     prediction for *tag_name*. Approve embeds keywords via exiftool, so it must
@@ -3107,6 +3132,7 @@ def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decisi
                 Prediction.state == PredictionState.pending,
             )
         ).all()
+        stacks = _stacks(session, settings)
         for pred in preds:
             if approving:
                 approve(
@@ -3117,7 +3143,7 @@ def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decisi
                     tag_name=tag_name,
                     facet=facet,
                     now=utcnow(),
-                    exiftool=exiftool,
+                    exiftool=_file_exif(session, stacks, pred.pixel_hash, exiftool),
                 )
             else:
                 reject(
@@ -3153,7 +3179,7 @@ def _apply_review_one(
                     tag_name=tag_name,
                     facet=facet,
                     now=utcnow(),
-                    exiftool=exiftool,
+                    exiftool=_file_exif(session, _stacks(session, settings), pixel_hash, exiftool),
                 )
         else:
             reject(
@@ -3217,7 +3243,9 @@ def _apply_photo_tag(
             )
             session.commit()
             return True
-        with _exif(settings) as exiftool:
+        with _exif(settings) as shared_exiftool:
+            # a hidden stack member's own file is never written
+            exiftool = _file_exif(session, _stacks(session, settings), pixel_hash, shared_exiftool)
             if action == "approve":
                 if not is_pending(
                     session, model=model_name, pixel_hash=pixel_hash, tag_name=tag_name
@@ -3260,20 +3288,19 @@ def _apply_rating(settings: Settings, engine: Engine, pixel_hash: str, stars: in
     """Off the event loop (``run.io_bound``): set the rating (``ratings`` row +
     ``changes`` row) and mirror it into the present, embed-capable file copies via
     exiftool when available (hard constraints #4, #7). With stacking on, the
-    rating is applied to every member of the stack (stack-level ratings)."""
+    rating is applied to every member of the stack (stack-level ratings), but
+    only the stack's embed target gets the file write (:func:`_file_exif`)."""
     with Session(engine) as session, _exif(settings) as exiftool:
-        targets = [pixel_hash]
-        if settings.config.stacking.enabled:
-            targets = build_stacks(session, settings.config.stacking).members(pixel_hash)
+        stacks = _stacks(session, settings)
         changed = False
-        for target in targets:
+        for target in stacks.members(pixel_hash):
             changed |= set_rating(
                 session,
                 pixel_hash=target,
                 stars=stars,
                 device_id=settings.device_id,
                 now=utcnow(),
-                exiftool=exiftool,
+                exiftool=_file_exif(session, stacks, target, exiftool),
             )
         session.commit()
     return changed
@@ -3284,7 +3311,11 @@ def _bulk_targets(session: Session, settings: Settings, hashes: list[str]) -> li
     every stack member when stacking is on."""
     if not settings.config.stacking.enabled:
         return list(hashes)
-    stacks = build_stacks(session, settings.config.stacking)
+    return _expand_stacks(_stacks(session, settings), hashes)
+
+
+def _expand_stacks(stacks: StackIndex, hashes: list[str]) -> list[str]:
+    """*hashes* plus their stack members, each once, in selection order."""
     out: list[str] = []
     seen: set[str] = set()
     for pixel_hash in hashes:
@@ -3296,32 +3327,36 @@ def _bulk_targets(session: Session, settings: Settings, hashes: list[str]) -> li
 
 
 def _apply_bulk_rating(settings: Settings, engine: Engine, hashes: list[str], stars: int) -> int:
-    """Off the event loop: rate every selected photo (fanning to stack members)."""
+    """Off the event loop: rate every selected photo (fanning to stack members;
+    only each stack's embed target gets the file write)."""
     with Session(engine) as session, _exif(settings) as exiftool:
-        for target in _bulk_targets(session, settings, hashes):
+        stacks = _stacks(session, settings)
+        for target in _expand_stacks(stacks, hashes):
             set_rating(
                 session,
                 pixel_hash=target,
                 stars=stars,
                 device_id=settings.device_id,
                 now=utcnow(),
-                exiftool=exiftool,
+                exiftool=_file_exif(session, stacks, target, exiftool),
             )
         session.commit()
     return len(hashes)
 
 
 def _apply_bulk_tag(settings: Settings, engine: Engine, hashes: list[str], tag_name: str) -> int:
-    """Off the event loop: add *tag_name* to every selected photo (+ stack members)."""
+    """Off the event loop: add *tag_name* to every selected photo (+ stack
+    members; only each stack's embed target gets the file write)."""
     with Session(engine) as session, _exif(settings) as exiftool:
-        for target in _bulk_targets(session, settings, hashes):
+        stacks = _stacks(session, settings)
+        for target in _expand_stacks(stacks, hashes):
             add_manual_tag(
                 session,
                 pixel_hash=target,
                 tag_name=tag_name,
                 device_id=settings.device_id,
                 now=utcnow(),
-                exiftool=exiftool,
+                exiftool=_file_exif(session, stacks, target, exiftool),
             )
         session.commit()
     return len(hashes)
@@ -3427,7 +3462,8 @@ def _stacking_editor(settings: Settings, *, autosave: bool = False) -> None:
     cfg = settings.config.stacking
     ui.label(
         "Group near-duplicate photos in the same folder into one entry (the "
-        "newest by modified time is shown). Ratings apply to the whole stack."
+        "newest by modified time is shown). Ratings and tags apply to the whole "
+        "stack; only the top photo's file is written (the top JPEG for RAW + JPEG)."
     ).classes("text-xs sp-faint max-w-xl")
 
     enabled = ui.switch("Enabled", value=cfg.enabled)

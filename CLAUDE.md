@@ -493,6 +493,10 @@ The **only** module allowed to write under a library root. Wraps a persistent
   mtime update so sync tools and other apps notice the change.
 - **Never** writes CLIP predictions, UUIDs, or anything else. RAW paths are rejected at this
   layer as a safety net.
+- **Stacks write one file.** Ratings / tags fan out to every stack member in the DB, but
+  only the stack's `stacks.embed_target` (its newest non-RAW, embed-capable member) gets
+  the file write (`app._file_exif`; reconcile's write-back too). Writing every member
+  changed the originals' mtimes and flipped the stack's top photo.
 - `-stay_open` reads **one argument per line**: `_execute` refuses any argument containing
   `\n` / `\r` / NUL, since a line break would inject exiftool options (`-Directory=` moves
   the file, `-if` runs Perl — Security.md C1). Tag names are normalized / validated by
