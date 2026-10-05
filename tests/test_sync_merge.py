@@ -6,9 +6,19 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
+from sortandpost.clip.tagging import approve, unapprove
 from sortandpost.db import make_engine
 from sortandpost.db.meta import get_generation
-from sortandpost.db.models import Change, ChangeOp, Photo, PhotoPath, Tombstone
+from sortandpost.db.models import (
+    Change,
+    ChangeOp,
+    Photo,
+    PhotoPath,
+    PhotoTag,
+    Prediction,
+    PredictionState,
+    Tombstone,
+)
 from sortandpost.sync.merge import find_conflict_copies, merge_all
 from tests.factories import hash_for, make_db, rate, read_ratings, ts
 
@@ -254,3 +264,53 @@ def count(db: Path, model: type) -> int:
             return len(s.exec(select(model)).all())
     finally:
         engine.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# unapprove (photo page ✕ on an approved CLIP tag) replays on the other machine
+# --------------------------------------------------------------------------- #
+def test_unapprove_on_one_machine_merges_into_the_other(tmp_path: Path) -> None:
+    a = tmp_path / "machine_a.db"
+    b = tmp_path / "machine_b.db"
+    make_db(a, photos=["a"], generation=1)
+    with Session(make_engine(a)) as s:
+        s.add(
+            Prediction(
+                pixel_hash=hash_for("a"),
+                tag_name="red",
+                score=0.5,
+                model="m",
+                run_at=NOW,
+                state=PredictionState.pending,
+            )
+        )
+        approve(
+            s,
+            device_id="A",
+            model="m",
+            pixel_hash=hash_for("a"),
+            tag_name="red",
+            facet=None,
+            now=ts(10),
+            exiftool=None,
+        )
+        s.commit()
+    shutil.copy(a, b)
+
+    with Session(make_engine(b)) as s:
+        assert unapprove(
+            s,
+            device_id="B",
+            model="m",
+            pixel_hash=hash_for("a"),
+            tag_name="red",
+            now=ts(20),
+            exiftool=None,
+        )
+        s.commit()
+
+    _merge(a, b, target_gen=1, source_gen=1)
+
+    with Session(make_engine(a)) as s:
+        assert s.exec(select(PhotoTag)).all() == []
+        assert s.exec(select(Prediction)).one().state == PredictionState.rejected

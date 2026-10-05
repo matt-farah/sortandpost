@@ -181,7 +181,7 @@ def test_stacked_rating_writes_jpeg_but_not_raw(
 def test_bulk_rating_and_bulk_tag_skip_raw(
     library: Path, db: Engine, raw_jpeg_pair: tuple[str, str], stacked_settings: Settings
 ) -> None:
-    raw_ph, _jpg_ph = raw_jpeg_pair
+    raw_ph, jpg_ph = raw_jpeg_pair
     before = snapshot_folder(library)
 
     _apply_bulk_rating(stacked_settings, db, [raw_ph], 3)
@@ -192,7 +192,9 @@ def test_bulk_rating_and_bulk_tag_skip_raw(
     with Session(db) as session:
         raw_row = session.get(Rating, raw_ph)
         assert raw_row is not None and raw_row.stars == 3
-        assert photo_keywords(session, raw_ph) == ["sunset"]
+        # a stack's tags live on the member that can carry them: the JPEG
+        assert photo_keywords(session, jpg_ph) == ["sunset"]
+        assert photo_keywords(session, raw_ph) == []
     with ExiftoolClient() as exiftool:
         md = exiftool.read(library / jpg_name)
     assert md.rating == 3

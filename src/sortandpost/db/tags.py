@@ -142,6 +142,62 @@ def remove_manual_tag(
     return True
 
 
+def move_tags(session: Session, *, src: str, dst: str, device_id: str, now: datetime) -> list[str]:
+    """Move *src*'s tags onto *dst*, keeping each one's source (manual / clip):
+    in a stack, tags live on its top photo only, so making another member the
+    top carries them over. DB only -- the caller writes *dst*'s file, and *src*'s
+    file is never touched (writing it would flip the top back). Reserved
+    workflow markers stay put (they fan out to every member already). Emits
+    ``tag_add`` / ``clip_approve`` for *dst* and ``tag_remove`` for *src*
+    (hard constraint #4). Returns the names moved. The caller commits."""
+    rows = session.exec(
+        select(PhotoTag, Tag)
+        .join(Tag, col(PhotoTag.tag_id) == col(Tag.id))
+        .where(PhotoTag.pixel_hash == src)
+    ).all()
+    have = {
+        pt.tag_id for pt in session.exec(select(PhotoTag).where(PhotoTag.pixel_hash == dst)).all()
+    }
+    moved: list[str] = []
+    for row, tag in rows:
+        if tag.name.casefold() in RESERVED_TAG_NAMES:
+            continue
+        if row.tag_id not in have:
+            session.add(
+                PhotoTag(
+                    pixel_hash=dst,
+                    tag_id=row.tag_id,
+                    source=row.source,
+                    score=row.score,
+                    added_at=now,
+                    added_by_device=device_id,
+                    written_to_file=False,
+                )
+            )
+            record_change(
+                session,
+                device_id=device_id,
+                op=ChangeOp.clip_approve if row.source == TagSource.clip else ChangeOp.tag_add,
+                pixel_hash=dst,
+                ts=now,
+                field=tag.name,
+                new_value=tag.name,
+            )
+        session.delete(row)
+        record_change(
+            session,
+            device_id=device_id,
+            op=ChangeOp.tag_remove,
+            pixel_hash=src,
+            ts=now,
+            field=tag.name,
+            old_value=tag.name,
+        )
+        moved.append(tag.name)
+    session.flush()
+    return moved
+
+
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #

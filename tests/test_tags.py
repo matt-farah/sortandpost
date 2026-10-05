@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 
 from sortandpost.db import add_manual_tag, remove_manual_tag
 from sortandpost.db.models import Change, ChangeOp, Photo, PhotoTag, Tag, TagSource
-from sortandpost.db.tags import embeddable_keywords
+from sortandpost.db.tags import embeddable_keywords, move_tags, photo_keywords
 
 NOW = datetime(2026, 1, 2, tzinfo=UTC)
 PH = "a" * 64
@@ -131,3 +131,49 @@ def test_add_rejects_control_characters(engine: Engine) -> None:
 
 def test_embeddable_keywords_drops_unsafe_names_from_older_or_merged_rows() -> None:
     assert embeddable_keywords(["beach", "x\n-if\n1", "to-edit", "a\u2028b"]) == ["beach"]
+
+
+def test_move_tags_keeps_source_skips_reserved_and_logs(engine: Engine) -> None:
+    dst = "b" * 64
+    with Session(engine) as s:
+        _photo(s)
+        _photo(s, dst)
+        add_manual_tag(s, pixel_hash=PH, tag_name="beach", device_id="d1", now=NOW)
+        add_manual_tag(s, pixel_hash=PH, tag_name="to-edit", device_id="d1", now=NOW)
+        add_manual_tag(s, pixel_hash=dst, tag_name="dog", device_id="d1", now=NOW)
+        red = Tag(name="red")
+        s.add(red)
+        s.flush()
+        assert red.id is not None
+        s.add(
+            PhotoTag(
+                pixel_hash=PH,
+                tag_id=red.id,
+                source=TagSource.clip,
+                added_at=NOW,
+                added_by_device="x",
+            )
+        )
+        s.commit()
+
+        moved = move_tags(s, src=PH, dst=dst, device_id="d2", now=NOW)
+        s.commit()
+
+        assert sorted(moved) == ["beach", "red"]
+        assert photo_keywords(s, PH) == ["to-edit"]  # the workflow marker stays
+        assert photo_keywords(s, dst) == ["beach", "dog", "red"]
+        red_link = s.exec(
+            select(PhotoTag).where(PhotoTag.pixel_hash == dst, PhotoTag.tag_id == red.id)
+        ).one()
+        assert red_link.source == TagSource.clip
+        ops = {
+            (c.op, c.pixel_hash, c.field)
+            for c in s.exec(select(Change)).all()
+            if c.device_id == "d2"
+        }
+        assert ops == {
+            (ChangeOp.tag_add, dst, "beach"),
+            (ChangeOp.clip_approve, dst, "red"),
+            (ChangeOp.tag_remove, PH, "beach"),
+            (ChangeOp.tag_remove, PH, "red"),
+        }
