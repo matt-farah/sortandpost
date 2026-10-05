@@ -29,7 +29,17 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   Buffer-style grid — today + 6 days × `posts.SLOT_HOURS` (9 / 12 / 17 / 19 local), one minute
   per day (1-29, `slot_minute` seeded by post id + date, so stable), past slots greyed;
   "Pick a date & time" opens the old date/time inputs (auto-open for an off-grid time).
-- **Next: P2** (CLIP off-switch, Sonnet) — new session. Branch `v3-p0-p1-instagram` ready for a PR.
+- **P2 done** (user-tested): `clip.enabled` (shared `config.yaml`, default on). Off = `scan_clip_once`
+  returns `ClipStats(disabled=True)`, the in-app/standalone indexer skips CLIP, text search falls back to
+  `search.filters.text_match` (file path, applied tag, camera; every term must match, library order),
+  Subject filter stops matching suggestions, `/review` + nav + status-bar count + photo-page ghost pills
+  hidden. Wizard step "AI search" (new library) + Settings → "AI search & tagging" switch with a confirm
+  that can run `clip.model.delete_cached()`; startup deletes this machine's weights when the flag is off.
+  Also fixed: "Download / verify CLIP model" failed in a process launched with `HF_HUB_OFFLINE=1`
+  (huggingface_hub caches it in `constants.HF_HUB_OFFLINE` at import) — `_try_load` now patches the constant.
+  Known quirk: `local/models` is shared by all libraries on a machine, so an off library deletes weights an
+  on library needs (re-downloads). Pre-existing: `_GRID_RESTORE_JS` timeout TypeError on reload (app.py ~1656).
+- **Next: P3a** (achievements engine + profile, Opus).
 
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 

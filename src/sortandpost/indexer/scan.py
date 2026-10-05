@@ -438,8 +438,11 @@ class ClipStats:
     total_rows: int = 0
     skipped_no_model: bool = False
     interrupted: bool = False
+    disabled: bool = False  # ``clip.enabled`` is off
 
     def __str__(self) -> str:
+        if self.disabled:
+            return "CLIP pass skipped: AI search and tagging are turned off"
         if self.skipped_no_model:
             return "CLIP pass skipped: open-clip-torch / torch not installed"
         return (
@@ -466,6 +469,8 @@ def scan_clip_once(
     Shares :data:`_INDEX_LOCK` with :func:`scan_once` (see its docstring): both
     do get-or-create DB writes that aren't safe from two concurrent sessions.
     """
+    if not settings.config.clip.enabled:
+        return ClipStats(disabled=True)
     with _INDEX_LOCK:
         try:
             return _scan_clip_once_locked(

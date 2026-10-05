@@ -217,3 +217,16 @@ def test_clip_pass_batch_size_follows_speed(
     model = _BatchRecorder()
     assert scan_clip_once(settings, model=model).embedded == 10
     assert model.batches == expected
+
+
+def test_clip_pass_is_a_noop_when_clip_is_disabled(settings: Settings) -> None:
+    _jpeg(_lib(settings) / "a.jpg", (200, 10, 10))
+    scan_once(settings)
+    settings.config.clip.enabled = False
+
+    stats = scan_clip_once(settings, model=FakeClipModel())
+    assert stats.disabled
+    assert stats.embedded == 0
+    assert not settings.paths.image_embeddings_file(settings.config.clip.model).exists()
+    with _session(settings) as s:
+        assert s.exec(select(EmbeddingRow)).all() == []

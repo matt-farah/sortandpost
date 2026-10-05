@@ -126,6 +126,10 @@ class SyncConfig(BaseModel):
 
 
 class ClipConfig(BaseModel):
+    # Library-wide switch (rides in the shared config.yaml). Off = no embedding /
+    # tagging pass, no AI text search, no /review; the embeddings already in
+    # sync/ are kept so turning it back on costs nothing.
+    enabled: bool = True
     model: str = "ViT-B-32"
     pretrained: str = "laion2b_s34b_b79k"
     device: str = "auto"  # "auto" -> cuda / mps / cpu; or force "cpu" / "mps" / "cuda"

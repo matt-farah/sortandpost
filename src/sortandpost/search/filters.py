@@ -167,6 +167,34 @@ def browse_photos(
     return list(session.exec(stmt).all())
 
 
+def text_match(session: Session, query: str) -> set[str]:
+    """Plain (non-CLIP) text search, used when ``clip.enabled`` is off: every
+    whitespace-separated term must appear (case-insensitive) in the photo's file
+    path, an applied tag name, or its camera make / model."""
+    terms = [t.lower() for t in query.split() if t]
+    if not terms:
+        return set()
+    out: set[str] | None = None
+    for term in terms:
+        like = f"%{term.replace('%', '').replace('_', '')}%"
+        hit = set(
+            session.exec(
+                select(PhotoPath.pixel_hash).where(func.lower(PhotoPath.path).like(like))
+            ).all()
+        )
+        hit |= set(
+            session.exec(
+                select(PhotoTag.pixel_hash)
+                .join(Tag, col(PhotoTag.tag_id) == col(Tag.id))
+                .where(func.lower(Tag.name).like(like))
+            ).all()
+        )
+        make_model = _lower_coalesce(Photo.camera_make) + " " + _lower_coalesce(Photo.camera_model)
+        hit |= set(session.exec(select(Photo.pixel_hash).where(make_model.like(like))).all())
+        out = hit if out is None else out & hit
+    return out or set()
+
+
 def _tagged_with(session: Session, name: str, *, suggestions: bool = False) -> set[str]:
     out = set(
         session.exec(

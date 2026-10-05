@@ -66,6 +66,14 @@ def clip_available() -> bool:
     return _IMPORT_ERROR is None
 
 
+def _hf_constants() -> Any:
+    try:
+        from huggingface_hub import constants
+    except ImportError:  # pragma: no cover - open_clip depends on it
+        return None
+    return constants
+
+
 def _try_load(config: ClipConfig, cache_dir: Path, *, offline: bool) -> tuple[bool, str]:
     """Attempt to construct the configured model/tokenizer from ``cache_dir``.
 
@@ -86,6 +94,13 @@ def _try_load(config: ClipConfig, cache_dir: Path, *, offline: bool) -> tuple[bo
         os.environ["HF_HUB_OFFLINE"] = "1"
     else:
         os.environ.pop("HF_HUB_OFFLINE", None)
+    # huggingface_hub reads the variable once at import into this constant, so
+    # the environment edit above alone doesn't change a process launched with
+    # HF_HUB_OFFLINE=1 (the documented dev run): patch the constant too.
+    hf_constants = _hf_constants()
+    prev_const = getattr(hf_constants, "HF_HUB_OFFLINE", None)
+    if hf_constants is not None:
+        hf_constants.HF_HUB_OFFLINE = offline
     try:
         model, _, _preprocess = open_clip.create_model_and_transforms(
             config.model,
@@ -99,6 +114,8 @@ def _try_load(config: ClipConfig, cache_dir: Path, *, offline: bool) -> tuple[bo
     except Exception as exc:
         return False, str(exc)
     finally:
+        if hf_constants is not None:
+            hf_constants.HF_HUB_OFFLINE = prev_const
         if prev_offline is None:
             os.environ.pop("HF_HUB_OFFLINE", None)
         else:
@@ -118,6 +135,31 @@ def ensure_downloaded(config: ClipConfig, cache_dir: Path) -> tuple[bool, str]:
     network-wise if everything is already cached. ``(True, "")`` on success,
     ``(False, <reason>)`` on failure (e.g. offline with nothing cached yet)."""
     return _try_load(config, cache_dir, offline=False)
+
+
+def delete_cached(cache_dir: Path) -> int:
+    """Delete the downloaded CLIP weights under *cache_dir* (``local/models``);
+    returns the bytes freed. Nothing synced is touched: the embeddings in
+    ``sync/`` stay, and turning CLIP back on re-downloads through
+    :func:`ensure_downloaded` / the indexer's lazy load. *cache_dir* is shared by
+    every library on this machine, so another library with CLIP on re-downloads."""
+    import shutil
+
+    cache_dir = Path(cache_dir)
+    if not cache_dir.is_dir():
+        return 0
+    freed = 0
+    for child in cache_dir.iterdir():
+        try:
+            if child.is_dir() and not child.is_symlink():
+                freed += sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
+                shutil.rmtree(child)
+            else:
+                freed += child.lstat().st_size
+                child.unlink()
+        except OSError as exc:
+            log.warning("could not remove cached CLIP file %s: %s", child, exc)
+    return freed
 
 
 def known_dim(model: str) -> int | None:

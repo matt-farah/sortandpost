@@ -52,6 +52,9 @@ from sortandpost.clip.model import (
     check_cached as clip_check_cached,
 )
 from sortandpost.clip.model import (
+    delete_cached as clip_delete_cached,
+)
+from sortandpost.clip.model import (
     ensure_downloaded as clip_ensure_downloaded,
 )
 from sortandpost.clip.store import ModelMismatch
@@ -669,6 +672,12 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
             return dark
         with ui.row().classes("items-center gap-1 no-wrap"):
             for path, name, icon in _PAGES:
+                if (
+                    path == "/review"
+                    and State.settings is not None
+                    and not State.settings.config.clip.enabled
+                ):
+                    continue  # no AI suggestions to review
                 with ui.link("", path).classes(
                     "sp-nav flex items-center gap-1" + (" sp-nav-active" if path == active else "")
                 ):
@@ -756,9 +765,11 @@ def _status_bar() -> None:
                     else f"read-only · {State.lock_holder}"
                 )
                 paused = " · indexing paused" if State.indexer_paused.is_set() else ""
+                clip_on = State.settings is None or State.settings.config.clip.enabled
+                suggestions = f"{pending} CLIP suggestions pending · " if clip_on else ""
                 summary.set_text(
                     f"{present}/{total} photos indexed · {total - present} missing · "
-                    f"{pending} CLIP suggestions pending · {lock}{paused}"
+                    f"{suggestions}{lock}{paused}"
                 )
             except Exception:  # never let the status bar break a page
                 summary.set_text("status unavailable")
@@ -881,6 +892,15 @@ def build_ui(settings: Settings) -> None:
     State.apply(manager)
     State.manager = manager
     State.onboarding_pending = settings.onboarding_pending
+    if not settings.config.clip.enabled:
+        # CLIP is off library-wide (the flag rides in the shared config): this
+        # machine -- e.g. one that just joined -- keeps no model weights around.
+        threading.Thread(
+            target=clip_delete_cached,
+            args=(settings.paths.models_dir,),
+            name="sortandpost-clip-forget",
+            daemon=True,
+        ).start()
     # One ordered hook -- NiceGUI runs on_shutdown callbacks in registration
     # order, and the final publish must come after the indexer's last write.
     nicegui_app.on_shutdown(lambda: _shutdown_all(manager))
@@ -2623,6 +2643,13 @@ def build_ui(settings: Settings) -> None:
     @ui.page("/review")
     async def review() -> None:
         _header("/review")
+        if not settings.config.clip.enabled:
+            ui.label(
+                "AI search and tagging are turned off, so there are no suggestions to "
+                "review. You can turn them back on in Settings."
+            ).classes("m-4 sp-muted")
+            ui.link("Open Settings", "/settings").classes("mx-4")
+            return
         model_name = settings.config.clip.model
         vocab = load_vocab(settings.paths.tags_file)
         with _session() as session:
@@ -2869,12 +2896,17 @@ def build_ui(settings: Settings) -> None:
                             _cpu_speed_editor(settings)
                         else:
                             _needs_lock()
-                    with _settings_card("CLIP model files", "model_training"):
-                        _clip_model_editor(settings)
-                        ui.label(
-                            "Rebuild the CLIP matrix from the CLI:  "
-                            "python -m sortandpost.indexer --reembed"
-                        ).classes("text-xs sp-faint")
+                    with _settings_card("AI search & tagging", "model_training"):
+                        if writable:
+                            _clip_toggle_editor(settings)
+                        else:
+                            _needs_lock()
+                        if settings.config.clip.enabled:
+                            _clip_model_editor(settings)
+                            ui.label(
+                                "Rebuild the CLIP matrix from the CLI:  "
+                                "python -m sortandpost.indexer --reembed"
+                            ).classes("text-xs sp-faint")
                     with _settings_card("Image stacking", "layers"):
                         if writable:
                             _stacking_editor(settings)
@@ -3249,15 +3281,19 @@ def _photo_tag_state(
             .where(PhotoTag.pixel_hash == pixel_hash)
             .order_by(col(Tag.name))
         ).all()
-        pending = session.exec(
-            select(Prediction.tag_name, Prediction.score)
-            .where(
-                Prediction.pixel_hash == pixel_hash,
-                Prediction.model == settings.config.clip.model,
-                Prediction.state == PredictionState.pending,
-            )
-            .order_by(col(Prediction.score).desc(), col(Prediction.tag_name))
-        ).all()
+        pending = (
+            session.exec(
+                select(Prediction.tag_name, Prediction.score)
+                .where(
+                    Prediction.pixel_hash == pixel_hash,
+                    Prediction.model == settings.config.clip.model,
+                    Prediction.state == PredictionState.pending,
+                )
+                .order_by(col(Prediction.score).desc(), col(Prediction.tag_name))
+            ).all()
+            if settings.config.clip.enabled
+            else []
+        )
     have_names = {n.casefold() for n, _ in have}
     return (
         [(n, TagSource(s)) for n, s in have if n.casefold() not in RESERVED_TAG_NAMES],
@@ -3929,6 +3965,97 @@ def _app_data_editor(settings: Settings) -> None:
 
     with ui.expansion("Change folder", icon="swap_horiz").classes("w-full"):
         _shared_folder_picker(str(paths.sync), on_use=_use, button="Save & restart")
+
+
+def _clip_toggle_editor(settings: Settings, *, autosave: bool = False) -> None:
+    """The library-wide ``clip.enabled`` switch (shared ``config.yaml``).
+
+    Off: no embedding / tagging pass, text search falls back to file names, tags
+    and camera, and ``/review`` disappears. Embeddings already in ``sync/`` are
+    kept. In Settings, turning it off asks first and can also delete this
+    computer's downloaded weights; turning it on downloads them again through
+    the usual indexer load / "Download / verify" path. ``autosave`` is the
+    welcome wizard (nothing downloaded yet, so no confirm)."""
+    ccfg = settings.config.clip
+    ui.label(
+        "Sort and search photos by what's in them — “dog on the beach” — and get "
+        "tag suggestions to approve. It runs entirely on this computer, but needs "
+        "a one-time ~600 MB model download and some CPU while indexing. Off, search "
+        "matches file names, tags and camera only."
+    ).classes("text-xs sp-faint max-w-xl")
+    switch = ui.switch("Turn on AI search & tagging", value=ccfg.enabled)
+
+    def _store(value: bool) -> None:
+        ccfg.enabled = value
+        settings.config.dump(settings.paths.config_file)
+
+    if autosave:
+        switch.on_value_change(lambda e: _store(bool(e.value)))
+        return
+
+    def _revert() -> None:
+        switch.set_value(ccfg.enabled)
+
+    def _confirm_off() -> None:
+        with ui.dialog() as dialog, ui.card().classes("gap-2 max-w-md"):
+            ui.label("Turn off AI search & tagging?").classes("font-medium")
+            ui.label(
+                "No more CLIP embedding or tag suggestions, and the Review page goes "
+                "away. Your photos, ratings, approved tags and existing embeddings are "
+                "kept, so turning it back on later costs nothing but the model download."
+            ).classes("text-xs sp-muted")
+            forget = ui.checkbox(
+                "Also delete the downloaded model files from this computer", value=True
+            )
+            ui.label(
+                f"Frees about 600 MB in {settings.paths.models_dir}. That folder is shared "
+                "by every library on this computer; another library with AI turned on "
+                "downloads it again."
+            ).classes("text-xs sp-faint")
+            with ui.row().classes("w-full justify-end gap-2"):
+
+                def _cancel() -> None:
+                    dialog.close()
+                    _revert()
+
+                async def _go() -> None:
+                    dialog.close()
+                    _store(False)
+                    freed = 0
+                    if forget.value:
+                        State.clip_model = None  # drop the in-memory copy first
+                        freed = (
+                            await nicegui_run.io_bound(
+                                clip_delete_cached, settings.paths.models_dir
+                            )
+                            or 0
+                        )
+                    ui.notify(
+                        "AI search & tagging turned off"
+                        + (f" · freed {freed / 1e6:,.0f} MB" if freed else "")
+                    )
+                    ui.navigate.reload()
+
+                ui.button("Cancel", on_click=_cancel).props("flat")
+                ui.button("Turn off", on_click=_go).props("color=primary")
+        dialog.on("hide", lambda _: _revert() if ccfg.enabled else None)
+        dialog.open()
+
+    def _changed(e: Any) -> None:
+        value = bool(e.value)
+        if value == ccfg.enabled:
+            return
+        if value:
+            _store(True)
+            ui.notify(
+                "AI search & tagging turned on — the model downloads on the next index pass "
+                "(or use “Download / verify” below)"
+            )
+            ui.navigate.reload()
+        else:
+            _confirm_off()
+
+    switch.on_value_change(_changed)
 
 
 def _clip_model_editor(settings: Settings) -> None:
@@ -4780,7 +4907,14 @@ def _filter_bar(
 
     with ui.row().classes("w-full items-center gap-2 px-4 pt-3 flex-wrap"):
         box = (
-            ui.input(placeholder="Search photos — e.g. dog on the beach", value=lq.q)
+            ui.input(
+                placeholder=(
+                    "Search photos — e.g. dog on the beach"
+                    if settings.config.clip.enabled
+                    else "Search file names, tags, camera"
+                ),
+                value=lq.q,
+            )
             .props("dense outlined clearable")
             .classes("min-w-64 flex-1")
         )
@@ -5709,6 +5843,14 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
                             _read_only_note()
                         _nav()
 
+                if not joined:
+                    with ui.step("ai", title="AI search", icon="auto_awesome"):
+                        if writable:
+                            _clip_toggle_editor(settings, autosave=True)
+                        else:
+                            _read_only_note()
+                        _nav()
+
                 with ui.step("look", title="Look", icon="palette"):
                     _theme_editor(settings, dark)
                     _nav()
@@ -5733,6 +5875,7 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
                 ("Scanning", speed),
                 ("Skipped folders", ", ".join(cfg.indexer.exclude_dir_names) or "none"),
                 ("Stacking", "on" if cfg.stacking.enabled else "off"),
+                ("AI search & tagging", "on" if cfg.clip.enabled else "off"),
                 (
                     "Deleting",
                     "the whole stack"
