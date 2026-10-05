@@ -236,7 +236,9 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
     .sortandpost.lock          # {device_id, hostname, pid, acquired_at, heartbeat_at, db_generation}
     config.yaml
     devices/<slug(hostname)>-<device_id[:8]>/library.json # PER-DEVICE library folders (see below)
+    devices/<…>/achievements.json                         # PER-DEVICE achievement unlocks (union = truth)
     posts/<post_id>.json       # robopost posts, one file each (see "Posting" below)
+    profile.json               # achievements profile: {name, mode} (last-writer-wins; see "Achievements")
     tags.yaml                  # user-editable zero-shot vocabulary (facet-grouped)
     snapshots/sortandpost-YYYYMMDD-HHMMSS.db.zst          # last N clean snapshots (corruption recovery)
     thumbnails/<hh>/<pixel_hash>_<size>.webp              # content-addressed, write-once, conflict-free
@@ -577,6 +579,8 @@ The **only** module allowed to write under a library root. Wraps a persistent
   only, see "Stacks write one file"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
   prev/next walk the same resolved view (`resolve_view`, cached per query for 30 min).
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
+- `/achievements` — achievement cards + score (see "Achievements"); reached from the header's
+  name + 🏆 chip, hidden when the mode is Off.
 - `/review` — pending CLIP predictions grouped by tag for bulk approve/reject (hidden when `clip.enabled` is false).
 - `/welcome` — first-run onboarding wizard (see "First-run onboarding"); every other page
   redirects here until this machine has finished it.
@@ -640,6 +644,36 @@ How they're applied:
   Tailwind grays / hex colors — so new UI follows the season. Amber stays for warnings / the
   edit flag. Quasar's `!important` color utilities live in NiceGUI's `quasar_importants` cascade
   layer; to override one, put the `!important` rule in `@layer theme` (earliest layer wins).
+
+## Achievements (V3 #2; `sortandpost.achievements`, `achievements_ui`)
+
+- **Definitions**: a bundled copy of `Achievements/Achievements.md` in
+  `resources/achievements/` (keep the two identical — a test checks; Angel/Devil art sits beside
+  it). The free-text Trigger column is parsed: "Index/Rate/Post/Create N photos/posts/collections"
+  (+ "cannot be triggered on first day") or an event (Devil mode, Konami, "github" search). An
+  unparseable row is skipped with a warning. The key is the name's slug — renaming a row
+  orphans its unlocks.
+- **Counts are computed** from existing state (`compute_metrics`): photo rows, rated photos
+  (`stars > 0`, a stack counts once), collections, posts sent to at least one channel. So an
+  existing library unlocks several at once. "First day" = the earliest `photos.first_indexed_at`
+  is today (local date).
+- **Unlocks** go in **per-device** `sync/devices/<…>/achievements.json`
+  (`{"unlocked": {key: ts}, "revealed": {key: ts}}`);
+  a device only writes its own file, the union over every device (earliest ts) is the truth, so
+  nothing needs a merge and nothing is dropped. Unlocks are sticky. Written even in read-only
+  mode (own file only, like `library.json`). Like collections/posts, a deliberate exception to
+  constraint #4.
+- **Profile** (`sync/profile.json`, last-writer-wins): name + mode Angel / Devil / Off. Off hides
+  the header chip, toasts and the page, but unlocks keep counting. Edited in Settings → Profile
+  & achievements and the wizard's "You" step (new library, or a joined one with no profile yet).
+- **Runtime**: one background thread re-checks every 10 s (`achievements_ui.poke()` after a
+  rating / new collection runs it sooner); each tab's header chip polls the tracker's in-memory
+  feed every 2 s and toasts new unlocks **without naming them** ("Achievement unlocked!" +
+  a Reveal link) and shows an "N new" badge. On `/achievements` each new unlock is a sealed,
+  glowing card the user clicks to open (a reveal dialog: persona art, name, points, text), one
+  at a time, so a batch can each be read. **The score only counts revealed unlocks** —
+  a sealed one adds its points when it's clicked open. Reveals union across devices like unlocks. Konami listener lives on
+  `/achievements`; the "github" hook is the `/` search (`q`).
 
 ## Posting (robopost.app)
 

@@ -42,7 +42,13 @@ from nicegui.events import KeyEventArguments, ValueChangeEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
-from sortandpost import __version__
+from sortandpost import __version__, achievements_ui
+from sortandpost.achievements import (
+    EVENT_GITHUB_SEARCH,
+    MODE_LABELS,
+    load_profile,
+    profile_file,
+)
 from sortandpost.clip.model import (
     ClipModel,
     ClipModelUnavailable,
@@ -685,6 +691,7 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
                     ui.label(name)
         with ui.row().classes("items-center gap-2 no-wrap"):
             _inject_helper()
+            achievements_ui.header_chip()
             if State.write_mode == WriteMode.writable:
                 ui.label("writable").classes("sp-chip text-primary")
             else:
@@ -936,6 +943,8 @@ def build_ui(settings: Settings) -> None:
             yield session
 
     register_post_pages(settings, engine, thumb_small)
+    achievements_ui.start(settings, engine)
+    achievements_ui.register_pages(settings)
 
     @ui.page("/")
     async def library(request: Request) -> None:
@@ -944,6 +953,8 @@ def build_ui(settings: Settings) -> None:
         stack_cfg = settings.config.stacking
         lq = LibraryQuery.from_pairs(request.query_params.multi_items())
         mode = lq.mode
+        if "github" in lq.q.casefold():
+            achievements_ui.record_event(EVENT_GITHUB_SEARCH)  # the "Reader" secret
         data = await nicegui_run.io_bound(_load_library, settings, engine, lq)
         if data is None:  # io_bound cancelled / app shutting down
             return
@@ -2169,6 +2180,7 @@ def build_ui(settings: Settings) -> None:
                         ui.notify("Enter a name (letters, numbers, spaces).", type="warning")
                         return
                     c = create_collection(settings.paths, name, notes=notes_in.value or "")
+                    achievements_ui.poke()
                     dialog.close()
                     ui.navigate.to(f"/collections/{c.id}" + ("?add=1" if then_add else ""))
 
@@ -2920,6 +2932,16 @@ def build_ui(settings: Settings) -> None:
                         _open_with_app_editor(settings)
 
                 with (
+                    _settings_section("profile"),
+                    _settings_card("Profile", "badge", wide=True),
+                ):
+                    if writable:
+                        achievements_ui.profile_editor(settings)
+                    else:
+                        _needs_lock()
+                    ui.link("See your achievements", achievements_ui.PAGE_URL).classes("text-sm")
+
+                with (
                     _settings_section("posting"),
                     _settings_card(f"Posting with {POSTING_SERVICE}", "send", wide=True),
                 ):
@@ -2954,6 +2976,7 @@ _SETTINGS_SECTIONS: list[tuple[str, str, str]] = [  # (anchor key, title, icon)
     ("library", "Library", "photo_library"),
     ("indexing", "Indexing & AI", "memory"),
     ("appearance", "Appearance & apps", "palette"),
+    ("profile", "Profile & achievements", "emoji_events"),
     ("posting", "Posting", "send"),
     ("deleting", "Deleting", "delete"),
     ("sync", "Sync & storage", "cloud_sync"),
@@ -3395,6 +3418,7 @@ def _apply_rating(settings: Settings, engine: Engine, pixel_hash: str, stars: in
                 exiftool=_file_exif(session, stacks, target, exiftool),
             )
         session.commit()
+    achievements_ui.poke()
     return changed
 
 
@@ -3484,6 +3508,7 @@ def _apply_bulk_rating(settings: Settings, engine: Engine, hashes: list[str], st
                 exiftool=_file_exif(session, stacks, target, exiftool),
             )
         session.commit()
+    achievements_ui.poke()
     return len(hashes)
 
 
@@ -5399,6 +5424,7 @@ def _collection_add_button(
                 if not name:
                     return
                 coll = create_collection(settings.paths, name)
+                achievements_ui.poke()
                 dialog.close()
                 _pick(coll)
 
@@ -5851,6 +5877,14 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
                             _read_only_note()
                         _nav()
 
+                if not joined or not profile_file(settings.paths).exists():
+                    with ui.step("profile", title="You", icon="emoji_events"):
+                        if writable:
+                            achievements_ui.profile_editor(settings, notify=False)
+                        else:
+                            _read_only_note()
+                        _nav()
+
                 with ui.step("look", title="Look", icon="palette"):
                     _theme_editor(settings, dark)
                     _nav()
@@ -5862,6 +5896,11 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
                             "Start using sortandpost", icon="play_arrow", on_click=lambda: _finish()
                         ).props("color=primary")
                         ui.button("Back", on_click=stepper.previous).props("flat")
+
+        def _profile_summary() -> str:
+            profile = load_profile(settings.paths)
+            name = f" · {profile.name}" if profile.name else ""
+            return f"{MODE_LABELS[profile.mode]} mode{name}"
 
         def _render_summary() -> None:
             summary.clear()
@@ -5876,6 +5915,7 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
                 ("Skipped folders", ", ".join(cfg.indexer.exclude_dir_names) or "none"),
                 ("Stacking", "on" if cfg.stacking.enabled else "off"),
                 ("AI search & tagging", "on" if cfg.clip.enabled else "off"),
+                ("Achievements", _profile_summary()),
                 (
                     "Deleting",
                     "the whole stack"
