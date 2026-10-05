@@ -317,7 +317,7 @@ def _run_cycle(
         log.info("indexer cycle: %s", stats)
         if stats.interrupted:
             return False
-        if clip_model is not None:
+        if clip_model is not None and settings.config.clip.enabled:
             clip_stats = scan_clip_once(settings, model=clip_model, interrupt=interrupt)
             log.info("indexer cycle: %s", clip_stats)
             if clip_stats.interrupted:

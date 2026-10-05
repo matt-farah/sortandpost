@@ -103,3 +103,17 @@ def test_check_cached_surfaces_the_failure_reason(
 
     assert ok is False
     assert "boom" in detail
+
+
+def test_delete_cached_removes_weights_and_reports_bytes(tmp_path) -> None:
+    from sortandpost.clip.model import delete_cached
+
+    cache = tmp_path / "models"
+    (cache / "models--x" / "blobs").mkdir(parents=True)
+    (cache / "models--x" / "blobs" / "w.bin").write_bytes(b"x" * 1000)
+    (cache / "stray.txt").write_bytes(b"y" * 10)
+
+    assert delete_cached(cache) == 1010
+    assert cache.is_dir()
+    assert list(cache.iterdir()) == []
+    assert delete_cached(tmp_path / "missing") == 0

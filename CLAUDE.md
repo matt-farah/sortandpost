@@ -287,6 +287,7 @@ sync:
   snapshot_keep: 10
   sync_thumbnails: true            # thumbnails can be GBs; set false to keep them in local/ only
 clip:
+  enabled: true       # false = no embedding/tagging pass, no AI search (text falls back to names/tags/camera), no /review
   model: ViT-B-32
   pretrained: laion2b_s34b_b79k
   device: auto        # auto -> cuda / Apple MPS / cpu; Docker on macOS always lands on cpu
@@ -576,7 +577,7 @@ The **only** module allowed to write under a library root. Wraps a persistent
   only, see "Stacks write one file"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
   prev/next walk the same resolved view (`resolve_view`, cached per query for 30 min).
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
-- `/review` — pending CLIP predictions grouped by tag for bulk approve/reject.
+- `/review` — pending CLIP predictions grouped by tag for bulk approve/reject (hidden when `clip.enabled` is false).
 - `/welcome` — first-run onboarding wizard (see "First-run onboarding"); every other page
   redirects here until this machine has finished it.
 - `/settings` — organized into categories (sticky side rail of anchors on wide windows; each

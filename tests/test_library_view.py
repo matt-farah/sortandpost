@@ -506,3 +506,38 @@ def test_posted_filter(session: Session, settings: Settings) -> None:
     assert _ids(session, settings, "posted=1") == ["a", "c"]
     assert _ids(session, settings, "posted=0") == ["b", "d", "e"]
     assert _ids(session, settings, "posted=0&stars=5") == []
+
+
+# --------------------------------------------------------------------------- #
+# clip.enabled = false: plain text search
+# --------------------------------------------------------------------------- #
+def test_text_query_without_clip_matches_names_tags_and_camera(
+    session: Session, settings: Settings
+) -> None:
+    _seed(session)
+    settings.config.clip.enabled = False
+
+    def boom() -> object:
+        raise AssertionError("CLIP must not be touched when disabled")
+
+    kw = {"encoder": boom}
+    assert _ids(session, settings, "q=trip", **kw) == ["a", "b", "d"]  # path; newest first
+    assert _ids(session, settings, "q=dog", **kw) == ["a"]  # applied tag
+    assert _ids(session, settings, "q=fujifilm", **kw) == ["b"]  # camera
+    assert _ids(session, settings, "q=trip+canon", **kw) == ["a"]  # every term must match
+    assert _ids(session, settings, "q=nothing", **kw) == []
+
+
+def test_text_query_without_clip_respects_filters(session: Session, settings: Settings) -> None:
+    _seed(session)
+    settings.config.clip.enabled = False
+    assert _ids(session, settings, "q=trip&stars=5") == ["a"]
+
+
+def test_subject_filter_ignores_clip_suggestions_when_disabled(
+    session: Session, settings: Settings
+) -> None:
+    _seed(session)  # d has only a pending "dog" suggestion; a has the applied tag
+    assert _ids(session, settings, "tag=dog") == ["a", "d"]
+    settings.config.clip.enabled = False
+    assert _ids(session, settings, "tag=dog") == ["a"]

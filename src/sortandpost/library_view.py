@@ -51,7 +51,7 @@ from sortandpost.grouping import (
 )
 from sortandpost.library_roots import LibraryRoot
 from sortandpost.posts import posted_hashes
-from sortandpost.search.filters import PhotoFilter, allowed_hashes
+from sortandpost.search.filters import PhotoFilter, allowed_hashes, text_match
 from sortandpost.search.service import TextEncoder, semantic_search
 from sortandpost.stacks import StackIndex, build_stacks
 
@@ -290,7 +290,7 @@ class LibraryQuery:
             return f"Can't read the date “{self.dates}” — try 2025, 2025-2026 or 20260103-20260210."
         return None
 
-    def to_filter(self) -> PhotoFilter:
+    def to_filter(self, *, suggestions: bool = True) -> PhotoFilter:
         taken_from, taken_to = self.date_bounds()
         tags = list(self.tags)
         tags_all = tags if self.tagmode == "all" else []
@@ -305,7 +305,7 @@ class LibraryQuery:
             taken_to=taken_to,
             tags_all=tags_all,
             tags_any=tags_any,
-            tag_suggestions=True,
+            tag_suggestions=suggestions,
             has_gps=True if self.gps else None,
             only_duplicates=self.dups,
             include_missing=self.missing,
@@ -413,8 +413,20 @@ def resolve_view(
     all_ids = list_photo_ids(session, include_missing=lq.missing)
     reps_all = [h for h in all_ids if not stacks.is_hidden_member(h)]
     notice: str | None = None
+    suggest = settings.config.clip.enabled  # subject filters also match CLIP suggestions
 
-    if lq.q:
+    if lq.q and not settings.config.clip.enabled:
+        # AI search is off: plain match on file names, tags and camera, kept in
+        # the library's own order (there is no relevance score to rank by).
+        matched = text_match(session, lq.q)
+        match_reps = {stacks.representative(m) for m in matched}
+        ids = [h for h in reps_all if h in match_reps]
+        if lq.has_filters():
+            allowed = allowed_hashes(session, lq.to_filter(suggestions=suggest))
+            if allowed is not None:
+                reps = {stacks.representative(h) for h in allowed}
+                ids = [h for h in ids if h in reps]
+    elif lq.q:
         hits: list[str] = []
         if encoder is None:
             notice = (
@@ -424,14 +436,19 @@ def resolve_view(
         else:
             try:
                 found = semantic_search(
-                    session, settings, encoder(), lq.q, limit=SEARCH_LIMIT, flt=lq.to_filter()
+                    session,
+                    settings,
+                    encoder(),
+                    lq.q,
+                    limit=SEARCH_LIMIT,
+                    flt=lq.to_filter(suggestions=suggest),
                 )
                 hits = [h.pixel_hash for h in found]
             except ClipModelUnavailable:
                 notice = "The CLIP model couldn't be loaded — text search is unavailable."
         ids = _first_rep_order(hits, stacks)
     elif lq.has_filters():
-        allowed = allowed_hashes(session, lq.to_filter())
+        allowed = allowed_hashes(session, lq.to_filter(suggestions=suggest))
         if allowed is None:
             ids = reps_all
         else:
