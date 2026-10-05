@@ -62,6 +62,7 @@ packages = ["src/sortandpost"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests", "tools"]
+extend-exclude = ["tools/reference"]  # user-supplied reference scripts, kept verbatim
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "TID", "RUF"]

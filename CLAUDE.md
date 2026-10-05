@@ -15,7 +15,7 @@ single **app-data folder** that the user drops into any third-party file-sync to
 Google Drive, Synology Drive, Dropbox, …). Opening the app on another machine picks up the
 existing index, ratings, tags, and embeddings with **no rebuild**.
 
-The codebase does not exist yet. This document is the architecture spec to build from. Keep it
+This document is the architecture spec the code was built from (V1 + V2 shipped). Keep it
 updated as decisions are made or changed.
 
 ---
