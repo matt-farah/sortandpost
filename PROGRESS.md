@@ -71,7 +71,26 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   `sortandpost.posting` is imported first. Tests: `test_posting_client.py` (every check × every
   spec), `test_ratelimit.py`, `test_postiz.py`, send-path provider tests.
 - **Next: P4b** (Buffer, only if API access is available — a new spec module) or **P5b** (apply
-  the copy CSV).
+  the copy CSV — waiting on the user's edits to `copy/onboarding_settings.csv`).
+
+### P4b handoff (Buffer)
+- PR #54 (P5a + P4a) is open on `v3-p4a-posting-providers`; branch P4b from it (or from main once
+  merged; see the stacked-PR note in memory: retarget before deleting the base branch).
+- **First check Buffer API access** (new developer apps / keys may not be available); if there is
+  none, P4b is skipped.
+- Recipe: add `src/sortandpost/posting/buffer.py` with a `SPEC = ProviderSpec(...)` +
+  `build_payload(CreateRequest)`, register it in `posting/__init__.py` `PROVIDERS`. Shared code
+  should need **no** edits — if Buffer needs something new (OAuth refresh, GraphQL body, a
+  different upload flow), add a generic `ProviderSpec` field rather than a vendor branch
+  (user rule: no vendor lock-in; limits/capabilities are spec values).
+- `tests/test_posting_client.py` automatically runs every client check against the new spec;
+  add a small `tests/test_buffer.py` for its payload (like `test_postiz.py`).
+- Verify live like Postiz: a scratchpad probe reading the key via `secrets_store.get_key(SPEC)`;
+  read-only calls first, then (with the user's OK) one upload + one **draft**. Never retry a
+  create; on a timeout check whether it was created before doing anything else.
+- Open P4a follow-ups: Postiz first comment assumed working (`value[1]`; flip
+  `first_comment=False` if not); Pinterest board is a text field (no live Pinterest channel to
+  check board listing); Instagram via Postiz untested live.
 
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 
