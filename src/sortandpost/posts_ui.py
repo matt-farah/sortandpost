@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any
@@ -23,11 +24,19 @@ from sqlalchemy.engine import Engine
 
 from sortandpost.collections import get_collection, load_collections
 from sortandpost.config import Settings
-from sortandpost.post_export import resolve_sources
+from sortandpost.post_export import (
+    IgSpec,
+    resolve_sources,
+    upright_sizes,
+)
 from sortandpost.post_send import is_in_flight, resolve_interrupted, send_post
 from sortandpost.posts import (
+    IG_MAX_BORDER,
+    MIN_LEAD,
     POST_TYPES,
+    SLOT_HOURS,
     Post,
+    SendGroup,
     SendMode,
     create_post,
     delete_post,
@@ -35,8 +44,10 @@ from sortandpost.posts import (
     get_post,
     list_posts,
     load_channel_cache,
+    plan_send,
     save_channel_cache,
     save_post,
+    schedule_slots,
     selected_networks,
     validate,
 )
@@ -53,11 +64,14 @@ from sortandpost.secrets_store import (
     set_robopost_key,
 )
 from sortandpost.sync import WriteMode
+from sortandpost.sync.clock import utcnow
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 log = logging.getLogger(__name__)
+
+_HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
 _STATUS_LABEL = {
     "draft": ("Draft", "sp-muted"),
@@ -66,6 +80,31 @@ _STATUS_LABEL = {
     "scheduled": ("Scheduled", "text-emerald-600 dark:text-emerald-400"),
     "failed": ("Failed", "text-red-600 dark:text-red-400"),
 }
+_PARTLY_SENT = ("Partly sent", "text-amber-600 dark:text-amber-400")
+
+
+def _status_label(p: Post) -> tuple[str, str]:
+    if p.status == "failed" and p.partly_sent:
+        return _PARTLY_SENT
+    return _STATUS_LABEL.get(p.status, (p.status, ""))
+
+
+def _group_title(g: SendGroup) -> str:
+    if g.is_instagram:
+        return "Instagram"
+    return "Other channels" if g.name == "other" else "All channels"
+
+
+def _ig_size_text(spec: IgSpec | None) -> str:
+    if spec is None:
+        return "already in an Instagram ratio, used as they are"
+    text = f"fitted onto {spec.width}x{spec.height}"
+    if spec.border:
+        r, g, b = spec.rgb
+        text += f" with a {spec.border} px #{r:02x}{g:02x}{b:02x} border"
+    return text
+
+
 _EDGE_CHOICES = {1080: "1080 px", 2048: "2048 px", 3072: "3072 px", 4096: "4096 px", 0: "Full size"}
 _TZ_JS = "Intl.DateTimeFormat().resolvedOptions().timeZone"
 
@@ -191,7 +230,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         colls = {c.id: c.name for c in load_collections(settings.paths)}
         with ui.column().classes("w-full max-w-4xl gap-2 p-4"):
             for p in posts:
-                label, color = _STATUS_LABEL.get(p.status, (p.status, ""))
+                label, color = _status_label(p)
                 with (
                     ui.link(target=f"/posts/{p.id}").classes("w-full no-underline"),
                     ui.card().classes("w-full flex-row items-center gap-4 p-2"),
@@ -238,8 +277,10 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             if names is None:
                 return
             state["names"] = names
+            state["sizes"] = await nicegui_run.io_bound(upright_sizes, engine, list(cur().photos))
             with client:
                 _photos.refresh()
+                _ig_preview.refresh()
                 _checks.refresh()
 
         ui.button("← All posts", on_click=lambda: ui.navigate.to("/posts")).props(
@@ -250,7 +291,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         @ui.refreshable
         def _top() -> None:
             p = cur()
-            label, color = _STATUS_LABEL.get(p.status, (p.status, ""))
+            label, color = _status_label(p)
             with ui.row().classes("items-center gap-3 px-4 w-full"):
                 title = (
                     ui.input(value=p.title)
@@ -274,15 +315,25 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 ui.button("Delete", icon="delete", on_click=_confirm_delete).props(
                     "flat dense no-caps color=negative"
                 )
+            chans, _ = load_channel_cache(settings.paths)
+            names = {c.id: c.name for c in chans}
             if p.status == "sending" and not is_in_flight(p.id):
+                part = p.sending_part()
+                doubt = ", ".join(names.get(c, c) for c in part["channel_ids"]) if part else ""
                 with ui.card().classes(
                     "mx-4 bg-amber-50 dark:bg-amber-950 border border-amber-400 gap-1"
                 ):
                     ui.label("This send was interrupted before robopost confirmed it.").classes(
                         "font-medium"
                     )
+                    if p.sent_channel_ids():
+                        ui.label(
+                            "Already sent (not in question): "
+                            + ", ".join(names.get(c, c) for c in sorted(p.sent_channel_ids()))
+                        ).classes("text-sm")
                     ui.label(
-                        "The post may or may not exist in robopost. Check robopost, then tell "
+                        ("The post to " + doubt if doubt else "The post")
+                        + " may or may not exist in robopost. Check robopost, then tell "
                         "sortandpost what happened — it never re-sends on its own."
                     ).classes("text-sm")
                     with ui.row().classes("gap-2"):
@@ -292,6 +343,15 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                         ui.button(
                             "It wasn't sent", on_click=lambda: _resolve(False), icon="undo"
                         ).props("flat")
+            elif p.partly_sent:
+                left = [c for c in p.channel_ids if c not in p.sent_channel_ids()]
+                ui.label(
+                    "Partly sent — already in robopost for "
+                    + ", ".join(names.get(c, c) for c in sorted(p.sent_channel_ids()))
+                    + ". Sending again only goes to "
+                    + (", ".join(names.get(c, c) for c in left) or "no one (it's then marked sent)")
+                    + "."
+                ).classes("px-4 text-sm text-amber-700 dark:text-amber-400")
             elif p.sent:
                 ui.label(
                     "Sent to robopost — edit or cancel it there (robopost's API can't change it "
@@ -501,18 +561,20 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 by_net: dict[str, list[Channel]] = {}
                 for c in chans:
                     by_net.setdefault(c.network, []).append(c)
+                done = p.sent_channel_ids()
                 for net, group in sorted(by_net.items()):
                     ui.label(net.title()).classes("text-xs sp-faint pt-1")
                     for c in group:
-                        cb = ui.checkbox(
-                            c.name + ("  (reconnect in robopost)" if c.must_reconnect else ""),
-                            value=c.id in p.channel_ids,
-                        )
-                        cb.set_enabled(p.editable)
+                        note = "  (reconnect in robopost)" if c.must_reconnect else ""
+                        if c.id in done:
+                            note = "  (sent)"
+                        cb = ui.checkbox(c.name + note, value=c.id in p.channel_ids or c.id in done)
+                        cb.set_enabled(p.editable and c.id not in done)
                         cb.on_value_change(lambda e, cid=c.id: _toggle_channel(cid, bool(e.value)))
                 nets = selected_networks(p, chans)
                 if "instagram" in nets:
                     _post_type_row("instagram", "Instagram post type", POST_TYPES)
+                    _ig_sizing()
                 if "facebook" in nets:
                     _post_type_row("facebook", "Facebook post type", POST_TYPES[:2])
                 if "pinterest" in nets:
@@ -531,6 +593,137 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             cur().network_settings.setdefault(net, {})[key] = value
             _save()
 
+        def _sizes() -> list[tuple[int, int]]:
+            sizes: dict[str, tuple[int, int]] = state.get("sizes", {})
+            return [sizes[h] for h in cur().photos if h in sizes]
+
+        def _ig_spec() -> IgSpec | None:
+            """The canvas for this post's Instagram photos (None = used as they are)."""
+            return cur().ig_spec(_sizes())
+
+        def _ig_sizing() -> None:
+            p = cur()
+            ui.label(
+                "Instagram needs every photo in a post to be the same size. Photos are fitted "
+                "onto one canvas (never cropped)."
+            ).classes("text-xs sp-faint pt-1")
+            if not p.ig_story():
+                with ui.row().classes("items-center gap-2 pt-1"):
+                    ui.label("Instagram format").classes("text-sm")
+                    labels = {
+                        "portrait": "Portrait 1080x1350",
+                        "square": "Square 1080x1080",
+                        "landscape": "Landscape 1080x566",
+                    }
+                    t = ui.toggle(labels, value=p.ig_format()).props("dense no-caps")
+                    t.set_enabled(p.editable)
+
+                    def _fmt(e: Any) -> None:
+                        _set_setting("instagram", "format", str(e.value))
+                        _ig_preview.refresh()
+
+                    t.on_value_change(_fmt)
+            else:
+                ui.label("Story format 1080x1920").classes("text-sm pt-1")
+            with ui.row().classes("items-center gap-3 pt-1"):
+                ui.label("Border").classes("text-sm")
+                ui.label("None").classes("text-xs sp-faint")
+                bd = ui.slider(min=0, max=IG_MAX_BORDER, step=1, value=p.ig_border()).classes(
+                    "w-48"
+                )
+                ui.label("Large").classes("text-xs sp-faint")
+                ui.label("Border color").classes("text-sm pl-4")
+                # Native browser colour chooser + a hex field, kept in step.
+                picker = (
+                    ui.element("input")
+                    .props(f'type=color value="{p.ig_color()}"')
+                    .style("width:2.5rem;height:2rem;padding:0;border:0;background:none")
+                )
+                hexbox = (
+                    ui.input(value=p.ig_color(), placeholder="#rrggbb")
+                    .props("dense outlined maxlength=7 style=width:7rem")
+                    .classes("font-mono")
+                )
+                for w in (bd, hexbox):
+                    w.set_enabled(p.editable)
+                if not p.editable:
+                    picker.props("disabled")
+
+                def _border(_e: Any = None) -> None:
+                    _set_setting("instagram", "border", str(int(bd.value or 0)))
+                    _ig_preview.refresh()
+
+                bd.on("change", _border)  # on release: one save, not one per drag step
+
+                def _apply_color(value: str) -> None:
+                    v = value.strip()
+                    if not _HEX_RE.match(v):
+                        return
+                    v = v.lower() if v.startswith("#") else "#" + v.lower()
+                    _set_setting("instagram", "padColor", v)
+                    if hexbox.value != v:
+                        hexbox.set_value(v)
+                    picker.props(f'value="{v}"')
+                    picker.update()
+                    _ig_preview.refresh()
+
+                hexbox.on_value_change(lambda e: _apply_color(str(e.value or "")))
+                picker.on(
+                    "change",
+                    lambda e: _apply_color(str(e.args)),
+                    js_handler="(e) => emit(e.target.value)",
+                )
+            _ig_preview()
+
+        @ui.refreshable
+        def _ig_preview() -> None:
+            p = cur()
+            if "instagram" not in selected_networks(p, load_channel_cache(settings.paths)[0]):
+                return
+            sizes: dict[str, tuple[int, int]] = state.get("sizes", {})
+            spec = _ig_spec()
+            if not p.photos or not sizes:
+                return
+            if spec is None:
+                ui.label(
+                    "Every photo already has an Instagram ratio, so they are used as they are."
+                ).classes("text-sm pt-1")
+            tile_w = 112
+            with ui.row().classes("gap-2 flex-wrap pt-1"):
+                for h in p.photos:
+                    if spec is None:
+                        w0, h0 = sizes.get(h, (1, 1))
+                        box = f"width:{tile_w}px;aspect-ratio:{w0}/{h0};background:transparent;"
+                        pad = 0.0
+                    else:
+                        box = (
+                            f"width:{tile_w}px;aspect-ratio:{spec.width}/{spec.height};"
+                            f"background:{p.ig_color()};"
+                        )
+                        pad = spec.border / 2 * tile_w / spec.width
+                    with (
+                        ui.element("div")
+                        .classes("rounded overflow-hidden")
+                        .style(
+                            box + f"padding:{pad:.2f}px;box-sizing:border-box;"
+                            "outline:1px solid var(--sp-border);"
+                        )
+                    ):
+                        ui.image(A._thumb_src(h, thumb_small)).props("fit=contain").classes(
+                            "w-full h-full"
+                        )
+            if spec is not None:
+                ui.label(
+                    f"Preview: {spec.width}x{spec.height}"
+                    + (f", {spec.border}px border" if spec.border else "")
+                ).classes("text-xs sp-faint")
+            groups = plan_send(p, load_channel_cache(settings.paths)[0], _sizes())
+            if len(groups) > 1:
+                ui.label(
+                    "Instagram goes out as its own robopost post with these sized copies; "
+                    "your other channels get the normal export first."
+                ).classes("text-xs sp-faint")
+
         def _post_type_row(net: str, label: str, choices: tuple[str, ...]) -> None:
             p = cur()
             with ui.row().classes("items-center gap-2 pt-2"):
@@ -539,7 +732,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     {c: c.title() for c in choices}, value=p.setting(net, "postType", "POST")
                 ).props("dense no-caps")
                 t.set_enabled(p.editable)
-                t.on_value_change(lambda e: _set_setting(net, "postType", str(e.value or "POST")))
+
+                def _pt(e: Any) -> None:
+                    _set_setting(net, "postType", str(e.value or "POST"))
+                    if net == "instagram":
+                        _dest.refresh()
+
+                t.on_value_change(_pt)
 
         def _pinterest_row() -> None:
             p = cur()
@@ -564,22 +763,66 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             p = cur()
             when = p.schedule_dt()
             local = when.astimezone(tz) if when else None
+            slots = schedule_slots(p.id, tz)
+            picked = when is not None and any(when == t for _d, ts in slots for t in ts)
+            custom = state.get("custom_time", False) or (when is not None and not picked)
+            earliest = utcnow() + MIN_LEAD
             with ui.column().classes("w-full max-w-2xl gap-1 px-4 pt-4"):
                 ui.label("When").classes("font-bold")
-                with ui.row().classes("items-center gap-2"):
-                    d = ui.input("Date", value=local.strftime("%Y-%m-%d") if local else "").props(
-                        "type=date dense outlined"
-                    )
-                    t = ui.input("Time", value=local.strftime("%H:%M") if local else "").props(
-                        "type=time dense outlined"
-                    )
+                with ui.element("div").classes(
+                    "grid grid-cols-[auto_repeat(4,minmax(0,1fr))] gap-1 items-center w-full"
+                ):
+                    ui.element("div")
+                    for label, _hour in SLOT_HOURS:
+                        ui.label(label).classes("text-xs sp-faint text-center")
+                    for day, times in slots:
+                        ui.label(f"{day:%a} {day.day} {day:%b}").classes(
+                            "text-sm pr-2 whitespace-nowrap"
+                        )
+                        for t in times:
+                            on = when is not None and when == t
+                            b = ui.button(f"{t:%H:%M}", on_click=lambda t=t: _pick(t)).props(
+                                "dense no-caps unelevated" if on else "dense no-caps outline"
+                            )
+                            if on:
+                                b.props("color=primary")
+                            b.set_enabled(p.editable and t > earliest)
+                with ui.row().classes("items-center gap-2 pt-1"):
+                    ui.button(
+                        "Pick a date & time",
+                        icon="edit_calendar",
+                        on_click=lambda: _show_custom(not custom),
+                    ).props("flat dense no-caps").set_enabled(p.editable)
                     clear = (
                         ui.button(icon="event_busy")
                         .props("flat dense round")
                         .tooltip("Clear the time")
                     )
-                    for w in (d, t, clear):
-                        w.set_enabled(p.editable)
+                    clear.set_enabled(p.editable and when is not None)
+                    clear.on_click(_clear)
+                if custom:
+                    with ui.row().classes("items-center gap-2"):
+                        d = ui.input(
+                            "Date", value=local.strftime("%Y-%m-%d") if local else ""
+                        ).props("type=date dense outlined")
+                        t_in = ui.input(
+                            "Time", value=local.strftime("%H:%M") if local else ""
+                        ).props("type=time dense outlined")
+                        for w in (d, t_in):
+                            w.set_enabled(p.editable)
+
+                    def _apply() -> None:
+                        if not d.value:
+                            return
+                        try:
+                            naive = datetime.fromisoformat(f"{d.value}T{t_in.value or '09:00'}")
+                        except ValueError:
+                            ui.notify("Can't read that date/time.", type="warning")
+                            return
+                        _set_when(naive.replace(tzinfo=tz))
+
+                    d.on("change", _apply)
+                    t_in.on("change", _apply)
                 ui.label(
                     f"{_fmt_local(p.schedule_at, tz)} ({getattr(tz, 'key', tz)})"
                     + (f"  ·  {when:%Y-%m-%d %H:%M} UTC" if when else "")
@@ -587,28 +830,24 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     else "No time set — required to schedule; optional for a robopost draft."
                 ).classes("text-xs sp-muted")
 
-                def _apply() -> None:
-                    if not d.value:
-                        return
-                    try:
-                        naive = datetime.fromisoformat(f"{d.value}T{t.value or '09:00'}")
-                    except ValueError:
-                        ui.notify("Can't read that date/time.", type="warning")
-                        return
-                    cur().schedule_at = (
-                        naive.replace(tzinfo=tz).astimezone(ZoneInfo("UTC")).isoformat()
-                    )
-                    _save()
-                    _when.refresh()
+        def _set_when(local_dt: datetime) -> None:
+            cur().schedule_at = local_dt.astimezone(ZoneInfo("UTC")).isoformat()
+            _save()
+            _when.refresh()
 
-                def _clear() -> None:
-                    cur().schedule_at = None
-                    _save()
-                    _when.refresh()
+        def _pick(t: datetime) -> None:
+            state["custom_time"] = False
+            _set_when(t)
 
-                d.on("change", _apply)
-                t.on("change", _apply)
-                clear.on_click(_clear)
+        def _show_custom(on: bool) -> None:
+            state["custom_time"] = on
+            _when.refresh()
+
+        def _clear() -> None:
+            cur().schedule_at = None
+            state["custom_time"] = False
+            _save()
+            _when.refresh()
 
         # -- checks + send --------------------------------------------------- #
         @ui.refreshable
@@ -656,9 +895,11 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             p = cur()
             chans, _ = load_channel_cache(settings.paths)
             names = await nicegui_run.io_bound(_source_names, engine, list(p.photos))
-            if names is None:
+            sizes = await nicegui_run.io_bound(upright_sizes, engine, list(p.photos))
+            if names is None or sizes is None:
                 return
             state["names"] = names
+            state["sizes"] = sizes
             with client:
                 unavailable = {h for h, n in names.items() if n is None}
                 errors, warnings = validate(p, chans, mode, unavailable=unavailable)
@@ -677,15 +918,15 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         ) -> None:
             pc = settings.config.posting
             by_id = {c.id: c for c in chans}
-            dests = [by_id[c] for c in p.channel_ids if c in by_id]
+            groups = plan_send(p, chans, _sizes())
             edge = "full size" if pc.export_long_edge <= 0 else f"{pc.export_long_edge} px"
             with ui.dialog() as dialog, ui.card().classes("gap-2 max-w-xl"):
                 ui.label(
                     "Send to robopost as a draft?" if mode == "draft" else "Schedule this post?"
                 ).classes("text-lg font-medium")
                 ui.label(
-                    f"{len(p.photos)} photo(s) will be uploaded as new JPEGs ({edge} long edge, "
-                    f"quality {pc.export_quality}). GPS and all other metadata are stripped; "
+                    f"{len(p.photos)} photo(s) will be uploaded as new JPEGs "
+                    f"(quality {pc.export_quality}). GPS and all other metadata are stripped; "
                     "your original files are not changed."
                 ).classes("text-sm")
                 with ui.row().classes("gap-1 flex-wrap"):
@@ -698,14 +939,33 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                                 "truncate text-[10px] sp-faint"
                             )
                 ui.separator()
-                if dests:
-                    ui.label("Destinations").classes("text-sm font-medium")
-                    for c in dests:
-                        ui.label(f"• {c.name} — {c.social_network}").classes("text-sm")
-                else:
-                    ui.label("No channels chosen — you'll pick them in robopost.").classes(
+                done = sorted(p.sent_channel_ids())
+                if done:
+                    ui.label(
+                        "Already sent, skipped: "
+                        + ", ".join(by_id[c].name if c in by_id else c for c in done)
+                    ).classes("text-sm sp-muted")
+                if len(groups) > 1:
+                    ui.label(
+                        f"This goes to robopost as {len(groups)} separate posts, in this order. "
+                        "If one fails, a retry only sends what's left."
+                    ).classes("text-sm font-medium")
+                if not groups:
+                    ui.label("Nothing left to send — the post will be marked as sent.").classes(
                         "text-sm"
                     )
+                for i, g in enumerate(groups):
+                    size = (
+                        "photos " + _ig_size_text(g.ig) if g.is_instagram else f"{edge} long edge"
+                    )
+                    head = f"{i + 1}. {_group_title(g)}" if len(groups) > 1 else "Destinations"
+                    ui.label(f"{head} — {size}").classes("text-sm font-medium")
+                    for c in g.channels:
+                        ui.label(f"• {c.name} — {c.social_network}").classes("text-sm")
+                    if not g.channels:
+                        ui.label("No channels chosen — you'll pick them in robopost.").classes(
+                            "text-sm"
+                        )
                 when = p.schedule_dt()
                 if mode == "schedule" and when is not None:
                     ui.label(
@@ -766,6 +1026,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     line = f"{_fmt_local(str(e.get('ts', '')), tz)} · {e.get('action')}"
                     if e.get("mode"):
                         line += f" ({e['mode']})"
+                    if e.get("part") in ("instagram", "other"):
+                        line += " · Instagram" if e["part"] == "instagram" else " · other channels"
                     if e.get("robopost_post_ids"):
                         line += f" · robopost id {', '.join(e['robopost_post_ids'])}"
                     if "was_sent" in e:
@@ -983,7 +1245,7 @@ def posted_note(settings: Settings, pixel_hash: str) -> None:
         ui.icon("send", size="1rem").classes("text-emerald-600")
         ui.label("In posts:").classes("text-sm")
         for p in rows:
-            label, _ = _STATUS_LABEL.get(p.status, (p.status, ""))
+            label, _ = _status_label(p)
             ui.link(f"{p.title} ({label.lower()})", f"/posts/{p.id}").classes("text-sm")
 
 

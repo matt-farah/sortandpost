@@ -7,6 +7,30 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🚧 2026-10-05 — V3 started (`V3Plan.md`)
+
+- **P0 done**: `V3.md` items numbered + phase-tagged and linked to `V3Plan.md`;
+  `Achievements/Achievements.md` typos / empty row / Y-N case fixed (text and points untouched).
+- **P1a done** (user-tested): `post_export.fit_and_pad` / `IgSpec` / `is_instagram_ratio`
+  (exactly 4:5, 1:1, 1.91:1; 9:16 for a Story; ~1.5% tolerance) / `resolve_ig_spec` /
+  `upright_sizes`; `export_jpeg(..., ig=)` and `export_key(..., ig=)`. `Post.ig_format/ig_border/
+  ig_color` live in `network_settings["instagram"]` (`format`, `border` 0-100 px, `padColor`),
+  never sent to robopost. Composer: format toggle (Story only for STORIES), border slider,
+  native color picker + hex field, live CSS preview.
+- **P1b done** (user-tested: a real Bluesky + Instagram split draft): `posts.plan_send` →
+  `SendGroup`s — other channels first, then Instagram with `IgSpec`-sized uploads (cached as
+  `media_cache["<hash>#ig"]`); one create to every channel when all photos already have an IG
+  ratio. Each create is a `Post.parts` entry (`sending → sent | failed`, its `channel_ids`),
+  `sending` saved before its export and until the create answers; a failed/unknown first part
+  stops the send. Retries go only to `unsent_channels`; `resolve_interrupted` settles just the
+  part in doubt (legacy no-parts posts keep the old path). "Partly sent" = `failed` with a sent
+  part (editable, sent channels locked, counts as posted). Confirm dialog lists the creates in order.
+- **Schedule quick-pick done** (user request, user-tested): the composer's "When" is a
+  Buffer-style grid — today + 6 days × `posts.SLOT_HOURS` (9 / 12 / 17 / 19 local), one minute
+  per day (1-29, `slot_minute` seeded by post id + date, so stable), past slots greyed;
+  "Pick a date & time" opens the old date/time inputs (auto-open for an off-grid time).
+- **Next: P2** (CLIP off-switch, Sonnet) — new session. Branch `v3-p0-p1-instagram` ready for a PR.
+
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 
 - Issues.md "the whole app freezes while a macOS Keychain prompt is open": `/settings` read the

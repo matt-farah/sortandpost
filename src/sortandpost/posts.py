@@ -14,6 +14,15 @@ API cannot read, edit or cancel a post afterwards, so a sent post is frozen
 here; "Duplicate" starts a new draft from it. ``sending`` is written *before*
 the create call and is never retried automatically: a send interrupted by a
 crash is resolved by hand ("it was sent" / "it wasn't").
+
+**Split sends.** When the chosen channels mix Instagram with other networks and
+the photos need Instagram sizing, one post becomes two robopost creates (see
+:func:`plan_send`): the other channels first, then Instagram. Each create is a
+*part* (``Post.parts``) with its own ``sending → sent | failed`` state and its
+channel ids, so a retry or "it was sent / it wasn't" only touches the part in
+doubt, and channels a ``sent`` part already reached are never sent to again.
+A post with a sent part but channels still to go is ``failed`` (retryable,
+"partly sent").
 """
 
 from __future__ import annotations
@@ -21,15 +30,23 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import random
 import re
 import secrets
 from dataclasses import asdict, dataclass, field, fields
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Literal
 
 from sortandpost.collections import clean_name
 from sortandpost.paths import Paths
+from sortandpost.post_export import (
+    DEFAULT_IG_FORMAT,
+    IG_FORMATS,
+    IgSpec,
+    parse_color,
+    resolve_ig_spec,
+)
 from sortandpost.robopost import Channel
 from sortandpost.sync.clock import utcnow
 
@@ -37,6 +54,7 @@ log = logging.getLogger(__name__)
 
 PostStatus = Literal["draft", "sending", "sent_draft", "scheduled", "failed"]
 SendMode = Literal["draft", "schedule"]
+PartStatus = Literal["sending", "sent", "failed"]
 
 SENT_STATUSES: frozenset[str] = frozenset({"sent_draft", "scheduled"})
 EDITABLE_STATUSES: frozenset[str] = frozenset({"draft", "failed"})
@@ -55,7 +73,16 @@ TEXT_LIMITS_SOFT = {
     "pinterest": 500,
 }
 POST_TYPES = ("POST", "REELS", "STORIES")  # instagram; facebook uses the first two
+IG_MAX_BORDER = 100
 MIN_LEAD = timedelta(minutes=2)  # a schedule time must be at least this far ahead
+# Quick-pick schedule slots (local time): morning, afternoon, after work, evening.
+SLOT_HOURS: tuple[tuple[str, int], ...] = (
+    ("Morning", 9),
+    ("Afternoon", 12),
+    ("After work", 17),
+    ("Evening", 19),
+)
+SLOT_DAYS = 7
 
 
 def _new_id() -> str:
@@ -91,8 +118,13 @@ class Post:
     schedule_at: str | None = None  # UTC ISO-8601
     status: str = "draft"
     sending_mode: str | None = None  # the mode of the in-flight / interrupted send
-    # pixel_hash -> {"export_key", "storage_object_id", "uploaded_at"}
+    # pixel_hash (or "<pixel_hash>#ig" for an Instagram-sized upload) ->
+    # {"export_key", "storage_object_id", "uploaded_at"}
     media_cache: dict[str, dict[str, str]] = field(default_factory=dict)
+    # one entry per robopost create attempt, oldest first:
+    # {"group", "status": sending|sent|failed, "mode", "channel_ids": [...],
+    #  "robopost_post_ids": [...], "started_at"}
+    parts: list[dict[str, Any]] = field(default_factory=list)
     log: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
@@ -121,6 +153,19 @@ class Post:
     def sent(self) -> bool:
         return self.status in SENT_STATUSES
 
+    @property
+    def partly_sent(self) -> bool:
+        """Some channels have this post but others are still to go."""
+        return not self.sent and any(pt.get("status") == "sent" for pt in self.parts)
+
+    def sent_channel_ids(self) -> set[str]:
+        """Channels a ``sent`` part reached -- never sent to again."""
+        return {cid for pt in self.parts if pt.get("status") == "sent" for cid in pt["channel_ids"]}
+
+    def sending_part(self) -> dict[str, Any] | None:
+        """The part whose create may or may not have reached robopost."""
+        return next((pt for pt in self.parts if pt.get("status") == "sending"), None)
+
     def cover(self) -> str | None:
         return self.photos[0] if self.photos else None
 
@@ -129,6 +174,72 @@ class Post:
 
     def setting(self, network: str, key: str, default: str = "") -> str:
         return self.network_settings.get(network, {}).get(key, default)
+
+    # Instagram sizing (see post_export.IgSpec). Stored as strings in
+    # network_settings["instagram"]; unknown / bad values fall back to defaults.
+    def ig_story(self) -> bool:
+        return self.setting("instagram", "postType", "POST") == "STORIES"
+
+    def ig_format(self) -> str:
+        fmt = self.setting("instagram", "format", DEFAULT_IG_FORMAT)
+        if self.ig_story():
+            return "story"
+        return fmt if fmt in IG_FORMATS and fmt != "story" else DEFAULT_IG_FORMAT
+
+    def ig_border(self) -> int:
+        try:
+            return max(0, min(IG_MAX_BORDER, int(self.setting("instagram", "border", "0"))))
+        except ValueError:
+            return 0
+
+    def ig_color(self) -> str:
+        """``#rrggbb`` pad colour (white when unset or invalid)."""
+        r, g, b = parse_color(self.setting("instagram", "padColor", "#ffffff"))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def ig_spec(self, sizes: list[tuple[int, int]]) -> IgSpec | None:
+        """The canvas this post's Instagram photos go out at (``None`` = they
+        already have an Instagram ratio and are used as they are). *sizes* =
+        the photos' upright ``(width, height)``."""
+        return resolve_ig_spec(
+            sizes,
+            fmt=self.ig_format(),
+            border=self.ig_border(),
+            rgb=parse_color(self.ig_color()),
+            story=self.ig_story(),
+        )
+
+
+# --- quick-pick schedule slots -----------------------------------------------
+
+
+def slot_minute(post_id: str, day: date) -> int:
+    """The minute past the hour every slot on *day* uses (1-29): random-looking
+    so posts don't all land on the hour, but stable for a post and a day, so
+    the choices don't move while the user looks at them."""
+    return random.Random(f"{post_id}:{day.isoformat()}").randint(1, 29)
+
+
+def schedule_slots(
+    post_id: str, tz: tzinfo, *, now: datetime | None = None, days: int = SLOT_DAYS
+) -> list[tuple[date, list[datetime]]]:
+    """Today and the next ``days - 1`` days, each with one aware local time per
+    :data:`SLOT_HOURS` entry. Past slots are included (the UI greys them out)."""
+    today = (now or utcnow()).astimezone(tz).date()
+    out: list[tuple[date, list[datetime]]] = []
+    for i in range(days):
+        day = today + timedelta(days=i)
+        minute = slot_minute(post_id, day)
+        out.append(
+            (
+                day,
+                [
+                    datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz)
+                    for _label, hour in SLOT_HOURS
+                ],
+            )
+        )
+    return out
 
 
 # --- storage -----------------------------------------------------------------
@@ -171,6 +282,21 @@ def _coerce(raw: dict[str, Any]) -> Post | None:
     }
     status = _s("status")
     logv = data.get("log")
+    parts = []
+    rawparts = data.get("parts")
+    for pt in rawparts if isinstance(rawparts, list) else []:
+        if not isinstance(pt, dict) or pt.get("status") not in ("sending", "sent", "failed"):
+            continue
+        parts.append(
+            {
+                "group": str(pt.get("group") or ""),
+                "status": pt["status"],
+                "mode": str(pt.get("mode") or "draft"),
+                "channel_ids": [str(c) for c in pt.get("channel_ids") or [] if c],
+                "robopost_post_ids": [str(c) for c in pt.get("robopost_post_ids") or [] if c],
+                "started_at": str(pt.get("started_at") or ""),
+            }
+        )
     return Post(
         title=_s("title"),
         id=pid,
@@ -186,6 +312,7 @@ def _coerce(raw: dict[str, Any]) -> Post | None:
         else "draft",
         sending_mode=_s("sending_mode") or None,
         media_cache=mc,
+        parts=parts,
         log=[e for e in logv if isinstance(e, dict)] if isinstance(logv, list) else [],
         created_at=_s("created_at"),
         updated_at=_s("updated_at"),
@@ -314,7 +441,7 @@ def posted_hashes(paths: Paths) -> frozenset[str]:
     hit = _posted_cache.get(d)
     if hit is not None and hit[0] == mtime:
         return hit[1]
-    hashes = frozenset(h for p in list_posts(paths) if p.sent for h in p.photos)
+    hashes = frozenset(h for p in list_posts(paths) if p.sent or p.partly_sent for h in p.photos)
     _posted_cache[d] = (mtime, hashes)
     return hashes
 
@@ -363,6 +490,44 @@ def selected_channels(post: Post, channels: list[Channel]) -> list[Channel]:
     return [by_id[cid] for cid in post.channel_ids if cid in by_id]
 
 
+def unsent_channels(post: Post, channels: list[Channel]) -> list[Channel]:
+    """The chosen channels a send would go to: minus any a sent part reached."""
+    done = post.sent_channel_ids()
+    return [c for c in selected_channels(post, channels) if c.id not in done]
+
+
+@dataclass(frozen=True)
+class SendGroup:
+    """One robopost create: these channels, with uploads sized by ``ig`` (or
+    the normal export when ``None``). ``name``: instagram | other | all."""
+
+    name: str
+    channels: tuple[Channel, ...]
+    ig: IgSpec | None = None
+
+    @property
+    def is_instagram(self) -> bool:
+        return self.name == "instagram"
+
+
+def plan_send(post: Post, channels: list[Channel], sizes: list[tuple[int, int]]) -> list[SendGroup]:
+    """The creates a send makes, in order. Instagram channels get their own
+    create with Instagram-sized uploads when the photos need it; the other
+    channels go first, so an Instagram problem never holds back the rest.
+    Empty when a partly-sent post has no channels left to go."""
+    chosen = unsent_channels(post, channels)
+    if post.partly_sent and not chosen:
+        return []
+    ig = tuple(c for c in chosen if c.network == "instagram")
+    other = tuple(c for c in chosen if c.network != "instagram")
+    spec = post.ig_spec(sizes) if ig else None
+    if ig and other and spec is not None:
+        return [SendGroup("other", other), SendGroup("instagram", ig, spec)]
+    if ig and not other:
+        return [SendGroup("instagram", ig, spec)]
+    return [SendGroup("all" if ig else "other", tuple(chosen))]
+
+
 def selected_networks(post: Post, channels: list[Channel]) -> set[str]:
     return {c.network for c in selected_channels(post, channels)}
 
@@ -392,13 +557,14 @@ def validate(
                 f"{len(missing)} photo(s) have no file on this computer (missing or offline)."
             )
     known = {c.id for c in channels}
-    unknown = [cid for cid in post.channel_ids if cid not in known]
+    done = post.sent_channel_ids()
+    unknown = [cid for cid in post.channel_ids if cid not in known and cid not in done]
     if unknown:
         errors.append(
             f"{len(unknown)} selected channel(s) are no longer in robopost. Refresh channels."
         )
-    chosen = selected_channels(post, channels)
-    if mode == "schedule" and not chosen:
+    chosen = unsent_channels(post, channels)
+    if mode == "schedule" and not chosen and not post.partly_sent:
         errors.append("Pick at least one channel to schedule.")
     for c in chosen:
         if c.must_reconnect:
@@ -442,16 +608,18 @@ def build_payload(
     storage_ids: list[str],
     *,
     now: datetime | None = None,
+    only: tuple[Channel, ...] | None = None,
 ) -> dict[str, Any]:
     """The ``POST /v1/scheduled_posts/`` body. Per-network settings are only
-    included for networks that have a selected channel."""
+    included for networks that have a selected channel. *only* = the channels
+    of one :class:`SendGroup` (default: every selected channel)."""
     now = now or utcnow()
     payload: dict[str, Any] = {
         "text": post.caption,
         "image_object_ids": list(storage_ids),
         "is_draft": mode == "draft",
     }
-    chosen = selected_channels(post, channels)
+    chosen = list(only) if only is not None else selected_channels(post, channels)
     if chosen:
         payload["channel_ids"] = [c.id for c in chosen]
     when = post.schedule_dt()

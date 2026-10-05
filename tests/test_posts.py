@@ -223,3 +223,40 @@ def test_payload_omits_settings_for_unticked_networks_and_past_time_on_draft() -
     body = P.build_payload(p, CHANNELS, "draft", ["m"], now=NOW)
     assert "instagram_settings" not in body and "schedule_at" not in body
     assert body["channel_ids"] == ["bs"]
+
+
+def test_instagram_sizing_settings_validated_and_not_in_payload() -> None:
+    p = P.Post(title="t", photos=["a" * 64], channel_ids=["ig1"])
+    assert (p.ig_format(), p.ig_border(), p.ig_color()) == ("portrait", 0, "#ffffff")
+    p.network_settings["instagram"] = {
+        "format": "square",
+        "border": "999",
+        "padColor": "#ABCDEF",
+    }
+    assert (p.ig_format(), p.ig_border(), p.ig_color()) == ("square", 100, "#abcdef")
+    p.network_settings["instagram"].update(format="story", border="x", padColor="red")
+    assert (p.ig_format(), p.ig_border(), p.ig_color()) == ("portrait", 0, "#ffffff")
+    p.network_settings["instagram"]["postType"] = "STORIES"
+    assert p.ig_format() == "story"
+    body = P.build_payload(
+        p, [Channel(id="ig1", name="IG", social_network="INSTAGRAM")], "draft", ["m1"]
+    )
+    assert body["instagram_settings"] == {"postType": "STORIES"}
+    assert "padColor" not in str(body) and "border" not in str(body)
+
+
+def test_schedule_slots_next_seven_days_stable_minutes() -> None:
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, 10, 5, 23, 30, tzinfo=UTC)  # 16:30 in LA
+    slots = P.schedule_slots("abcdabcdabcdabcd", tz, now=now)
+    assert slots[0][0].isoformat() == "2026-10-05"
+    assert len(slots) == 7
+    for day, times in slots:
+        assert [t.hour for t in times] == [9, 12, 17, 19]
+        assert len({t.minute for t in times}) == 1 and 1 <= times[0].minute <= 29
+        assert all(t.date() == day and t.tzinfo is tz for t in times)
+    # stable for a post, varies across posts / days
+    assert slots == P.schedule_slots("abcdabcdabcdabcd", tz, now=now)
+    assert len({ts[0].minute for _, ts in slots}) > 1

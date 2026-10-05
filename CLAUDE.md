@@ -667,6 +667,18 @@ How they're applied:
   A network error / timeout / 5xx on create leaves the post `sending` for the user to settle
   ("It was sent" / "It wasn't sent") after checking robopost; only a 4xx becomes `failed`.
   Uploads are cached per photo + export settings, so a retry doesn't re-upload.
+- **Split Instagram send** (`posts.plan_send`) — Instagram channels get their own create with
+  uploads fitted onto one Instagram canvas (`post_export.IgSpec` / `fit_and_pad`; format, border
+  and pad colour in `network_settings["instagram"]`, never sent to robopost; cached as
+  `media_cache["<hash>#ig"]`). Other channels go first with the normal export. If every photo
+  already has an Instagram ratio (4:5, 1:1, 1.91:1; 9:16 for a Story) it is one create to every
+  channel. Each create is a `Post.parts` entry (`sending → sent | failed` + its `channel_ids`):
+  a failed / unknown first part stops the send, a retry only goes to channels no `sent` part
+  reached, and "It was sent / wasn't" settles only the part in doubt. `failed` with a sent part
+  = **Partly sent** (still editable; its sent channels are locked).
+- **Schedule quick-pick**: the composer's "When" grid offers today + 6 days ×
+  `posts.SLOT_HOURS` (9 / 12 / 17 / 19 local), one stable random minute per post + day
+  (`slot_minute`); "Pick a date & time" opens free-form inputs.
 - **Uploads are never the source file**: decoded like the indexer (RAW preview / HEIC), rotated
   upright, converted to sRGB, scaled to `posting.export_long_edge` (default 2048, 0 = full) at
   `posting.export_quality` (90), saved with no EXIF / GPS / ICC, in the process pool.
