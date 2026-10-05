@@ -70,27 +70,25 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   (it was created) → generic `create_timeout_s`, Postiz 180 s. Also fixed a circular import when
   `sortandpost.posting` is imported first. Tests: `test_posting_client.py` (every check × every
   spec), `test_ratelimit.py`, `test_postiz.py`, send-path provider tests.
-- **Next: P4b** (Buffer, only if API access is available — a new spec module) or **P5b** (apply
-  the copy CSV — waiting on the user's edits to `copy/onboarding_settings.csv`).
-
-### P4b handoff (Buffer)
-- PR #54 (P5a + P4a) is open on `v3-p4a-posting-providers`; branch P4b from it (or from main once
-  merged; see the stacked-PR note in memory: retarget before deleting the base branch).
-- **First check Buffer API access** (new developer apps / keys may not be available); if there is
-  none, P4b is skipped.
-- Recipe: add `src/sortandpost/posting/buffer.py` with a `SPEC = ProviderSpec(...)` +
-  `build_payload(CreateRequest)`, register it in `posting/__init__.py` `PROVIDERS`. Shared code
-  should need **no** edits — if Buffer needs something new (OAuth refresh, GraphQL body, a
-  different upload flow), add a generic `ProviderSpec` field rather than a vendor branch
-  (user rule: no vendor lock-in; limits/capabilities are spec values).
-- `tests/test_posting_client.py` automatically runs every client check against the new spec;
-  add a small `tests/test_buffer.py` for its payload (like `test_postiz.py`).
-- Verify live like Postiz: a scratchpad probe reading the key via `secrets_store.get_key(SPEC)`;
-  read-only calls first, then (with the user's OK) one upload + one **draft**. Never retry a
-  create; on a timeout check whether it was created before doing anything else.
-- Open P4a follow-ups: Postiz first comment assumed working (`value[1]`; flip
-  `first_comment=False` if not); Pinterest board is a text field (no live Pinterest channel to
-  check board listing); Instagram via Postiz untested live.
+- **P4b done — Zernio instead of Buffer** (user-tested; branch `v3-p4b-zernio`). Buffer's API
+  (GraphQL, relaunched May 2026) has **no upload endpoint**: media must be a public HTTPS URL, which
+  a local-only app can't provide → skipped. Zernio (free: 2 accounts) added as a spec module
+  `posting/zernio.py`. Shared code got three *generic* spec fields (no vendor branches):
+  `upload_style="presigned"` (+ `upload_put_url`, `presign_fields`: presign call, then a PUT to
+  storage with a separate client that never carries the API key), `idempotency_header`
+  (`CreateRequest.idempotency_key`, a fresh uuid per create; creates are still never retried),
+  `channel_require` (list only active accounts). Verified live 2026-10-05: auth = `GET /v1/accounts`
+  (no auth-check endpoint; bearer key), presign → PUT → `publicUrl` serves the image, channel-less
+  draft (`isDraft`), scheduled post to a Bluesky channel (`status: scheduled`). **Not verified live:**
+  first comment (`platformSpecificData.firstComment`, instagram/facebook/threads/linkedin/youtube),
+  Instagram Story (`contentType: story`), Pinterest `boardId`/`link`/`title`. Zernio dedups an
+  identical post (same account + text + media) for 24 h with a 409 → status hint. Free plan 60
+  req/min → `rate_limits["upload"] = 50/min` (one presign per photo).
+  Tests: `test_zernio.py`; `test_posting_client.py` runs every check on Zernio plus presigned-PUT
+  and idempotency tests (its fake server now handles two ops on one route).
+- **Next: P4c — Upload-Post** (free: 10 uploads/month, 2 profiles; presigned uploads — likely fits
+  the new `upload_style`; needs a free account + key to probe live) so users have 4 providers
+  (robopost, Postiz, Zernio, Upload-Post). Or **P5b** (apply the copy CSV).
 
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 

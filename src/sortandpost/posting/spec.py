@@ -133,9 +133,20 @@ class ProviderSpec:
     channel_fields: Mapping[str, str] = field(default_factory=_frozen)  # id/name/network/logo
     channel_reconnect: tuple[str, ...] = ()  # any truthy -> must reconnect
     channel_skip: tuple[str, ...] = ()  # any truthy -> not listed (deleted, …)
+    channel_require: tuple[str, ...] = ()  # any falsy -> not listed (inactive, …)
     upload_id: str = "id"
     upload_path: str = ""
     upload_field: str = "file"
+    # "multipart": POST the file to the upload endpoint. "presigned": POST a small JSON
+    # body (``presign_fields``) to it, then PUT the bytes -- with no API key -- to the
+    # URL found at ``upload_put_url`` in the reply.
+    upload_style: Literal["multipart", "presigned"] = "multipart"
+    upload_put_url: str = ""
+    presign_fields: Mapping[str, str] = field(
+        default_factory=lambda: _frozen(
+            {"filename": "filename", "content_type": "contentType", "size": "size"}
+        )
+    )
     created_ids: str = ""
 
     # -- errors -------------------------------------------------------------------
@@ -154,6 +165,7 @@ class ProviderSpec:
     # -- capabilities ---------------------------------------------------------------
     channelless_drafts: bool = True  # a draft may go out with no channel chosen
     first_comment: bool = True
+    idempotency_header: str = ""  # header that carries CreateRequest.idempotency_key
     can_delete_remote: bool = False  # (future: cancel a sent post)
 
     # -- per-network post settings --------------------------------------------------------

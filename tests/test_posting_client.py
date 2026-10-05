@@ -7,8 +7,10 @@ added to ``PROVIDERS``.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,7 @@ from sortandpost.posting.spec import ProviderSpec, RateLimit
 KEY = "SECRET-key-for-tests-abcdef123456"
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
 SPECS = list(PROVIDERS.values())
+STORAGE_HOST = "storage.example"
 
 
 def _put(path: str, value: Any) -> Any:
@@ -54,19 +57,30 @@ class FakeServer:
     def __init__(self, spec: ProviderSpec) -> None:
         self.spec = spec
         self.requests: list[httpx.Request] = []
+        self.storage: list[httpx.Request] = []
         self.script: dict[str, Callable[[httpx.Request], httpx.Response]] = {}
-        self.routes = {(m, p): op for op, (m, p) in spec.endpoints.items()}
+        # a provider may serve two ops from one route (auth check = the channel list)
+        self.routes: dict[tuple[str, str], list[str]] = {}
+        for op, route in spec.endpoints.items():
+            self.routes.setdefault(route, []).append(op)
 
     def handler(self, req: httpx.Request) -> httpx.Response:
+        if req.url.host == STORAGE_HOST:  # a presigned PUT: not the provider's API
+            self.storage.append(req)
+            if "put" in self.script:
+                return self.script["put"](req)
+            return httpx.Response(200)
         self.requests.append(req)
         base_path = httpx.URL(self.spec.default_base_url).path.rstrip("/")
         rel = req.url.path[len(base_path) :]
-        op = self.routes.get((req.method, rel))
-        if op is None:
+        ops = self.routes.get((req.method, rel))
+        if ops is None:
             return httpx.Response(404, json={"message": "no route"})
-        if op in self.script:
-            return self.script[op](req)
-        return httpx.Response(200, json=self.reply(op))
+        for op in ops:
+            if op in self.script:
+                return self.script[op](req)
+        replies = [self.reply(op) for op in ops]
+        return httpx.Response(200, json=replies[0] if len(replies) == 1 else _merge(*replies))
 
     def reply(self, op: str) -> Any:
         s = self.spec
@@ -82,6 +96,7 @@ class FakeServer:
 
             def row(cid: str, name: str, net: str, **extra: Any) -> dict[str, Any]:
                 return _merge(
+                    dict.fromkeys(s.channel_require, True),
                     _put(f.get("id", "id"), cid),
                     _put(f.get("name", "name"), name),
                     _put(f.get("network", "network"), net),
@@ -102,6 +117,8 @@ class FakeServer:
             parts = [_put(s.upload_id, "media-1")]
             if s.upload_path:
                 parts.append(_put(s.upload_path, "https://cdn.example/m1.jpg"))
+            if s.upload_put_url:
+                parts.append(_put(s.upload_put_url, f"https://{STORAGE_HOST}/put?sig=1"))
             return _merge(*parts)
         if op == "create":
             return _put(s.created_ids, "post-1")
@@ -182,7 +199,7 @@ def test_exact_endpoint_paths(spec: ProviderSpec, tmp_path: Path) -> None:
     ]
 
 
-def test_upload_is_multipart_and_retried_once(spec: ProviderSpec, tmp_path: Path) -> None:
+def test_upload_is_sent_and_retried_once(spec: ProviderSpec, tmp_path: Path) -> None:
     f = tmp_path / "00_abcdef12.jpg"
     f.write_bytes(b"\xff\xd8fakejpeg")
     server = FakeServer(spec)
@@ -192,8 +209,9 @@ def test_upload_is_multipart_and_retried_once(spec: ProviderSpec, tmp_path: Path
         calls[0] += 1
         if calls[0] == 1:
             raise httpx.ConnectError("boom", request=req)
-        assert req.headers["content-type"].startswith("multipart/form-data")
-        assert f'name="{spec.upload_field}"; filename="00_abcdef12.jpg"'.encode() in req.read()
+        if spec.upload_style == "multipart":
+            assert req.headers["content-type"].startswith("multipart/form-data")
+            assert f'name="{spec.upload_field}"; filename="00_abcdef12.jpg"'.encode() in req.read()
         return httpx.Response(200, json=server.reply("upload"))
 
     server.script["upload"] = flaky
@@ -330,3 +348,45 @@ def test_create_uses_the_specs_create_timeout(spec: ProviderSpec) -> None:
     with _client(spec, server) as api:
         api.create_post(_req())
     assert seen == [spec.create_timeout_s]
+
+
+def test_presigned_upload_puts_the_bytes_without_the_key(
+    spec: ProviderSpec, tmp_path: Path
+) -> None:
+    if spec.upload_style != "presigned":
+        pytest.skip("multipart provider")
+    f = tmp_path / "a.jpg"
+    f.write_bytes(b"\xff\xd8fakejpeg")
+    server = FakeServer(spec)
+    with _client(spec, server) as api:
+        api.upload_media(f)
+    (put,) = server.storage
+    assert put.method == "PUT" and put.read() == b"\xff\xd8fakejpeg"
+    assert put.headers["content-type"] == "image/jpeg"
+    assert "authorization" not in put.headers and KEY not in str(put.url)
+    body = json.loads(server.requests[0].read())
+    assert body == {"filename": "a.jpg", "contentType": "image/jpeg", "size": 10}
+
+
+def test_presigned_put_failure_is_an_error(spec: ProviderSpec, tmp_path: Path) -> None:
+    if spec.upload_style != "presigned":
+        pytest.skip("multipart provider")
+    f = tmp_path / "a.jpg"
+    f.write_bytes(b"x")
+    server = FakeServer(spec)
+    server.script["put"] = lambda r: httpx.Response(403)
+    with _client(spec, server) as api, pytest.raises(PostingError) as ei:
+        api.upload_media(f)
+    assert ei.value.status == 403
+
+
+def test_idempotency_key_is_sent_when_the_spec_names_a_header(spec: ProviderSpec) -> None:
+    server = FakeServer(spec)
+    req = replace(_req(), idempotency_key="abc123")
+    with _client(spec, server) as api:
+        api.create_post(req)
+    sent = server.requests[-1].headers
+    if spec.idempotency_header:
+        assert sent[spec.idempotency_header] == "abc123"
+    else:
+        assert "idempotency-key" not in sent

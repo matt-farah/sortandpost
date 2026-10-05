@@ -207,6 +207,7 @@ class ApiClient:
         if warning:
             log.info("%s: %s", spec.name, warning)
         self._key = api_key
+        self._transport = transport
         self._limiter = limiter
         params: dict[str, str] = {}
         headers: dict[str, str] = {}
@@ -224,6 +225,7 @@ class ApiClient:
             transport=transport,
             follow_redirects=False,
         )
+        self._bare: httpx.Client | None = None  # no key: for presigned PUTs to storage
 
     def __enter__(self) -> ApiClient:
         return self
@@ -238,6 +240,8 @@ class ApiClient:
 
     def close(self) -> None:
         self._http.close()
+        if self._bare is not None:
+            self._bare.close()
         _LIVE_KEYS.discard(self._key)
 
     # -- plumbing ---------------------------------------------------------------
@@ -331,7 +335,11 @@ class ApiClient:
         f = self.spec.channel_fields
         out: list[Channel] = []
         for r in rows if isinstance(rows, list) else []:
-            if not isinstance(r, dict) or any(first(r, k) for k in self.spec.channel_skip):
+            if (
+                not isinstance(r, dict)
+                or any(first(r, k) for k in self.spec.channel_skip)
+                or not all(first(r, k) for k in self.spec.channel_require)
+            ):
                 continue
             cid = first(r, f.get("id", "id"))
             if cid is None or cid == "":
@@ -348,20 +356,60 @@ class ApiClient:
         out.sort(key=lambda c: (c.network, c.name.casefold()))
         return out
 
+    def _put_to_storage(self, url: str, path: Path) -> None:
+        """PUT the file to a presigned URL. A separate client: that host is not the
+        provider's API, so it never sees the API key."""
+        if urlsplit(url).scheme != "https":
+            raise self._error(200, "the upload address is not https")
+        if self._bare is None:
+            self._bare = httpx.Client(
+                timeout=httpx.Timeout(
+                    self.spec.upload_timeout_s, connect=self.spec.connect_timeout_s
+                ),
+                transport=self._transport,
+                follow_redirects=False,
+            )
+        try:
+            resp = self._bare.put(
+                url, content=path.read_bytes(), headers={"Content-Type": "image/jpeg"}
+            )
+        except httpx.HTTPError as exc:
+            raise self._error(0, redact(f"{type(exc).__name__}: {exc}", self._key)) from None
+        if resp.status_code >= 300:
+            raise self._error(resp.status_code, "the file could not be stored")
+
+    def _upload_once(self, path: Path) -> Any:
+        if self.spec.upload_style == "presigned":
+            names = self.spec.presign_fields
+            wanted = {
+                "filename": path.name,
+                "content_type": "image/jpeg",
+                "size": path.stat().st_size,
+            }
+            body = self._request(
+                "upload", json={names[k]: v for k, v in wanted.items() if k in names}
+            )
+            put_url = first(body, self.spec.upload_put_url)
+            if not isinstance(put_url, str) or not put_url:
+                raise self._error(200, f"upload reply had no {self.spec.upload_put_url}")
+            self._put_to_storage(put_url, path)
+            return body
+        with path.open("rb") as fh:
+            return self._request(
+                "upload",
+                files={self.spec.upload_field: (path.name, fh, "image/jpeg")},
+                timeout=httpx.Timeout(
+                    self.spec.upload_timeout_s, connect=self.spec.connect_timeout_s
+                ),
+            )
+
     def upload_media(self, path: Path) -> MediaRef:
         """Upload one file; one retry (``spec.upload_retries``) on a network error."""
         tries = 1 + max(0, self.spec.upload_retries)
         body: Any = None
         for attempt in range(1, tries + 1):
             try:
-                with path.open("rb") as fh:
-                    body = self._request(
-                        "upload",
-                        files={self.spec.upload_field: (path.name, fh, "image/jpeg")},
-                        timeout=httpx.Timeout(
-                            self.spec.upload_timeout_s, connect=self.spec.connect_timeout_s
-                        ),
-                    )
+                body = self._upload_once(path)
                 break
             except PostingError as exc:
                 if exc.status != 0 or attempt == tries:
@@ -379,6 +427,11 @@ class ApiClient:
         body = self._request(
             "create",
             json=self.spec.build_payload(req),
+            headers=(
+                {self.spec.idempotency_header: req.idempotency_key}
+                if self.spec.idempotency_header and req.idempotency_key
+                else None
+            ),
             timeout=httpx.Timeout(self.spec.create_timeout_s, connect=self.spec.connect_timeout_s),
         )
         return [str(v) for v in extract(body, self.spec.created_ids) if v is not None and v != ""]
