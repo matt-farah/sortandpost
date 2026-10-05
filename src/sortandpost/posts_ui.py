@@ -1,9 +1,10 @@
-"""The robopost composer UI: ``/posts``, ``/posts/{id}`` and the Settings →
-Posting panel.
+"""The post composer UI: ``/posts``, ``/posts/{id}`` and the Settings →
+Posting panel. Provider-agnostic: names, per-network settings, key sources and
+base URLs all come from the post's (or the active) ``ProviderSpec``.
 
 Kept out of ``app.py`` (already very long); it reuses that module's page
 chrome (``_header``, ``_thumb_src``, ``State``…) through a lazy import, since
-``app`` imports this module. Every robopost call and every export runs off the
+``app`` imports this module. Every API call and every export runs off the
 event loop (``run.io_bound``; hard constraint #7). Nothing is ever sent without
 an explicit click on a confirm dialog that lists exactly what goes where.
 """
@@ -30,10 +31,20 @@ from sortandpost.post_export import (
     upright_sizes,
 )
 from sortandpost.post_send import is_in_flight, resolve_interrupted, send_post
+from sortandpost.posting import (
+    PROVIDERS,
+    active_provider,
+    base_url,
+    limiter,
+    open_client,
+    provider_for,
+)
+from sortandpost.posting.client import check_base_url, normalize_base_url
+from sortandpost.posting.model import Channel, PostingError
+from sortandpost.posting.spec import FieldSpec, ProviderSpec
 from sortandpost.posts import (
     IG_MAX_BORDER,
     MIN_LEAD,
-    POST_TYPES,
     SLOT_HOURS,
     Post,
     SendGroup,
@@ -51,17 +62,15 @@ from sortandpost.posts import (
     selected_networks,
     validate,
 )
-from sortandpost.robopost import Channel, RobopostClient, RobopostError
 from sortandpost.secrets_store import (
-    ROBOPOST_ENV,
     KeySource,
-    cached_robopost_key,
-    clear_robopost_key,
-    get_robopost_key,
+    cached_key,
+    clear_key,
+    get_key,
     keychain_available,
     keychain_name,
     mask,
-    set_robopost_key,
+    set_key,
 )
 from sortandpost.sync import WriteMode
 from sortandpost.sync.clock import utcnow
@@ -76,17 +85,18 @@ _HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 _STATUS_LABEL = {
     "draft": ("Draft", "sp-muted"),
     "sending": ("Sending…", "text-sky-600 dark:text-sky-400"),
-    "sent_draft": ("Draft in robopost", "text-emerald-600 dark:text-emerald-400"),
+    "sent_draft": ("Draft in {provider}", "text-emerald-600 dark:text-emerald-400"),
     "scheduled": ("Scheduled", "text-emerald-600 dark:text-emerald-400"),
     "failed": ("Failed", "text-red-600 dark:text-red-400"),
 }
 _PARTLY_SENT = ("Partly sent", "text-amber-600 dark:text-amber-400")
 
 
-def _status_label(p: Post) -> tuple[str, str]:
+def _status_label(p: Post, settings: Settings) -> tuple[str, str]:
     if p.status == "failed" and p.partly_sent:
         return _PARTLY_SENT
-    return _STATUS_LABEL.get(p.status, (p.status, ""))
+    label, color = _STATUS_LABEL.get(p.status, (p.status, ""))
+    return label.format(provider=provider_for(p, settings).name), color
 
 
 def _group_title(g: SendGroup) -> str:
@@ -110,20 +120,21 @@ _TZ_JS = "Intl.DateTimeFormat().resolvedOptions().timeZone"
 
 
 # --------------------------------------------------------------------------- #
-# robopost calls (blocking; always via run.io_bound)
+# API calls (blocking; always via run.io_bound)
 # --------------------------------------------------------------------------- #
-def _fetch_team_and_channels() -> tuple[str, list[Channel]]:
-    key, _ = get_robopost_key()
+def _refresh_channels(settings: Settings, spec: ProviderSpec) -> tuple[str, list[Channel]]:
+    """Validate the key and reload the channel list; returns (account label, channels)."""
+    key, _ = get_key(spec)
     if not key:
-        raise RobopostError(401, "no API key configured")
-    with RobopostClient(key) as rp:
-        return rp.check_auth(), rp.list_channels()
-
-
-def _refresh_channels(settings: Settings) -> tuple[str, list[Channel]]:
-    team, chans = _fetch_team_and_channels()
-    save_channel_cache(settings.paths, chans)
-    return team, chans
+        raise PostingError(401, "no API key configured", provider=spec.name)
+    try:
+        api = open_client(settings, spec, key)
+    except ValueError as exc:  # a bad base URL
+        raise PostingError(0, str(exc), provider=spec.name) from None
+    with api:
+        label, chans = api.check_auth(), api.list_channels()
+    save_channel_cache(settings.paths, spec.key, chans)
+    return label, chans
 
 
 def _source_names(engine: Engine, hashes: list[str]) -> dict[str, str | None]:
@@ -141,9 +152,9 @@ class _KeyStatus:
     keychain: str | None  # the backend's name; ``None`` = no OS keychain here
 
 
-def _key_status() -> _KeyStatus:
+def _key_status(spec: ProviderSpec) -> _KeyStatus:
     """Blocking (keychain; may wait on an OS prompt): always via run.io_bound."""
-    key, source = get_robopost_key()
+    key, source = get_key(spec)
     return _KeyStatus(
         masked=mask(key),
         source=source,
@@ -221,7 +232,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             ui.button("New post", icon="add", on_click=_new).props("color=primary flat")
         ui.label(
             "Compose a post from a collection (“Compose post” on a collection) or from photos "
-            "selected in the library, then send it to robopost as a draft or schedule it."
+            f"selected in the library, then send it to {active_provider(settings).name} as a "
+            "draft or schedule it."
         ).classes("px-4 text-xs sp-muted max-w-2xl")
         posts = list_posts(settings.paths)
         if not posts:
@@ -230,7 +242,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         colls = {c.id: c.name for c in load_collections(settings.paths)}
         with ui.column().classes("w-full max-w-4xl gap-2 p-4"):
             for p in posts:
-                label, color = _status_label(p)
+                label, color = _status_label(p, settings)
                 with (
                     ui.link(target=f"/posts/{p.id}").classes("w-full no-underline"),
                     ui.card().classes("w-full flex-row items-center gap-4 p-2"),
@@ -268,6 +280,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             p: Post = state["post"]
             return p
 
+        def prov() -> ProviderSpec:
+            """The provider this post sends through (its own once it went out)."""
+            return provider_for(cur(), settings)
+
+        def channels() -> tuple[list[Channel], str | None]:
+            return load_channel_cache(settings.paths, prov().key)
+
         def _save() -> None:
             save_post(settings.paths, cur(), device_id=settings.device_id)
             _checks.refresh()
@@ -291,7 +310,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         @ui.refreshable
         def _top() -> None:
             p = cur()
-            label, color = _status_label(p)
+            name = prov().name
+            label, color = _status_label(p, settings)
             with ui.row().classes("items-center gap-3 px-4 w-full"):
                 title = (
                     ui.input(value=p.title)
@@ -315,7 +335,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 ui.button("Delete", icon="delete", on_click=_confirm_delete).props(
                     "flat dense no-caps color=negative"
                 )
-            chans, _ = load_channel_cache(settings.paths)
+            chans, _ = channels()
             names = {c.id: c.name for c in chans}
             if p.status == "sending" and not is_in_flight(p.id):
                 part = p.sending_part()
@@ -323,7 +343,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 with ui.card().classes(
                     "mx-4 bg-amber-50 dark:bg-amber-950 border border-amber-400 gap-1"
                 ):
-                    ui.label("This send was interrupted before robopost confirmed it.").classes(
+                    ui.label(f"This send was interrupted before {name} confirmed it.").classes(
                         "font-medium"
                     )
                     if p.sent_channel_ids():
@@ -333,7 +353,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                         ).classes("text-sm")
                     ui.label(
                         ("The post to " + doubt if doubt else "The post")
-                        + " may or may not exist in robopost. Check robopost, then tell "
+                        + f" may or may not exist in {name}. Check {name}, then tell "
                         "sortandpost what happened — it never re-sends on its own."
                     ).classes("text-sm")
                     with ui.row().classes("gap-2"):
@@ -346,7 +366,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             elif p.partly_sent:
                 left = [c for c in p.channel_ids if c not in p.sent_channel_ids()]
                 ui.label(
-                    "Partly sent — already in robopost for "
+                    f"Partly sent — already in {name} for "
                     + ", ".join(names.get(c, c) for c in sorted(p.sent_channel_ids()))
                     + ". Sending again only goes to "
                     + (", ".join(names.get(c, c) for c in left) or "no one (it's then marked sent)")
@@ -354,8 +374,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 ).classes("px-4 text-sm text-amber-700 dark:text-amber-400")
             elif p.sent:
                 ui.label(
-                    "Sent to robopost — edit or cancel it there (robopost's API can't change it "
-                    "from here). Use Duplicate to send it again."
+                    f"Sent to {name} — edit or cancel it there (sortandpost can't change a "
+                    "sent post). Use Duplicate to send it again."
                 ).classes("px-4 text-sm sp-muted")
             if State.write_mode != WriteMode.writable:
                 ui.label(
@@ -378,8 +398,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             with ui.dialog() as dialog, ui.card().classes("gap-2 max-w-md"):
                 ui.label(f"Delete “{cur().title}”?").classes("font-medium")
                 ui.label(
-                    "Only this record in sortandpost is removed. Nothing in robopost changes "
-                    "(delete it there if needed), and no photo files are touched."
+                    f"Only this record in sortandpost is removed. Nothing in {prov().name} "
+                    "changes (delete it there if needed), and no photo files are touched."
                 ).classes("text-xs sp-muted")
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -529,35 +549,53 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         # -- destinations ---------------------------------------------------- #
         async def _refresh_channel_list() -> None:
             try:
-                got = await nicegui_run.io_bound(_refresh_channels, settings)
-            except RobopostError as exc:
+                got = await nicegui_run.io_bound(_refresh_channels, settings, prov())
+            except PostingError as exc:
                 with client:
                     ui.notify(exc.friendly, type="negative", multi_line=True)
                 return
             if got is None:  # app shutting down
                 return
             with client:
-                ui.notify(f"{len(got[1])} channel(s) loaded from robopost")
+                ui.notify(f"{len(got[1])} channel(s) loaded from {prov().name}")
                 _dest.refresh()
                 _checks.refresh()
 
         @ui.refreshable
         def _dest() -> None:
             p = cur()
-            chans, fetched = load_channel_cache(settings.paths)
+            sp = prov()
+            chans, fetched = channels()
             with ui.column().classes("w-full max-w-2xl gap-1 px-4 pt-4"):
                 with ui.row().classes("items-center gap-2"):
-                    ui.label("Channels").classes("font-bold")
+                    ui.label(f"Channels · {sp.name}").classes("font-bold")
                     ui.button(icon="refresh", on_click=_refresh_channel_list).props(
                         "flat dense round size=sm"
-                    ).tooltip("Reload the channel list from robopost")
+                    ).tooltip(f"Reload the channel list from {sp.name}")
                     if fetched:
                         ui.label(f"updated {_fmt_local(fetched, tz)}").classes("text-xs sp-faint")
                 if not chans:
                     ui.label(
                         "No channels loaded. Add your API key in Settings → Posting, then press "
-                        "refresh. (Channels are optional for a robopost draft.)"
+                        "refresh."
+                        + (
+                            f" (Channels are optional for a {sp.name} draft.)"
+                            if sp.channelless_drafts
+                            else ""
+                        )
                     ).classes("text-sm sp-muted")
+                known = {c.id for c in chans}
+                stale = [
+                    c for c in p.channel_ids if c not in known and c not in p.sent_channel_ids()
+                ]
+                if stale and p.editable:
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label(
+                            f"{len(stale)} chosen channel(s) aren't in {sp.name} — re-pick below."
+                        ).classes("text-sm text-amber-600")
+                        ui.button("Clear them", on_click=lambda s=stale: _drop_channels(s)).props(
+                            "flat dense no-caps"
+                        )
                 by_net: dict[str, list[Channel]] = {}
                 for c in chans:
                     by_net.setdefault(c.network, []).append(c)
@@ -565,20 +603,22 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 for net, group in sorted(by_net.items()):
                     ui.label(net.title()).classes("text-xs sp-faint pt-1")
                     for c in group:
-                        note = "  (reconnect in robopost)" if c.must_reconnect else ""
+                        note = f"  (reconnect in {sp.name})" if c.must_reconnect else ""
                         if c.id in done:
                             note = "  (sent)"
                         cb = ui.checkbox(c.name + note, value=c.id in p.channel_ids or c.id in done)
                         cb.set_enabled(p.editable and c.id not in done)
                         cb.on_value_change(lambda e, cid=c.id: _toggle_channel(cid, bool(e.value)))
                 nets = selected_networks(p, chans)
-                if "instagram" in nets:
-                    _post_type_row("instagram", "Instagram post type", POST_TYPES)
-                    _ig_sizing()
-                if "facebook" in nets:
-                    _post_type_row("facebook", "Facebook post type", POST_TYPES[:2])
-                if "pinterest" in nets:
-                    _pinterest_row()
+                for net in sorted(nets):
+                    _network_fields(net, sp.fields_for(net))
+                    if net == "instagram":
+                        _ig_sizing()
+
+        def _drop_channels(ids: list[str]) -> None:
+            cur().channel_ids = [c for c in cur().channel_ids if c not in ids]
+            _save()
+            _dest.refresh()
 
         def _toggle_channel(cid: str, on: bool) -> None:
             ids = cur().channel_ids
@@ -678,7 +718,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         @ui.refreshable
         def _ig_preview() -> None:
             p = cur()
-            if "instagram" not in selected_networks(p, load_channel_cache(settings.paths)[0]):
+            if "instagram" not in selected_networks(p, channels()[0]):
                 return
             sizes: dict[str, tuple[int, int]] = state.get("sizes", {})
             spec = _ig_spec()
@@ -717,45 +757,47 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     f"Preview: {spec.width}x{spec.height}"
                     + (f", {spec.border}px border" if spec.border else "")
                 ).classes("text-xs sp-faint")
-            groups = plan_send(p, load_channel_cache(settings.paths)[0], _sizes())
+            groups = plan_send(p, channels()[0], _sizes())
             if len(groups) > 1:
                 ui.label(
-                    "Instagram goes out as its own robopost post with these sized copies; "
+                    f"Instagram goes out as its own {prov().name} post with these sized copies; "
                     "your other channels get the normal export first."
                 ).classes("text-xs sp-faint")
 
-        def _post_type_row(net: str, label: str, choices: tuple[str, ...]) -> None:
-            p = cur()
-            with ui.row().classes("items-center gap-2 pt-2"):
-                ui.label(label).classes("text-sm")
-                t = ui.toggle(
-                    {c: c.title() for c in choices}, value=p.setting(net, "postType", "POST")
-                ).props("dense no-caps")
-                t.set_enabled(p.editable)
-
-                def _pt(e: Any) -> None:
-                    _set_setting(net, "postType", str(e.value or "POST"))
-                    if net == "instagram":
-                        _dest.refresh()
-
-                t.on_value_change(_pt)
-
-        def _pinterest_row() -> None:
+        def _network_fields(net: str, fields: tuple[FieldSpec, ...]) -> None:
+            """The provider's settings for one network, from its spec."""
+            if not fields:
+                return
             p = cur()
             with ui.column().classes("gap-1 pt-2 w-full"):
-                ui.label("Pinterest").classes("text-sm")
-                pt = ui.input("Pin title", value=p.setting("pinterest", "pinTitle")).props(
-                    "dense outlined"
-                )
-                pl = ui.input(
-                    "Destination link (optional)",
-                    value=p.setting("pinterest", "destinationLink"),
-                    placeholder="https://…",
-                ).props("dense outlined")
-                for inp, key in ((pt, "pinTitle"), (pl, "destinationLink")):
+                for f in fields:
+                    value = p.setting(net, f.key, f.default)
+                    if f.kind == "select":
+                        with ui.row().classes("items-center gap-2"):
+                            ui.label(f.label).classes("text-sm")
+                            opt = f.option(value)
+                            t = ui.toggle(
+                                {o.value: o.label for o in f.options},
+                                value=opt.value if opt else None,
+                            ).props("dense no-caps")
+                            t.set_enabled(p.editable)
+
+                            def _sel(e: Any, f: FieldSpec = f) -> None:
+                                _set_setting(net, f.key, str(e.value or f.default))
+                                _dest.refresh()  # e.g. an Instagram story changes the sizing
+
+                            t.on_value_change(_sel)
+                        continue
+                    inp = (
+                        ui.input(f.label, value=value, placeholder=f.placeholder)
+                        .props("dense outlined")
+                        .classes("w-full")
+                    )
                     inp.set_enabled(p.editable)
-                    inp.on("blur", lambda _e, i=inp, k=key: _set_setting("pinterest", k, i.value))
-                    inp.classes("w-full")
+                    inp.on(
+                        "blur",
+                        lambda _e, i=inp, k=f.key: _set_setting(net, k, str(i.value or "")),
+                    )
 
         # -- when ------------------------------------------------------------ #
         @ui.refreshable
@@ -827,7 +869,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     f"{_fmt_local(p.schedule_at, tz)} ({getattr(tz, 'key', tz)})"
                     + (f"  ·  {when:%Y-%m-%d %H:%M} UTC" if when else "")
                     if when
-                    else "No time set — required to schedule; optional for a robopost draft."
+                    else "No time set — required to schedule; optional for a draft."
                 ).classes("text-xs sp-muted")
 
         def _set_when(local_dt: datetime) -> None:
@@ -853,12 +895,19 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         @ui.refreshable
         def _checks() -> None:
             p = cur()
-            chans, _ = load_channel_cache(settings.paths)
+            sp = prov()
+            chans, _ = channels()
             names: dict[str, str | None] = state["names"]
             unavailable = {h for h, n in names.items() if n is None}
-            d_err, d_warn = validate(p, chans, "draft", unavailable=unavailable)
-            s_err, s_warn = validate(p, chans, "schedule", unavailable=unavailable)
-            loaded = cached_robopost_key()  # read off-loop by _load_key below
+            active = active_provider(settings).key
+            d_err, d_warn = validate(p, chans, "draft", sp, unavailable=unavailable, active=active)
+            s_err, s_warn = validate(
+                p, chans, "schedule", sp, unavailable=unavailable, active=active
+            )
+            budget = _budget_note(settings, sp, len(plan_send(p, chans, _sizes())) or 1)
+            if budget:
+                d_err, s_err = [*d_err, budget], [*s_err, budget]
+            loaded = cached_key(sp)  # read off-loop by _load_key below
             key = loaded[0] if loaded else None
             writable = State.write_mode == WriteMode.writable
             with ui.column().classes("w-full max-w-2xl gap-1 px-4 pt-4 pb-2"):
@@ -870,11 +919,11 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     for msg in dict.fromkeys(d_warn + s_warn):
                         ui.label("⚠ " + msg).classes("text-sm text-amber-600")
                     if loaded is None:
-                        ui.label("Checking the keychain for the robopost API key…").classes(
+                        ui.label(f"Checking the keychain for the {sp.name} API key…").classes(
                             "text-sm sp-muted"
                         )
                     elif not key:
-                        ui.label("✕ No robopost API key — add it in Settings → Posting.").classes(
+                        ui.label(f"✕ No {sp.name} API key — add it in Settings → Posting.").classes(
                             "text-sm text-red-600"
                         )
                 with ui.row().classes("gap-2 pt-2"):
@@ -893,7 +942,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
 
         async def _confirm(mode: SendMode) -> None:
             p = cur()
-            chans, _ = load_channel_cache(settings.paths)
+            chans, _ = channels()
             names = await nicegui_run.io_bound(_source_names, engine, list(p.photos))
             sizes = await nicegui_run.io_bound(upright_sizes, engine, list(p.photos))
             if names is None or sizes is None:
@@ -902,7 +951,14 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             state["sizes"] = sizes
             with client:
                 unavailable = {h for h, n in names.items() if n is None}
-                errors, warnings = validate(p, chans, mode, unavailable=unavailable)
+                errors, warnings = validate(
+                    p,
+                    chans,
+                    mode,
+                    prov(),
+                    unavailable=unavailable,
+                    active=active_provider(settings).key,
+                )
                 if errors:
                     ui.notify(errors[0], type="warning")
                     _checks.refresh()
@@ -917,12 +973,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             warnings: list[str],
         ) -> None:
             pc = settings.config.posting
+            name = prov().name
             by_id = {c.id: c for c in chans}
             groups = plan_send(p, chans, _sizes())
             edge = "full size" if pc.export_long_edge <= 0 else f"{pc.export_long_edge} px"
             with ui.dialog() as dialog, ui.card().classes("gap-2 max-w-xl"):
                 ui.label(
-                    "Send to robopost as a draft?" if mode == "draft" else "Schedule this post?"
+                    f"Send to {name} as a draft?" if mode == "draft" else "Schedule this post?"
                 ).classes("text-lg font-medium")
                 ui.label(
                     f"{len(p.photos)} photo(s) will be uploaded as new JPEGs "
@@ -947,7 +1004,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     ).classes("text-sm sp-muted")
                 if len(groups) > 1:
                     ui.label(
-                        f"This goes to robopost as {len(groups)} separate posts, in this order. "
+                        f"This goes to {name} as {len(groups)} separate posts, in this order. "
                         "If one fails, a retry only sends what's left."
                     ).classes("text-sm font-medium")
                 if not groups:
@@ -963,7 +1020,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     for c in g.channels:
                         ui.label(f"• {c.name} — {c.social_network}").classes("text-sm")
                     if not g.channels:
-                        ui.label("No channels chosen — you'll pick them in robopost.").classes(
+                        ui.label(f"No channels chosen — you'll pick them in {name}.").classes(
                             "text-sm"
                         )
                 when = p.schedule_dt()
@@ -981,7 +1038,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 for w in warnings:
                     ui.label("⚠ " + w).classes("text-sm text-amber-600")
                 ui.label(
-                    "After sending, this post can only be edited or cancelled inside robopost."
+                    f"After sending, this post can only be edited or cancelled inside {name}."
                 ).classes("text-xs sp-muted")
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -1028,8 +1085,10 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                         line += f" ({e['mode']})"
                     if e.get("part") in ("instagram", "other"):
                         line += " · Instagram" if e["part"] == "instagram" else " · other channels"
-                    if e.get("robopost_post_ids"):
-                        line += f" · robopost id {', '.join(e['robopost_post_ids'])}"
+                    ids = e.get("remote_post_ids") or e.get("robopost_post_ids")
+                    if ids:
+                        who = PROVIDERS.get(str(e.get("provider") or "robopost"))
+                        line += f" · {who.name if who else 'remote'} id {', '.join(ids)}"
                     if "was_sent" in e:
                         line += " · marked sent" if e["was_sent"] else " · marked not sent"
                     ui.label(line).classes("text-xs")
@@ -1054,9 +1113,9 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         _history()
         ui.element("div").classes("h-8")
         await _load_names()
-        if cached_robopost_key() is None:
+        if cached_key(prov()) is None:
             # the first read can wait on a keychain prompt: never on the event loop
-            await nicegui_run.io_bound(get_robopost_key)
+            await nicegui_run.io_bound(get_key, prov())
             with client:
                 _checks.refresh()
 
@@ -1064,145 +1123,67 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
 # --------------------------------------------------------------------------- #
 # Settings → Posting
 # --------------------------------------------------------------------------- #
-def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
-    """API key (write-only, OS keychain), connection test, channels, and the
-    upload export size/quality."""
-    client = ui.context.client
-    ui.label(
-        "sortandpost uploads clean JPEG copies of your photos to robopost.app and creates a "
-        "draft or scheduled post. Get an API key in robopost → Team → Manage API Keys."
-    ).classes("text-xs sp-faint max-w-xl")
+_OP_LABELS = {"create": "new posts", "upload": "uploads", "channels": "channel lists"}
 
-    key_state: dict[str, _KeyStatus | None] = {"status": None}
 
-    async def _load_key() -> None:
-        # keychain calls can wait on an OS prompt: never on the event loop
-        st = await nicegui_run.io_bound(_key_status)
-        if st is None:  # the pool was shut down under us (app closing)
-            return
-        key_state["status"] = st
-        with client:
-            _key_row.refresh()
-
-    @ui.refreshable
-    def _key_row() -> None:
-        st = key_state["status"]
-        with ui.column().classes("gap-1"):
-            if st is None:
-                ui.label("Checking the keychain…").classes("text-sm sp-muted")
-                ui.label(
-                    "If macOS asks whether sortandpost may use its keychain item, answer "
-                    "that prompt (Always Allow avoids it next time)."
-                ).classes("text-xs sp-faint")
-                return
-            if st.source == "env":
-                ui.label(f"API key {st.masked} — from the {ROBOPOST_ENV} environment variable.")
-                ui.label(
-                    "Change it where the app is launched (.env / docker-compose). The "
-                    "environment variable always overrides a saved key."
-                ).classes("text-xs sp-muted")
-                return
-            if st.keychain is None:
-                ui.label("No OS keychain is available here (e.g. inside Docker).").classes(
-                    "text-sm text-amber-600"
-                )
-                ui.label(
-                    f"Set {ROBOPOST_ENV} in .env and restart. The key is never stored in the "
-                    "app-data folder."
-                ).classes("text-xs sp-muted")
-                return
-            has_key = bool(st.masked)
-            if has_key:
-                ui.label(f"API key {st.masked} — stored in the {st.keychain}.")
-            else:
-                ui.label("No API key saved.").classes("text-sm sp-muted")
-            with ui.row().classes("items-center gap-2"):
-                inp = (
-                    ui.input(
-                        "Paste a new API key" if has_key else "API key",
-                        password=True,
-                        password_toggle_button=False,
-                    )
-                    .props("dense outlined autocomplete=off")
-                    .classes("w-80")
-                )
-
-                async def _save_key() -> None:
-                    value = (inp.value or "").strip()
-                    inp.value = ""  # never keep it in the page
-                    if not value:
-                        return
-                    try:
-                        await nicegui_run.io_bound(set_robopost_key, value)
-                    except Exception as exc:  # keyring backends raise their own types
-                        with client:
-                            ui.notify(
-                                f"Couldn't save to the keychain: {type(exc).__name__}",
-                                type="negative",
-                            )
-                        return
-                    with client:
-                        ui.notify(f"API key saved to the {st.keychain}")
-                    await _load_key()
-
-                inp.on("keydown.enter", _save_key)
-                ui.button("Save", on_click=_save_key).props("flat dense")
-                if has_key:
-
-                    async def _remove() -> None:
-                        await nicegui_run.io_bound(clear_robopost_key)
-                        with client:
-                            ui.notify("API key removed from the keychain")
-                        await _load_key()
-
-                    ui.button("Remove", on_click=_remove).props("flat dense color=negative")
-            ui.label(
-                "Only the last 4 characters are ever shown. The key never goes to the browser "
-                "or into the app-data folder."
-            ).classes("text-xs sp-faint")
-
-    _key_row()
-    ui.timer(0, _load_key, once=True)
-
-    status = ui.label().classes("text-sm")
-
-    @ui.refreshable
-    def _channels() -> None:
-        chans, _fetched = load_channel_cache(settings.paths)
-        if not chans:
-            return
-        with ui.column().classes("gap-0"):
-            for c in chans:
-                ui.label(
-                    f"• {c.name} — {c.social_network}"
-                    + ("  ⚠ reconnect in robopost" if c.must_reconnect else "")
-                ).classes("text-sm" + (" text-amber-600" if c.must_reconnect else ""))
-
-    async def _test() -> None:
-        status.set_text("Connecting…")
-        try:
-            got = await nicegui_run.io_bound(_refresh_channels, settings)
-        except RobopostError as exc:
-            with client:
-                status.set_text(exc.friendly)
-                status.classes(replace="text-sm text-red-600")
-            return
-        if got is None:
-            return
-        team, chans = got
-        with client:
-            status.set_text(f"Connected to robopost team “{team}” · {len(chans)} channel(s)")
-            status.classes(replace="text-sm text-emerald-600")
-            _channels.refresh()
-
-    ui.button("Test connection & load channels", icon="wifi_tethering", on_click=_test).props(
-        "flat dense no-caps"
+def _budget_note(settings: Settings, spec: ProviderSpec, creates: int) -> str | None:
+    """An error when *creates* more posts would break the provider's known
+    rate limit right now (checked again by the send itself)."""
+    lim = limiter(settings, spec)
+    wait = lim.check("create", creates)
+    if wait is None:
+        return None
+    rl = lim.limit("create")
+    minutes = max(1, -(-wait // 60))
+    return (
+        f"{spec.name} allows {rl.describe('new posts') if rl else 'only so many new posts'}; "
+        f"try again in {minutes} minute(s)."
     )
-    _channels()
+
+
+def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
+    """Which posting service, then -- for that service, all from its spec --
+    the API key (write-only, OS keychain), its server address when it has one,
+    its rate limits, a connection test with the channel list; and the upload
+    export size/quality, shared by every service."""
+    client = ui.context.client
+    pc = settings.config.posting
+
+    @ui.refreshable
+    def _body() -> None:
+        spec = active_provider(settings)
+        with ui.row().classes("items-center gap-3"):
+            ui.label("Posting service").classes("text-sm")
+            t = ui.toggle({k: sp.name for k, sp in PROVIDERS.items()}, value=spec.key).props(
+                "dense no-caps"
+            )
+            t.set_enabled(writable)
+
+            def _switch(e: Any) -> None:
+                new = str(e.value or "")
+                if new not in PROVIDERS or new == pc.provider:
+                    return
+                pc.provider = new
+                settings.config.dump(settings.paths.config_file)
+                ui.notify(
+                    f"Posting now uses {PROVIDERS[new].name}. Unsent drafts follow it; posts "
+                    "that already went out stay with the service they went to.",
+                    multi_line=True,
+                )
+                _body.refresh()
+
+            t.on_value_change(_switch)
+        ui.label(f"sortandpost {spec.about} {spec.key_help}").classes("text-xs sp-faint max-w-xl")
+        _key_panel(spec, client)
+        if spec.base_url_editable:
+            _base_url_panel(settings, spec, writable=writable)
+        _limits_panel(settings, spec)
+        _connection_panel(settings, spec, client)
+
+    _body()
 
     if not writable:
         return
-    pc = settings.config.posting
     with ui.row().classes("items-center gap-4 pt-2"):
         ui.label("Upload size").classes("text-sm")
         edge = (
@@ -1234,6 +1215,226 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
     q.on_value_change(lambda e: q_lbl.set_text(str(int(e.value or 0))))
 
 
+def _key_panel(spec: ProviderSpec, client: Any) -> None:
+    key_state: dict[str, _KeyStatus | None] = {"status": None}
+
+    async def _load_key() -> None:
+        # keychain calls can wait on an OS prompt: never on the event loop
+        st = await nicegui_run.io_bound(_key_status, spec)
+        if st is None:  # the pool was shut down under us (app closing)
+            return
+        key_state["status"] = st
+        with client:
+            _key_row.refresh()
+
+    @ui.refreshable
+    def _key_row() -> None:
+        st = key_state["status"]
+        with ui.column().classes("gap-1"):
+            if st is None:
+                ui.label("Checking the keychain…").classes("text-sm sp-muted")
+                ui.label(
+                    "If macOS asks whether sortandpost may use its keychain item, answer "
+                    "that prompt (Always Allow avoids it next time)."
+                ).classes("text-xs sp-faint")
+                return
+            if st.source == "env":
+                ui.label(
+                    f"{spec.name} API key {st.masked} — from the {spec.env_var} "
+                    "environment variable."
+                )
+                ui.label(
+                    "Change it where the app is launched (.env / docker-compose). The "
+                    "environment variable always overrides a saved key."
+                ).classes("text-xs sp-muted")
+                return
+            if st.keychain is None:
+                ui.label("No OS keychain is available here (e.g. inside Docker).").classes(
+                    "text-sm text-amber-600"
+                )
+                ui.label(
+                    f"Set {spec.env_var} in .env and restart. The key is never stored in the "
+                    "app-data folder."
+                ).classes("text-xs sp-muted")
+                return
+            has_key = bool(st.masked)
+            if has_key:
+                ui.label(f"{spec.name} API key {st.masked} — stored in the {st.keychain}.")
+            else:
+                ui.label(f"No {spec.name} API key saved.").classes("text-sm sp-muted")
+            with ui.row().classes("items-center gap-2"):
+                inp = (
+                    ui.input(
+                        "Paste a new API key" if has_key else "API key",
+                        password=True,
+                        password_toggle_button=False,
+                    )
+                    .props("dense outlined autocomplete=off")
+                    .classes("w-80")
+                )
+
+                async def _save_key() -> None:
+                    value = (inp.value or "").strip()
+                    inp.value = ""  # never keep it in the page
+                    if not value:
+                        return
+                    try:
+                        await nicegui_run.io_bound(set_key, spec, value)
+                    except Exception as exc:  # keyring backends raise their own types
+                        with client:
+                            ui.notify(
+                                f"Couldn't save to the keychain: {type(exc).__name__}",
+                                type="negative",
+                            )
+                        return
+                    with client:
+                        ui.notify(f"{spec.name} API key saved to the {st.keychain}")
+                    await _load_key()
+
+                inp.on("keydown.enter", _save_key)
+                ui.button("Save", on_click=_save_key).props("flat dense")
+                if has_key:
+
+                    async def _remove() -> None:
+                        await nicegui_run.io_bound(clear_key, spec)
+                        with client:
+                            ui.notify(f"{spec.name} API key removed from the keychain")
+                        await _load_key()
+
+                    ui.button("Remove", on_click=_remove).props("flat dense color=negative")
+            ui.label(
+                "Only the last 4 characters are ever shown. The key never goes to the browser "
+                "or into the app-data folder."
+            ).classes("text-xs sp-faint")
+
+    _key_row()
+    ui.timer(0, _load_key, once=True)
+
+
+def _base_url_panel(settings: Settings, spec: ProviderSpec, *, writable: bool) -> None:
+    pc = settings.config.posting
+    with ui.column().classes("gap-1 pt-2 w-full max-w-xl"):
+        ui.label(f"{spec.name} server").classes("text-sm font-medium")
+        with ui.row().classes("items-center gap-1"):
+            for preset in spec.base_url_presets:
+                b = ui.button(
+                    preset.label, on_click=lambda pr=preset: _use_preset(pr.url, pr.hint)
+                ).props("flat dense no-caps")
+                b.set_enabled(writable)
+        inp = (
+            ui.input("API address", value=base_url(settings, spec))
+            .props("dense outlined")
+            .classes("w-full")
+        )
+        inp.set_enabled(writable)
+        hint = ui.label().classes("text-xs sp-faint")
+        note = ui.label().classes("text-xs")
+
+        def _show(raw: str) -> tuple[str, str | None]:
+            url = normalize_base_url(spec, raw)
+            err, warning = check_base_url(spec, url)
+            text = err or warning or (f"Uses {url}" if url != raw.strip() else "")
+            note.set_text(text)
+            note.classes(
+                replace="text-xs "
+                + ("text-red-600" if err else "text-amber-600" if warning else "sp-faint")
+            )
+            return url, err
+
+        def _use_preset(url: str, preset_hint: str) -> None:
+            inp.set_value(url)
+            hint.set_text(preset_hint)
+            if url.endswith("://"):
+                inp.run_method("focus")
+            else:
+                _save()
+
+        def _save() -> None:
+            """Saved as soon as it's typed (enter / leaving the field): an
+            address left unsaved silently sent the key to the default server."""
+            raw = str(inp.value or "").strip()
+            if raw in ("", "https://", "http://"):
+                return  # a preset waiting to be filled in
+            url, err = _show(raw)
+            if err:
+                ui.notify(err, type="warning")
+                return
+            if url == base_url(settings, spec):
+                inp.set_value(url)
+                return  # unchanged
+            if url == spec.default_base_url:
+                pc.base_urls.pop(spec.key, None)
+            else:
+                pc.base_urls[spec.key] = url
+            settings.config.dump(settings.paths.config_file)
+            inp.set_value(url)
+            ui.notify(f"{spec.name} server saved: {url}")
+
+        inp.on_value_change(lambda e: _show(str(e.value or "")))
+        inp.on("keydown.enter", _save)
+        inp.on("blur", _save)
+        _show(str(inp.value or ""))
+
+
+def _limits_panel(settings: Settings, spec: ProviderSpec) -> None:
+    lim = limiter(settings, spec)
+    lines = []
+    for op in _OP_LABELS:
+        rl = lim.limit(op)
+        if rl is not None:
+            lines.append(
+                f"{spec.name} allows {rl.describe(_OP_LABELS[op])} "
+                f"({lim.used(op)} used from this computer)."
+            )
+    for line in lines:
+        ui.label(line).classes("text-xs sp-muted")
+    if lines:
+        ui.label(
+            "A send that would go over is refused before anything is uploaded. "
+            "Self-hosted with a different limit? Set posting.rate_limit_overrides in config.yaml."
+        ).classes("text-xs sp-faint max-w-xl")
+
+
+def _connection_panel(settings: Settings, spec: ProviderSpec, client: Any) -> None:
+    status = ui.label().classes("text-sm")
+
+    @ui.refreshable
+    def _channels() -> None:
+        chans, _fetched = load_channel_cache(settings.paths, spec.key)
+        if not chans:
+            return
+        with ui.column().classes("gap-0"):
+            for c in chans:
+                ui.label(
+                    f"• {c.name} — {c.social_network}"
+                    + (f"  ⚠ reconnect in {spec.name}" if c.must_reconnect else "")
+                ).classes("text-sm" + (" text-amber-600" if c.must_reconnect else ""))
+
+    async def _test() -> None:
+        status.set_text("Connecting…")
+        try:
+            got = await nicegui_run.io_bound(_refresh_channels, settings, spec)
+        except PostingError as exc:
+            with client:
+                where = f" (server: {base_url(settings, spec)})" if spec.base_url_editable else ""
+                status.set_text(exc.friendly + where)
+                status.classes(replace="text-sm text-red-600")
+            return
+        if got is None:
+            return
+        label, chans = got
+        who = f" {spec.account_label} “{label}”" if label else ""
+        with client:
+            status.set_text(f"Connected to {spec.name}{who} · {len(chans)} channel(s)")
+            status.classes(replace="text-sm text-emerald-600")
+            _channels.refresh()
+
+    ui.button("Test connection & load channels", icon="wifi_tethering", on_click=_test).props(
+        "flat dense no-caps"
+    )
+    _channels()
+
+
 def posted_note(settings: Settings, pixel_hash: str) -> None:
     """Photo page: which posts include this photo (links)."""
     from sortandpost.posts import posts_containing
@@ -1245,7 +1446,7 @@ def posted_note(settings: Settings, pixel_hash: str) -> None:
         ui.icon("send", size="1rem").classes("text-emerald-600")
         ui.label("In posts:").classes("text-sm")
         for p in rows:
-            label, _ = _status_label(p)
+            label, _ = _status_label(p, settings)
             ui.link(f"{p.title} ({label.lower()})", f"/posts/{p.id}").classes("text-sm")
 
 

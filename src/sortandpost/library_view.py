@@ -150,7 +150,7 @@ class LibraryQuery:
 
     ``q`` text · ``stars`` comma list (``u`` = unrated) · ``camera`` (repeat) ·
     ``dates`` · ``folder`` · ``tag`` (repeat) + ``tagmode`` any|all · ``gps`` ·
-    ``dups`` · ``missing`` · ``mark`` · ``posted`` (``1`` sent to robopost /
+    ``dups`` · ``missing`` · ``mark`` · ``posted`` (``1`` sent to a posting service /
     ``0`` not yet) · ``group`` + ``folder_sort`` (view only; ``group`` unset
     means :data:`DEFAULT_GROUP`, ``flat`` means no sections).
     """
@@ -166,7 +166,7 @@ class LibraryQuery:
     dups: bool = False
     missing: bool = False
     mark: bool = False
-    posted: str = ""  # "" any · "1" sent to robopost · "0" not sent yet
+    posted: str = ""  # "" any · "1" sent to a posting service · "0" not sent yet
     group: str = ""  # view only ("" = DEFAULT_GROUP, "flat"): not saved with a search
     folder_sort: str = ""
 

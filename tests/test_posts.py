@@ -6,7 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 from sortandpost import posts as P
 from sortandpost.paths import Paths
-from sortandpost.robopost import Channel
+from sortandpost.posting.model import Channel, MediaRef
+from sortandpost.posting.robopost import SPEC as RP
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 IG = Channel(id="ig", name="My IG", social_network="INSTAGRAM")
@@ -115,17 +116,17 @@ def test_coerce_tolerates_bad_fields(paths: Paths) -> None:
 
 
 def test_channel_cache_holds_no_key(paths: Paths) -> None:
-    P.save_channel_cache(paths, [IG, PIN])
-    chans, fetched = P.load_channel_cache(paths)
+    P.save_channel_cache(paths, "robopost", [IG, PIN])
+    chans, fetched = P.load_channel_cache(paths, "robopost")
     assert chans == [IG, PIN] and fetched
-    assert "apikey" not in paths.robopost_file.read_text().lower()
+    assert "apikey" not in paths.provider_file("robopost").read_text().lower()
 
 
 # --- validation ----------------------------------------------------------------
 
 
 def _errors(post: P.Post, mode: P.SendMode = "schedule", **kw: object) -> list[str]:
-    return P.validate(post, CHANNELS, mode, now=NOW, **kw)[0]  # type: ignore[arg-type]
+    return P.validate(post, CHANNELS, mode, RP, now=NOW, **kw)[0]  # type: ignore[arg-type]
 
 
 def test_schedule_needs_channel_and_future_time() -> None:
@@ -153,7 +154,7 @@ def test_instagram_ten_photo_limit() -> None:
 
 def test_soft_limits_are_warnings() -> None:
     p = _post(channel_ids=["bs"], photos=[h(i) for i in range(5)], caption="x" * 301)
-    errors, warnings = P.validate(p, CHANNELS, "draft", now=NOW)
+    errors, warnings = P.validate(p, CHANNELS, "draft", RP, now=NOW)
     assert errors == []
     assert any("at most 4" in w for w in warnings)
     assert any("301 characters" in w for w in warnings)
@@ -170,7 +171,7 @@ def test_pinterest_needs_title_and_valid_link() -> None:
 
 def test_reconnect_unknown_unavailable_and_sent() -> None:
     assert any("reconnected" in e for e in _errors(_post(channel_ids=["old"]), "draft"))
-    assert any("no longer" in e for e in _errors(_post(channel_ids=["gone"]), "draft"))
+    assert any("aren't in Robopost" in e for e in _errors(_post(channel_ids=["gone"]), "draft"))
     assert any("no file" in e for e in _errors(_post(), "draft", unavailable={h(1)}))
     assert any("already sent" in e for e in _errors(_post(status="scheduled"), "draft"))
     assert any("already sent" in e for e in _errors(_post(status="sending"), "draft"))
@@ -179,9 +180,17 @@ def test_reconnect_unknown_unavailable_and_sent() -> None:
 # --- payload -------------------------------------------------------------------
 
 
+def _payload(
+    p: P.Post, mode: P.SendMode, ids: list[str], channels: list[Channel] | None = None
+) -> dict[str, object]:
+    chans = CHANNELS if channels is None else channels
+    req = P.make_request(p, chans, mode, [MediaRef(i) for i in ids], RP, now=NOW)
+    return RP.build_payload(req)
+
+
 def test_payload_draft_minimal() -> None:
     p = _post()
-    assert P.build_payload(p, CHANNELS, "draft", ["m1"], now=NOW) == {
+    assert _payload(p, "draft", ["m1"]) == {
         "text": "hello",
         "image_object_ids": ["m1"],
         "is_draft": True,
@@ -200,7 +209,7 @@ def test_payload_schedule_full() -> None:
             "pinterest": {"pinTitle": " Title ", "destinationLink": ""},
         },
     )
-    body = P.build_payload(p, CHANNELS, "schedule", ["m1", "m2"], now=NOW)
+    body = _payload(p, "schedule", ["m1", "m2"])
     assert body == {
         "text": "hello",
         "image_object_ids": ["m1", "m2"],
@@ -220,7 +229,7 @@ def test_payload_omits_settings_for_unticked_networks_and_past_time_on_draft() -
         schedule_at=(NOW - timedelta(hours=1)).isoformat(),
         network_settings={"instagram": {"postType": "REELS"}},
     )
-    body = P.build_payload(p, CHANNELS, "draft", ["m"], now=NOW)
+    body = _payload(p, "draft", ["m"])
     assert "instagram_settings" not in body and "schedule_at" not in body
     assert body["channel_ids"] == ["bs"]
 
@@ -238,8 +247,8 @@ def test_instagram_sizing_settings_validated_and_not_in_payload() -> None:
     assert (p.ig_format(), p.ig_border(), p.ig_color()) == ("portrait", 0, "#ffffff")
     p.network_settings["instagram"]["postType"] = "STORIES"
     assert p.ig_format() == "story"
-    body = P.build_payload(
-        p, [Channel(id="ig1", name="IG", social_network="INSTAGRAM")], "draft", ["m1"]
+    body = _payload(
+        p, "draft", ["m1"], channels=[Channel(id="ig1", name="IG", social_network="INSTAGRAM")]
     )
     assert body["instagram_settings"] == {"postType": "STORIES"}
     assert "padColor" not in str(body) and "border" not in str(body)

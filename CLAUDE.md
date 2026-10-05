@@ -227,7 +227,7 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
     device.json                # {"device_id": "<random>", "hostname": "..."}  created on first run
     publish_state.json         # last published DB generation counter + hash
     helper.json                # {port, token, ...} — written by the optional host file-manager agent
-    robopost.json              # cached robopost channel list — NO secrets (the API key is in the OS keychain)
+    <provider>.json            # robopost.json / postiz.json: channel list + rate-limit log — NO secrets (keys: OS keychain)
     post_exports/<post_id>/    # temporary clean JPEGs for an upload; removed after the send
     models/                    # downloaded CLIP weights
     logs/
@@ -237,7 +237,7 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
     config.yaml
     devices/<slug(hostname)>-<device_id[:8]>/library.json # PER-DEVICE library folders (see below)
     devices/<…>/achievements.json                         # PER-DEVICE achievement unlocks (union = truth)
-    posts/<post_id>.json       # robopost posts, one file each (see "Posting" below)
+    posts/<post_id>.json       # posts, one file each (see "Posting" below)
     profile.json               # achievements profile: {name, mode} (last-writer-wins; see "Achievements")
     tags.yaml                  # user-editable zero-shot vocabulary (facet-grouped)
     snapshots/sortandpost-YYYYMMDD-HHMMSS.db.zst          # last N clean snapshots (corruption recovery)
@@ -594,7 +594,7 @@ The **only** module allowed to write under a library root. Wraps a persistent
   downloaded` / `Download / verify CLIP model`, `sortandpost.clip.model.check_cached` /
   `ensure_downloaded` — toggles `HF_HUB_OFFLINE` around the probe so it works even when the app
   itself was launched offline).
-- `/posts` + `/posts/{id}` — the robopost composer (see "Posting (robopost.app)" below).
+- `/posts` + `/posts/{id}` — the post composer (see "Posting (robopost.app, Postiz, …)" below).
   Entry points: "Compose post" on a collection, ✈ in the library's bulk toolbar. The grid
   shows a ✈ badge on posted photos and `/` has a `posted=1|0` filter.
 - Persistent status bar: index progress (`X/Y`, current stage), CLIP queue depth, write-lock
@@ -675,20 +675,48 @@ How they're applied:
   a sealed one adds its points when it's clicked open. Reveals union across devices like unlocks. Konami listener lives on
   `/achievements`; the "github" hook is the `/` search (`q`).
 
-## Posting (robopost.app)
+## Posting (robopost.app, Postiz, …)
 
-`sortandpost.robopost` (HTTP client), `posts` (records, validation, payload),
-`post_export` (clean JPEGs), `post_send` (orchestration), `posts_ui` (pages),
-`secrets_store` (API key).
+`sortandpost.posting` (provider specs + the one HTTP client), `posts` (records, validation,
+`make_request`), `post_export` (clean JPEGs), `post_send` (orchestration), `posts_ui` (pages),
+`secrets_store` (API keys).
 
-- **API key** — never in a file under `APP_DATA`. Native: saved from `/settings` into the OS
-  keychain via `keyring`. Docker: `ROBOPOST_API_KEY` env var (always wins). No plaintext
-  fallback. Never sent to the browser (write-only field, `••••` + last 4); `apikey=` is
-  redacted from every log line, exception and stored error. **Keychain calls block while an
-  OS prompt is open** (an ad-hoc-signed rebuild asks again), so they only run off the event
-  loop, and the key is read once per process and cached (`secrets_store.cached_robopost_key`
-  is the non-blocking view).
-- **API facts** (verified live 2026-09-25): auth is an `?apikey=` query param. Exact paths
+- **Provider-agnostic by design (no vendor lock-in).** A back-end is a declarative
+  `posting.spec.ProviderSpec` — key placement (`AuthSpec`), endpoint paths, where answers sit in
+  its JSON (dotted paths), error fields + friendly texts, **rate limits** (`RateLimit` per op),
+  timeouts (`create_timeout_s`), capabilities (`channelless_drafts`, `first_comment`), base-URL
+  rules, and per-network post settings (`FieldSpec`s: rendered by the composer, checked by
+  `validate`, mapped to wire keys/values by `make_request`) — plus one `build_payload(CreateRequest)`.
+  Everything else is shared: `posting.client.ApiClient` (auth, no redirects, upload retry, create
+  never retried, redaction), `posting.ratelimit` (sliding window per provider+op, kept in
+  `local/<provider>.json`, a whole send checked up front; `posting.rate_limit_overrides` in
+  config.yaml). **Adding a provider = one spec module + an entry in `posting.PROVIDERS`**;
+  `tests/test_posting_client.py` runs every check against every registered spec. Never branch
+  on a vendor in shared code — add a spec field instead.
+- **Which provider**: `posting.provider` in config.yaml (Settings → Posting toggle);
+  `posting.base_urls[<provider>]` for an editable server (https, or http only to a LAN /
+  loopback host, with a warning). A draft follows the active provider; a post with a sent /
+  sending / partly-sent part stays with `Post.provider` (`posting.provider_for`), and a
+  partly-sent post can't be finished through another. `media_cache` entries carry their
+  `provider`, so a switch re-uploads. Pre-P4a post files load as robopost.
+- **API keys** — never in a file under `APP_DATA`. One per provider: native = OS keychain via
+  `keyring` (service `sortandpost`, account = the spec's `keychain_account`); Docker = the spec's
+  env var (`ROBOPOST_API_KEY`, `POSTIZ_API_KEY`; always wins). No plaintext fallback. Never sent
+  to the browser (write-only field, `••••` + last 4); the literal key and key-bearing query
+  params are redacted from every log line, exception and stored error. **Keychain calls block
+  while an OS prompt is open** (an ad-hoc-signed rebuild asks again), so they only run off the
+  event loop, and each key is read once per process and cached (`secrets_store.cached_key` is
+  the non-blocking view).
+- **Postiz facts** (verified live 2026-10-05 on a self-hosted server): base
+  `https://<host>/api/public/v1` (cloud `https://api.postiz.com/public/v1`); auth = the
+  `Authorization: <key>` header; `GET /is-connected` → `{connected}`; `GET /integrations` →
+  `[{id, name, identifier, picture, disabled, profile}]`; `POST /upload` → 201 `{id, path, …}`;
+  `POST /posts` `{type: draft|schedule, date, shortLink, tags, posts: [{integration: {id},
+  value: [{content, image: [{id, path}]}, <first comment>], settings: {__type: identifier, …}}]}`.
+  Instagram `post_type: post|story` (required); Pinterest needs a `board`. A one-photo draft
+  took **> 60 s** to answer (it was created), hence `create_timeout_s=180`. Only creates are
+  rate-limited (90/hr self-hosted default; no rate headers seen). Drafts need a channel.
+- **robopost API facts** (verified live 2026-09-25): auth is an `?apikey=` query param. Exact paths
   matter — `GET /v1/auth`, `GET /v1/channels/`, `POST /v1/medias/upload`,
   `POST /v1/scheduled_posts`; the other slash form gets a **307 to plain http carrying the key**,
   so redirects are never followed. `image_object_ids` takes the upload's
@@ -700,11 +728,11 @@ How they're applied:
   frozen; "Duplicate" makes a new draft.
 - **No double posts** — `sending` is written before the create call, which is never retried.
   A network error / timeout / 5xx on create leaves the post `sending` for the user to settle
-  ("It was sent" / "It wasn't sent") after checking robopost; only a 4xx becomes `failed`.
-  Uploads are cached per photo + export settings, so a retry doesn't re-upload.
+  ("It was sent" / "It wasn't sent") after checking the provider; only a 4xx becomes `failed`.
+  Uploads are cached per photo + provider + export settings, so a retry doesn't re-upload.
 - **Split Instagram send** (`posts.plan_send`) — Instagram channels get their own create with
   uploads fitted onto one Instagram canvas (`post_export.IgSpec` / `fit_and_pad`; format, border
-  and pad colour in `network_settings["instagram"]`, never sent to robopost; cached as
+  and pad colour in `network_settings["instagram"]`, never sent to a provider; cached as
   `media_cache["<hash>#ig"]`). Other channels go first with the normal export. If every photo
   already has an Instagram ratio (4:5, 1:1, 1.91:1; 9:16 for a Story) it is one create to every
   channel. Each create is a `Post.parts` entry (`sending → sent | failed` + its `channel_ids`):

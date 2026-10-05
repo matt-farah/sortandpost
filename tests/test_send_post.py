@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -18,8 +19,13 @@ from sortandpost.db.models import Photo, PhotoPath
 from sortandpost.paths import Paths
 from sortandpost.post_export import IgSpec, export_jpeg
 from sortandpost.post_send import resolve_interrupted, send_post
-from sortandpost.robopost import Channel, RobopostClient
-from sortandpost.secrets_store import clear_robopost_key, set_robopost_key
+from sortandpost.posting import limiter
+from sortandpost.posting.client import ApiClient, PostingClient
+from sortandpost.posting.model import Channel
+from sortandpost.posting.postiz import SPEC as PZ
+from sortandpost.posting.robopost import SPEC as RP
+from sortandpost.posting.spec import ProviderSpec
+from sortandpost.secrets_store import clear_key, set_key
 from sortandpost.sync.clock import utcnow
 
 KEY = "rp_live_TOPSECRET_998877"
@@ -68,8 +74,10 @@ class FakeRobopost:
             return httpx.Response(200, json={"scheduled_posts": [{"id": "rp-1"}]})
         return httpx.Response(404, json={"detail": "not found"})
 
-    def factory(self) -> Callable[[str], RobopostClient]:
-        return lambda key: RobopostClient(key, transport=httpx.MockTransport(self.handler))
+    def factory(self) -> Callable[[Settings, ProviderSpec, str], PostingClient]:
+        return lambda _s, spec, key: ApiClient(
+            spec, key, transport=httpx.MockTransport(self.handler)
+        )
 
 
 @pytest.fixture
@@ -111,8 +119,8 @@ def photos(tmp_path: Path, engine: Engine) -> list[str]:
 
 @pytest.fixture
 def post(settings: Settings, photos: list[str]) -> P.Post:
-    set_robopost_key(KEY)
-    P.save_channel_cache(settings.paths, [IG])
+    set_key(RP, KEY)
+    P.save_channel_cache(settings.paths, "robopost", [IG])
     p = P.create_post(settings.paths, title="walk", photos=photos, caption="caption")
     p.channel_ids = ["ig1"]
     p.schedule_at = (NOW + timedelta(days=2)).isoformat()
@@ -149,7 +157,7 @@ def test_schedule_happy_path(settings: Settings, engine: Engine, post: P.Post) -
     ]
     saved = P.get_post(settings.paths, post.id)
     assert saved is not None and saved.status == "scheduled" and not saved.editable
-    assert saved.log[-1]["robopost_post_ids"] == ["rp-1"]
+    assert saved.log[-1]["remote_post_ids"] == ["rp-1"]
     assert not (settings.paths.post_exports_dir / post.id).exists()
     assert P.posted_hashes(settings.paths) == frozenset(post.photos)
 
@@ -179,7 +187,7 @@ def test_read_only_refuses(settings: Settings, engine: Engine, post: P.Post) -> 
 
 
 def test_no_key(settings: Settings, engine: Engine, post: P.Post) -> None:
-    clear_robopost_key()
+    clear_key(RP)
     res = _send(settings, engine, post, FakeRobopost(), "draft")
     assert not res.ok and "API key" in res.message
 
@@ -343,7 +351,7 @@ class RecordingExporter:
 
 @pytest.fixture
 def split_post(settings: Settings, post: P.Post) -> P.Post:
-    P.save_channel_cache(settings.paths, [IG, FB])
+    P.save_channel_cache(settings.paths, "robopost", [IG, FB])
     post.channel_ids = ["ig1", "fb1"]
     return P.save_post(settings.paths, post)
 
@@ -573,3 +581,160 @@ def test_duplicate_resets_parts(settings: Settings, engine: Engine, split_post: 
     assert _send_x(settings, engine, split_post, FakeRobopost()).ok
     copy = P.duplicate_post(settings.paths, split_post.id)
     assert copy is not None and copy.parts == [] and copy.status == "draft"
+
+
+# --- providers -------------------------------------------------------------------
+
+PZ_KEY = "pz_TOPSECRET_445566"
+PZ_IG = Channel(id="pz-ig", name="IG (Postiz)", social_network="instagram")
+
+
+class FakePostiz:
+    def __init__(self) -> None:
+        self.uploads: list[str] = []
+        self.creates: list[dict[str, object]] = []
+        self.outcomes: list[int | None] = []
+
+    def handler(self, req: httpx.Request) -> httpx.Response:
+        assert req.headers["authorization"] == PZ_KEY and PZ_KEY not in str(req.url)
+        if req.url.path == "/public/v1/upload":
+            mid = f"pz{len(self.uploads) + 1}"
+            self.uploads.append(mid)
+            return httpx.Response(200, json={"id": mid, "path": f"https://u/{mid}.jpg"})
+        if req.url.path == "/public/v1/posts":
+            self.creates.append(json.loads(req.read()))
+            out = self.outcomes.pop(0) if self.outcomes else None
+            if out:
+                return httpx.Response(out, json={"message": "nope"})
+            return httpx.Response(200, json=[{"postId": "pz-post-1", "integration": "pz-ig"}])
+        return httpx.Response(404, json={"message": "no route"})
+
+    def factory(self) -> Callable[[Settings, ProviderSpec, str], PostingClient]:
+        # like posting.open_client: the spec's rate limits apply
+        return lambda s, spec, key: ApiClient(
+            spec, key, limiter=limiter(s, spec), transport=httpx.MockTransport(self.handler)
+        )
+
+
+def _use_postiz(settings: Settings, post: P.Post) -> P.Post:
+    set_key(PZ, PZ_KEY)
+    settings.config.posting.provider = "postiz"
+    P.save_channel_cache(settings.paths, "postiz", [PZ_IG])
+    post.channel_ids = ["pz-ig"]
+    return P.save_post(settings.paths, post)
+
+
+def _send_with(settings: Settings, engine: Engine, post: P.Post, fake: object, mode: P.SendMode):  # type: ignore[no-untyped-def]
+    return send_post(
+        settings,
+        engine,
+        post.id,
+        mode,
+        writable=True,
+        exporter=seq_exporter,
+        client_factory=fake.factory(),  # type: ignore[attr-defined]
+        now=NOW,
+    )
+
+
+def test_postiz_send_end_to_end(settings: Settings, engine: Engine, post: P.Post) -> None:
+    post = _use_postiz(settings, post)
+    pz = FakePostiz()
+    res = _send_with(settings, engine, post, pz, "schedule")
+    assert res.ok and "Postiz" in res.message, res.message
+    assert pz.uploads == ["pz1", "pz2", "pz3"]
+    (body,) = pz.creates
+    assert body["type"] == "schedule" and body["date"] == "2026-09-27T12:00:00.000Z"
+    posts: list[dict[str, Any]] = body["posts"]  # type: ignore[assignment]
+    (item,) = posts
+    assert item["integration"] == {"id": "pz-ig"}
+    assert item["settings"] == {"__type": "instagram", "post_type": "post"}
+    assert [i["id"] for i in item["value"][0]["image"]] == ["pz1", "pz2", "pz3"]
+    saved = _saved(settings, post)
+    assert saved.status == "scheduled" and saved.provider == "postiz"
+    assert saved.parts[-1]["provider"] == "postiz"
+    assert saved.parts[-1]["remote_post_ids"] == ["pz-post-1"]
+    assert all(e["provider"] == "postiz" for e in saved.media_cache.values())
+
+
+def test_switching_provider_reuploads_a_draft(
+    settings: Settings, engine: Engine, post: P.Post
+) -> None:
+    rp = FakeRobopost()
+    rp.fail_create = 400  # robopost got the uploads, then refused the post
+    assert not _send(settings, engine, post, rp, "schedule").ok
+    failed = _saved(settings, post)
+    assert failed.status == "failed" and not failed.partly_sent and len(failed.media_cache) == 3
+
+    post = _use_postiz(settings, failed)
+    pz = FakePostiz()
+    assert _send_with(settings, engine, post, pz, "schedule").ok
+    assert pz.uploads == ["pz1", "pz2", "pz3"]  # robopost's media ids never reused
+    assert _saved(settings, post).provider == "postiz"
+
+
+def test_partly_sent_post_stays_with_its_provider(
+    settings: Settings, engine: Engine, split_post: P.Post
+) -> None:
+    rp = FakeRobopost()
+    rp.outcomes = [None, 409]
+    _send_x(settings, engine, split_post, rp)
+    saved = _saved(settings, split_post)
+    assert saved.partly_sent and saved.provider == "robopost"
+
+    settings.config.posting.provider = "postiz"
+    pz = FakePostiz()
+    res = _send_with(settings, engine, saved, pz, "schedule")
+    assert not res.ok and "Switch back to Robopost" in res.message
+    assert pz.uploads == [] and pz.creates == []
+
+    settings.config.posting.provider = "robopost"
+    assert _send_x(settings, engine, split_post, rp).ok
+
+
+def test_rate_limit_refuses_the_whole_send_up_front(
+    settings: Settings, engine: Engine, post: P.Post
+) -> None:
+    post = _use_postiz(settings, post)
+    settings.config.posting.rate_limit_overrides = {"postiz": {"create": 1}}
+    pz = FakePostiz()
+    assert _send_with(settings, engine, post, pz, "schedule").ok
+    second = P.duplicate_post(settings.paths, post.id)
+    assert second is not None
+    second.schedule_at = post.schedule_at
+    P.save_post(settings.paths, second)
+    res = _send_with(settings, engine, second, pz, "schedule")
+    assert not res.ok and "Try again in" in res.message
+    assert len(pz.creates) == 1 and len(pz.uploads) == 3  # nothing exported or uploaded
+    assert _saved(settings, second).status == "draft"
+
+
+def test_legacy_post_file_loads_as_robopost(settings: Settings, post: P.Post) -> None:
+    raw = json.loads((settings.paths.posts_dir / f"{post.id}.json").read_text())
+    raw.update(
+        status="scheduled",
+        media_cache={post.photos[0]: {"export_key": "k", "storage_object_id": "m9"}},
+        parts=[
+            {
+                "group": "all",
+                "status": "sent",
+                "mode": "schedule",
+                "channel_ids": ["ig1"],
+                "robopost_post_ids": ["rp-7"],
+            }
+        ],
+    )
+    raw.pop("provider", None)
+    (settings.paths.posts_dir / f"{post.id}.json").write_text(json.dumps(raw))
+    old = _saved(settings, post)
+    assert old.provider == "robopost"
+    assert old.parts[0]["remote_post_ids"] == ["rp-7"] and old.parts[0]["provider"] == "robopost"
+    assert old.media_cache[post.photos[0]] == {
+        "export_key": "k",
+        "media_id": "m9",
+        "provider": "robopost",
+    }
+    settings.config.posting.provider = "postiz"
+    from sortandpost.posting import provider_for
+
+    assert provider_for(old, settings).key == "robopost"  # a sent post keeps its provider

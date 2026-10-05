@@ -196,7 +196,6 @@ from sortandpost.reveal import (
     reveal_multiple_in_file_manager,
     reveal_supported,
 )
-from sortandpost.robopost import SERVICE_NAME as POSTING_SERVICE
 from sortandpost.searches import (
     SavedSearch,
     add_search,
@@ -2943,7 +2942,7 @@ def build_ui(settings: Settings) -> None:
 
                 with (
                     _settings_section("posting"),
-                    _settings_card(f"Posting with {POSTING_SERVICE}", "send", wide=True),
+                    _settings_card("Service & API key", "send", wide=True),
                 ):
                     posting_settings_panel(settings, writable=writable)
 
@@ -5046,7 +5045,7 @@ def _filter_bar(
                     ).props("dense")
                     if hint:
                         ui.label(hint).classes("text-xs sp-faint pl-7 max-w-xs")
-                ui.label(f"Posted with {POSTING_SERVICE}").classes("text-xs sp-faint pt-2")
+                ui.label("Posted").classes("text-xs sp-faint pt-2")
                 ui.toggle({"": "Any", "1": "Posted", "0": "Not posted"}, value=lq.posted).props(
                     "dense no-caps"
                 ).on_value_change(lambda e: _go(replace(lq, posted=str(e.value or ""))))
@@ -5491,7 +5490,7 @@ def _thumb_cell(
         if posted:
             ui.icon("send", size="0.9rem").classes(
                 "absolute right-1 bottom-1 rounded bg-black/60 p-0.5 text-emerald-400"
-            ).tooltip("sent to robopost")
+            ).tooltip("posted")
         if on_flag is not None:
             _grid_flag(photo.pixel_hash, flagged, on_flag, flag_registry, flag_toggle_registry)
         elif flagged:
