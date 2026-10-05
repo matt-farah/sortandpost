@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -42,6 +43,8 @@ from sortandpost.posts import (
 from sortandpost.robopost import Channel, RobopostClient, RobopostError
 from sortandpost.secrets_store import (
     ROBOPOST_ENV,
+    KeySource,
+    cached_robopost_key,
     clear_robopost_key,
     get_robopost_key,
     keychain_available,
@@ -88,6 +91,25 @@ def _source_names(engine: Engine, hashes: list[str]) -> dict[str, str | None]:
     return {
         h: (os.path.basename(p) if p else None) for h, p in resolve_sources(engine, hashes).items()
     }
+
+
+@dataclass(frozen=True)
+class _KeyStatus:
+    """What the settings page shows about the API key -- never the key itself."""
+
+    masked: str
+    source: KeySource | None
+    keychain: str | None  # the backend's name; ``None`` = no OS keychain here
+
+
+def _key_status() -> _KeyStatus:
+    """Blocking (keychain; may wait on an OS prompt): always via run.io_bound."""
+    key, source = get_robopost_key()
+    return _KeyStatus(
+        masked=mask(key),
+        source=source,
+        keychain=keychain_name() if keychain_available() else None,
+    )
 
 
 def compose_from(
@@ -597,7 +619,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             unavailable = {h for h, n in names.items() if n is None}
             d_err, d_warn = validate(p, chans, "draft", unavailable=unavailable)
             s_err, s_warn = validate(p, chans, "schedule", unavailable=unavailable)
-            key, _src = get_robopost_key()
+            loaded = cached_robopost_key()  # read off-loop by _load_key below
+            key = loaded[0] if loaded else None
             writable = State.write_mode == WriteMode.writable
             with ui.column().classes("w-full max-w-2xl gap-1 px-4 pt-4 pb-2"):
                 if p.editable:
@@ -607,7 +630,11 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                         )
                     for msg in dict.fromkeys(d_warn + s_warn):
                         ui.label("⚠ " + msg).classes("text-sm text-amber-600")
-                    if not key:
+                    if loaded is None:
+                        ui.label("Checking the keychain for the robopost API key…").classes(
+                            "text-sm sp-muted"
+                        )
+                    elif not key:
                         ui.label("✕ No robopost API key — add it in Settings → Posting.").classes(
                             "text-sm text-red-600"
                         )
@@ -765,6 +792,11 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         _history()
         ui.element("div").classes("h-8")
         await _load_names()
+        if cached_robopost_key() is None:
+            # the first read can wait on a keychain prompt: never on the event loop
+            await nicegui_run.io_bound(get_robopost_key)
+            with client:
+                _checks.refresh()
 
 
 # --------------------------------------------------------------------------- #
@@ -779,18 +811,36 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
         "draft or scheduled post. Get an API key in robopost → Team → Manage API Keys."
     ).classes("text-xs sp-faint max-w-xl")
 
+    key_state: dict[str, _KeyStatus | None] = {"status": None}
+
+    async def _load_key() -> None:
+        # keychain calls can wait on an OS prompt: never on the event loop
+        st = await nicegui_run.io_bound(_key_status)
+        if st is None:  # the pool was shut down under us (app closing)
+            return
+        key_state["status"] = st
+        with client:
+            _key_row.refresh()
+
     @ui.refreshable
     def _key_row() -> None:
-        key, source = get_robopost_key()
+        st = key_state["status"]
         with ui.column().classes("gap-1"):
-            if source == "env":
-                ui.label(f"API key {mask(key)} — from the {ROBOPOST_ENV} environment variable.")
+            if st is None:
+                ui.label("Checking the keychain…").classes("text-sm sp-muted")
+                ui.label(
+                    "If macOS asks whether sortandpost may use its keychain item, answer "
+                    "that prompt (Always Allow avoids it next time)."
+                ).classes("text-xs sp-faint")
+                return
+            if st.source == "env":
+                ui.label(f"API key {st.masked} — from the {ROBOPOST_ENV} environment variable.")
                 ui.label(
                     "Change it where the app is launched (.env / docker-compose). The "
                     "environment variable always overrides a saved key."
                 ).classes("text-xs sp-muted")
                 return
-            if not keychain_available():
+            if st.keychain is None:
                 ui.label("No OS keychain is available here (e.g. inside Docker).").classes(
                     "text-sm text-amber-600"
                 )
@@ -799,14 +849,15 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
                     "app-data folder."
                 ).classes("text-xs sp-muted")
                 return
-            if key:
-                ui.label(f"API key {mask(key)} — stored in the {keychain_name()}.")
+            has_key = bool(st.masked)
+            if has_key:
+                ui.label(f"API key {st.masked} — stored in the {st.keychain}.")
             else:
                 ui.label("No API key saved.").classes("text-sm sp-muted")
             with ui.row().classes("items-center gap-2"):
                 inp = (
                     ui.input(
-                        "Paste a new API key" if key else "API key",
+                        "Paste a new API key" if has_key else "API key",
                         password=True,
                         password_toggle_button=False,
                     )
@@ -814,29 +865,33 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
                     .classes("w-80")
                 )
 
-                def _save_key() -> None:
+                async def _save_key() -> None:
                     value = (inp.value or "").strip()
                     inp.value = ""  # never keep it in the page
                     if not value:
                         return
                     try:
-                        set_robopost_key(value)
+                        await nicegui_run.io_bound(set_robopost_key, value)
                     except Exception as exc:  # keyring backends raise their own types
-                        ui.notify(
-                            f"Couldn't save to the keychain: {type(exc).__name__}", type="negative"
-                        )
+                        with client:
+                            ui.notify(
+                                f"Couldn't save to the keychain: {type(exc).__name__}",
+                                type="negative",
+                            )
                         return
-                    ui.notify(f"API key saved to the {keychain_name()}")
-                    _key_row.refresh()
+                    with client:
+                        ui.notify(f"API key saved to the {st.keychain}")
+                    await _load_key()
 
                 inp.on("keydown.enter", _save_key)
                 ui.button("Save", on_click=_save_key).props("flat dense")
-                if key:
+                if has_key:
 
-                    def _remove() -> None:
-                        clear_robopost_key()
-                        ui.notify("API key removed from the keychain")
-                        _key_row.refresh()
+                    async def _remove() -> None:
+                        await nicegui_run.io_bound(clear_robopost_key)
+                        with client:
+                            ui.notify("API key removed from the keychain")
+                        await _load_key()
 
                     ui.button("Remove", on_click=_remove).props("flat dense color=negative")
             ui.label(
@@ -845,6 +900,7 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
             ).classes("text-xs sp-faint")
 
     _key_row()
+    ui.timer(0, _load_key, once=True)
 
     status = ui.label().classes("text-sm")
 

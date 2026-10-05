@@ -13,6 +13,7 @@ from sqlalchemy.engine import Engine
 from sortandpost.config import bootstrap
 from sortandpost.db import init_db, make_engine
 from sortandpost.paths import Paths
+from sortandpost.secrets_store import forget_cached_key
 
 
 @pytest.fixture
@@ -89,5 +90,7 @@ def memory_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[MemoryKeyring]:
     previous = keyring.get_keyring()
     kr = MemoryKeyring()
     keyring.set_keyring(kr)
+    forget_cached_key()
     yield kr
     keyring.set_keyring(previous)
+    forget_cached_key()

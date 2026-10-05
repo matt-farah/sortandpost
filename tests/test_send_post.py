@@ -19,7 +19,7 @@ from sortandpost.paths import Paths
 from sortandpost.post_export import export_jpeg
 from sortandpost.post_send import resolve_interrupted, send_post
 from sortandpost.robopost import Channel, RobopostClient
-from sortandpost.secrets_store import set_robopost_key
+from sortandpost.secrets_store import clear_robopost_key, set_robopost_key
 from sortandpost.sync.clock import utcnow
 
 KEY = "rp_live_TOPSECRET_998877"
@@ -166,8 +166,8 @@ def test_read_only_refuses(settings: Settings, engine: Engine, post: P.Post) -> 
     assert rp.uploads == [] and rp.creates == []
 
 
-def test_no_key(settings: Settings, engine: Engine, post: P.Post, memory_keyring) -> None:  # type: ignore[no-untyped-def]
-    memory_keyring.store.clear()
+def test_no_key(settings: Settings, engine: Engine, post: P.Post) -> None:
+    clear_robopost_key()
     res = _send(settings, engine, post, FakeRobopost(), "draft")
     assert not res.ok and "API key" in res.message
 

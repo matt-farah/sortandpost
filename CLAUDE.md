@@ -649,7 +649,10 @@ How they're applied:
 - **API key** — never in a file under `APP_DATA`. Native: saved from `/settings` into the OS
   keychain via `keyring`. Docker: `ROBOPOST_API_KEY` env var (always wins). No plaintext
   fallback. Never sent to the browser (write-only field, `••••` + last 4); `apikey=` is
-  redacted from every log line, exception and stored error.
+  redacted from every log line, exception and stored error. **Keychain calls block while an
+  OS prompt is open** (an ad-hoc-signed rebuild asks again), so they only run off the event
+  loop, and the key is read once per process and cached (`secrets_store.cached_robopost_key`
+  is the non-blocking view).
 - **API facts** (verified live 2026-09-25): auth is an `?apikey=` query param. Exact paths
   matter — `GET /v1/auth`, `GET /v1/channels/`, `POST /v1/medias/upload`,
   `POST /v1/scheduled_posts`; the other slash form gets a **307 to plain http carrying the key**,
