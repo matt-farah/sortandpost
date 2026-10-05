@@ -25,8 +25,7 @@ from sqlalchemy.engine import Engine
 from sortandpost.collections import get_collection, load_collections
 from sortandpost.config import Settings
 from sortandpost.post_export import (
-    parse_color,
-    resolve_ig_spec,
+    IgSpec,
     resolve_sources,
     upright_sizes,
 )
@@ -35,6 +34,7 @@ from sortandpost.posts import (
     IG_MAX_BORDER,
     POST_TYPES,
     Post,
+    SendGroup,
     SendMode,
     create_post,
     delete_post,
@@ -42,6 +42,7 @@ from sortandpost.posts import (
     get_post,
     list_posts,
     load_channel_cache,
+    plan_send,
     save_channel_cache,
     save_post,
     selected_networks,
@@ -75,6 +76,31 @@ _STATUS_LABEL = {
     "scheduled": ("Scheduled", "text-emerald-600 dark:text-emerald-400"),
     "failed": ("Failed", "text-red-600 dark:text-red-400"),
 }
+_PARTLY_SENT = ("Partly sent", "text-amber-600 dark:text-amber-400")
+
+
+def _status_label(p: Post) -> tuple[str, str]:
+    if p.status == "failed" and p.partly_sent:
+        return _PARTLY_SENT
+    return _STATUS_LABEL.get(p.status, (p.status, ""))
+
+
+def _group_title(g: SendGroup) -> str:
+    if g.is_instagram:
+        return "Instagram"
+    return "Other channels" if g.name == "other" else "All channels"
+
+
+def _ig_size_text(spec: IgSpec | None) -> str:
+    if spec is None:
+        return "already in an Instagram ratio, used as they are"
+    text = f"fitted onto {spec.width}x{spec.height}"
+    if spec.border:
+        r, g, b = spec.rgb
+        text += f" with a {spec.border} px #{r:02x}{g:02x}{b:02x} border"
+    return text
+
+
 _EDGE_CHOICES = {1080: "1080 px", 2048: "2048 px", 3072: "3072 px", 4096: "4096 px", 0: "Full size"}
 _TZ_JS = "Intl.DateTimeFormat().resolvedOptions().timeZone"
 
@@ -200,7 +226,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         colls = {c.id: c.name for c in load_collections(settings.paths)}
         with ui.column().classes("w-full max-w-4xl gap-2 p-4"):
             for p in posts:
-                label, color = _STATUS_LABEL.get(p.status, (p.status, ""))
+                label, color = _status_label(p)
                 with (
                     ui.link(target=f"/posts/{p.id}").classes("w-full no-underline"),
                     ui.card().classes("w-full flex-row items-center gap-4 p-2"),
@@ -261,7 +287,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         @ui.refreshable
         def _top() -> None:
             p = cur()
-            label, color = _STATUS_LABEL.get(p.status, (p.status, ""))
+            label, color = _status_label(p)
             with ui.row().classes("items-center gap-3 px-4 w-full"):
                 title = (
                     ui.input(value=p.title)
@@ -285,15 +311,25 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 ui.button("Delete", icon="delete", on_click=_confirm_delete).props(
                     "flat dense no-caps color=negative"
                 )
+            chans, _ = load_channel_cache(settings.paths)
+            names = {c.id: c.name for c in chans}
             if p.status == "sending" and not is_in_flight(p.id):
+                part = p.sending_part()
+                doubt = ", ".join(names.get(c, c) for c in part["channel_ids"]) if part else ""
                 with ui.card().classes(
                     "mx-4 bg-amber-50 dark:bg-amber-950 border border-amber-400 gap-1"
                 ):
                     ui.label("This send was interrupted before robopost confirmed it.").classes(
                         "font-medium"
                     )
+                    if p.sent_channel_ids():
+                        ui.label(
+                            "Already sent (not in question): "
+                            + ", ".join(names.get(c, c) for c in sorted(p.sent_channel_ids()))
+                        ).classes("text-sm")
                     ui.label(
-                        "The post may or may not exist in robopost. Check robopost, then tell "
+                        ("The post to " + doubt if doubt else "The post")
+                        + " may or may not exist in robopost. Check robopost, then tell "
                         "sortandpost what happened — it never re-sends on its own."
                     ).classes("text-sm")
                     with ui.row().classes("gap-2"):
@@ -303,6 +339,15 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                         ui.button(
                             "It wasn't sent", on_click=lambda: _resolve(False), icon="undo"
                         ).props("flat")
+            elif p.partly_sent:
+                left = [c for c in p.channel_ids if c not in p.sent_channel_ids()]
+                ui.label(
+                    "Partly sent — already in robopost for "
+                    + ", ".join(names.get(c, c) for c in sorted(p.sent_channel_ids()))
+                    + ". Sending again only goes to "
+                    + (", ".join(names.get(c, c) for c in left) or "no one (it's then marked sent)")
+                    + "."
+                ).classes("px-4 text-sm text-amber-700 dark:text-amber-400")
             elif p.sent:
                 ui.label(
                     "Sent to robopost — edit or cancel it there (robopost's API can't change it "
@@ -512,14 +557,15 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 by_net: dict[str, list[Channel]] = {}
                 for c in chans:
                     by_net.setdefault(c.network, []).append(c)
+                done = p.sent_channel_ids()
                 for net, group in sorted(by_net.items()):
                     ui.label(net.title()).classes("text-xs sp-faint pt-1")
                     for c in group:
-                        cb = ui.checkbox(
-                            c.name + ("  (reconnect in robopost)" if c.must_reconnect else ""),
-                            value=c.id in p.channel_ids,
-                        )
-                        cb.set_enabled(p.editable)
+                        note = "  (reconnect in robopost)" if c.must_reconnect else ""
+                        if c.id in done:
+                            note = "  (sent)"
+                        cb = ui.checkbox(c.name + note, value=c.id in p.channel_ids or c.id in done)
+                        cb.set_enabled(p.editable and c.id not in done)
                         cb.on_value_change(lambda e, cid=c.id: _toggle_channel(cid, bool(e.value)))
                 nets = selected_networks(p, chans)
                 if "instagram" in nets:
@@ -543,17 +589,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             cur().network_settings.setdefault(net, {})[key] = value
             _save()
 
-        def _ig_spec() -> Any:
+        def _sizes() -> list[tuple[int, int]]:
+            sizes: dict[str, tuple[int, int]] = state.get("sizes", {})
+            return [sizes[h] for h in cur().photos if h in sizes]
+
+        def _ig_spec() -> IgSpec | None:
             """The canvas for this post's Instagram photos (None = used as they are)."""
-            p = cur()
-            sizes = list(state.get("sizes", {}).values())
-            return resolve_ig_spec(
-                sizes,
-                fmt=p.ig_format(),
-                border=p.ig_border(),
-                rgb=parse_color(p.ig_color()),
-                story=p.ig_story(),
-            )
+            return cur().ig_spec(_sizes())
 
         def _ig_sizing() -> None:
             p = cur()
@@ -670,6 +712,12 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 ui.label(
                     f"Preview: {spec.width}x{spec.height}"
                     + (f", {spec.border}px border" if spec.border else "")
+                ).classes("text-xs sp-faint")
+            groups = plan_send(p, load_channel_cache(settings.paths)[0], _sizes())
+            if len(groups) > 1:
+                ui.label(
+                    "Instagram goes out as its own robopost post with these sized copies; "
+                    "your other channels get the normal export first."
                 ).classes("text-xs sp-faint")
 
         def _post_type_row(net: str, label: str, choices: tuple[str, ...]) -> None:
@@ -803,9 +851,11 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             p = cur()
             chans, _ = load_channel_cache(settings.paths)
             names = await nicegui_run.io_bound(_source_names, engine, list(p.photos))
-            if names is None:
+            sizes = await nicegui_run.io_bound(upright_sizes, engine, list(p.photos))
+            if names is None or sizes is None:
                 return
             state["names"] = names
+            state["sizes"] = sizes
             with client:
                 unavailable = {h for h, n in names.items() if n is None}
                 errors, warnings = validate(p, chans, mode, unavailable=unavailable)
@@ -824,15 +874,15 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         ) -> None:
             pc = settings.config.posting
             by_id = {c.id: c for c in chans}
-            dests = [by_id[c] for c in p.channel_ids if c in by_id]
+            groups = plan_send(p, chans, _sizes())
             edge = "full size" if pc.export_long_edge <= 0 else f"{pc.export_long_edge} px"
             with ui.dialog() as dialog, ui.card().classes("gap-2 max-w-xl"):
                 ui.label(
                     "Send to robopost as a draft?" if mode == "draft" else "Schedule this post?"
                 ).classes("text-lg font-medium")
                 ui.label(
-                    f"{len(p.photos)} photo(s) will be uploaded as new JPEGs ({edge} long edge, "
-                    f"quality {pc.export_quality}). GPS and all other metadata are stripped; "
+                    f"{len(p.photos)} photo(s) will be uploaded as new JPEGs "
+                    f"(quality {pc.export_quality}). GPS and all other metadata are stripped; "
                     "your original files are not changed."
                 ).classes("text-sm")
                 with ui.row().classes("gap-1 flex-wrap"):
@@ -845,14 +895,33 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                                 "truncate text-[10px] sp-faint"
                             )
                 ui.separator()
-                if dests:
-                    ui.label("Destinations").classes("text-sm font-medium")
-                    for c in dests:
-                        ui.label(f"• {c.name} — {c.social_network}").classes("text-sm")
-                else:
-                    ui.label("No channels chosen — you'll pick them in robopost.").classes(
+                done = sorted(p.sent_channel_ids())
+                if done:
+                    ui.label(
+                        "Already sent, skipped: "
+                        + ", ".join(by_id[c].name if c in by_id else c for c in done)
+                    ).classes("text-sm sp-muted")
+                if len(groups) > 1:
+                    ui.label(
+                        f"This goes to robopost as {len(groups)} separate posts, in this order. "
+                        "If one fails, a retry only sends what's left."
+                    ).classes("text-sm font-medium")
+                if not groups:
+                    ui.label("Nothing left to send — the post will be marked as sent.").classes(
                         "text-sm"
                     )
+                for i, g in enumerate(groups):
+                    size = (
+                        "photos " + _ig_size_text(g.ig) if g.is_instagram else f"{edge} long edge"
+                    )
+                    head = f"{i + 1}. {_group_title(g)}" if len(groups) > 1 else "Destinations"
+                    ui.label(f"{head} — {size}").classes("text-sm font-medium")
+                    for c in g.channels:
+                        ui.label(f"• {c.name} — {c.social_network}").classes("text-sm")
+                    if not g.channels:
+                        ui.label("No channels chosen — you'll pick them in robopost.").classes(
+                            "text-sm"
+                        )
                 when = p.schedule_dt()
                 if mode == "schedule" and when is not None:
                     ui.label(
@@ -913,6 +982,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     line = f"{_fmt_local(str(e.get('ts', '')), tz)} · {e.get('action')}"
                     if e.get("mode"):
                         line += f" ({e['mode']})"
+                    if e.get("part") in ("instagram", "other"):
+                        line += " · Instagram" if e["part"] == "instagram" else " · other channels"
                     if e.get("robopost_post_ids"):
                         line += f" · robopost id {', '.join(e['robopost_post_ids'])}"
                     if "was_sent" in e:
@@ -1130,7 +1201,7 @@ def posted_note(settings: Settings, pixel_hash: str) -> None:
         ui.icon("send", size="1rem").classes("text-emerald-600")
         ui.label("In posts:").classes("text-sm")
         for p in rows:
-            label, _ = _STATUS_LABEL.get(p.status, (p.status, ""))
+            label, _ = _status_label(p)
             ui.link(f"{p.title} ({label.lower()})", f"/posts/{p.id}").classes("text-sm")
 
 

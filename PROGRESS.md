@@ -16,9 +16,16 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   `upright_sizes`; `export_jpeg(..., ig=)` and `export_key(..., ig=)`. `Post.ig_format/ig_border/
   ig_color` live in `network_settings["instagram"]` (`format`, `border` 0-100 px, `padColor`),
   never sent to robopost. Composer: format toggle (Story only for STORIES), border slider,
-  native color picker + hex field, live CSS preview. **Not yet wired into the send.**
-- **Next: P1b** (split Instagram send, Opus) on the same branch `v3-p0-p1-instagram`;
-  plan in `~/.claude/plans/` / V3Plan.md. Wire `IgSpec` through `post_send.pool_exporter`.
+  native color picker + hex field, live CSS preview.
+- **P1b done** (user-tested: a real Bluesky + Instagram split draft): `posts.plan_send` →
+  `SendGroup`s — other channels first, then Instagram with `IgSpec`-sized uploads (cached as
+  `media_cache["<hash>#ig"]`); one create to every channel when all photos already have an IG
+  ratio. Each create is a `Post.parts` entry (`sending → sent | failed`, its `channel_ids`),
+  `sending` saved before its export and until the create answers; a failed/unknown first part
+  stops the send. Retries go only to `unsent_channels`; `resolve_interrupted` settles just the
+  part in doubt (legacy no-parts posts keep the old path). "Partly sent" = `failed` with a sent
+  part (editable, sent channels locked, counts as posted). Confirm dialog lists the creates in order.
+- **Next:** Buffer-style schedule-time picker in the composer (user request), then **P2**.
 
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 
