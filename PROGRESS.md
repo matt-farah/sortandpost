@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-05 (pre-V3 cleanup)._
+_Last updated: 2026-10-05 (V3 P3 achievements)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
 > **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
@@ -39,7 +39,20 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   (huggingface_hub caches it in `constants.HF_HUB_OFFLINE` at import) — `_try_load` now patches the constant.
   Known quirk: `local/models` is shared by all libraries on a machine, so an off library deletes weights an
   on library needs (re-downloads). Pre-existing: `_GRID_RESTORE_JS` timeout TypeError on reload (app.py ~1656).
-- **Next: P3a** (achievements engine + profile, Opus).
+- **P3a + P3b done** (user-tested, built together): `sortandpost.achievements` (engine) +
+  `achievements_ui` (page, header chip, toasts, profile editor). Definitions parsed from a bundled
+  copy of `Achievements/Achievements.md` (`resources/achievements/`, test keeps it identical; Angel/Devil
+  art beside it). Count triggers computed from existing state (photos, rated photos one per stack,
+  collections, posts sent to ≥1 channel); "not on first day" = earliest `first_indexed_at` is today.
+  Unlocks + reveals in per-device `sync/devices/<…>/achievements.json`, union = truth (no merge);
+  profile (name + Angel/Devil/Off) in `sync/profile.json`. Background check every 10 s (+ `poke()` after
+  ratings / new collections). New unlocks are **sealed**: the toast doesn't name them (Reveal button),
+  the header chip shows "N new", `/achievements` shows glowing cards clicked open one at a time into a
+  reveal dialog, and **points only count once revealed**. Konami on `/achievements` (opens its reveal
+  directly), "github" in the `/` search, Devil mode from Settings. Settings → Profile & achievements;
+  wizard step "You" (new library, or joined with no profile). No nav-bar entry — the 🏆 chip links there.
+  Also: "Reader" devil text fixed ("…looked at the GitHub!").
+- **Next: P4a** (posting provider interface + Postiz, Opus). P5 copy export can run any time now.
 
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 
