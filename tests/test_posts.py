@@ -223,3 +223,23 @@ def test_payload_omits_settings_for_unticked_networks_and_past_time_on_draft() -
     body = P.build_payload(p, CHANNELS, "draft", ["m"], now=NOW)
     assert "instagram_settings" not in body and "schedule_at" not in body
     assert body["channel_ids"] == ["bs"]
+
+
+def test_instagram_sizing_settings_validated_and_not_in_payload() -> None:
+    p = P.Post(title="t", photos=["a" * 64], channel_ids=["ig1"])
+    assert (p.ig_format(), p.ig_border(), p.ig_color()) == ("portrait", 0, "#ffffff")
+    p.network_settings["instagram"] = {
+        "format": "square",
+        "border": "999",
+        "padColor": "#ABCDEF",
+    }
+    assert (p.ig_format(), p.ig_border(), p.ig_color()) == ("square", 100, "#abcdef")
+    p.network_settings["instagram"].update(format="story", border="x", padColor="red")
+    assert (p.ig_format(), p.ig_border(), p.ig_color()) == ("portrait", 0, "#ffffff")
+    p.network_settings["instagram"]["postType"] = "STORIES"
+    assert p.ig_format() == "story"
+    body = P.build_payload(
+        p, [Channel(id="ig1", name="IG", social_network="INSTAGRAM")], "draft", ["m1"]
+    )
+    assert body["instagram_settings"] == {"postType": "STORIES"}
+    assert "padColor" not in str(body) and "border" not in str(body)

@@ -30,6 +30,7 @@ from typing import Any, Literal
 
 from sortandpost.collections import clean_name
 from sortandpost.paths import Paths
+from sortandpost.post_export import DEFAULT_IG_FORMAT, IG_FORMATS, parse_color
 from sortandpost.robopost import Channel
 from sortandpost.sync.clock import utcnow
 
@@ -55,6 +56,7 @@ TEXT_LIMITS_SOFT = {
     "pinterest": 500,
 }
 POST_TYPES = ("POST", "REELS", "STORIES")  # instagram; facebook uses the first two
+IG_MAX_BORDER = 100
 MIN_LEAD = timedelta(minutes=2)  # a schedule time must be at least this far ahead
 
 
@@ -129,6 +131,28 @@ class Post:
 
     def setting(self, network: str, key: str, default: str = "") -> str:
         return self.network_settings.get(network, {}).get(key, default)
+
+    # Instagram sizing (see post_export.IgSpec). Stored as strings in
+    # network_settings["instagram"]; unknown / bad values fall back to defaults.
+    def ig_story(self) -> bool:
+        return self.setting("instagram", "postType", "POST") == "STORIES"
+
+    def ig_format(self) -> str:
+        fmt = self.setting("instagram", "format", DEFAULT_IG_FORMAT)
+        if self.ig_story():
+            return "story"
+        return fmt if fmt in IG_FORMATS and fmt != "story" else DEFAULT_IG_FORMAT
+
+    def ig_border(self) -> int:
+        try:
+            return max(0, min(IG_MAX_BORDER, int(self.setting("instagram", "border", "0"))))
+        except ValueError:
+            return 0
+
+    def ig_color(self) -> str:
+        """``#rrggbb`` pad colour (white when unset or invalid)."""
+        r, g, b = parse_color(self.setting("instagram", "padColor", "#ffffff"))
+        return f"#{r:02x}{g:02x}{b:02x}"
 
 
 # --- storage -----------------------------------------------------------------

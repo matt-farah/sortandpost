@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any
@@ -23,9 +24,15 @@ from sqlalchemy.engine import Engine
 
 from sortandpost.collections import get_collection, load_collections
 from sortandpost.config import Settings
-from sortandpost.post_export import resolve_sources
+from sortandpost.post_export import (
+    parse_color,
+    resolve_ig_spec,
+    resolve_sources,
+    upright_sizes,
+)
 from sortandpost.post_send import is_in_flight, resolve_interrupted, send_post
 from sortandpost.posts import (
+    IG_MAX_BORDER,
     POST_TYPES,
     Post,
     SendMode,
@@ -58,6 +65,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 log = logging.getLogger(__name__)
+
+_HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
 _STATUS_LABEL = {
     "draft": ("Draft", "sp-muted"),
@@ -238,8 +247,10 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             if names is None:
                 return
             state["names"] = names
+            state["sizes"] = await nicegui_run.io_bound(upright_sizes, engine, list(cur().photos))
             with client:
                 _photos.refresh()
+                _ig_preview.refresh()
                 _checks.refresh()
 
         ui.button("← All posts", on_click=lambda: ui.navigate.to("/posts")).props(
@@ -513,6 +524,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 nets = selected_networks(p, chans)
                 if "instagram" in nets:
                     _post_type_row("instagram", "Instagram post type", POST_TYPES)
+                    _ig_sizing()
                 if "facebook" in nets:
                     _post_type_row("facebook", "Facebook post type", POST_TYPES[:2])
                 if "pinterest" in nets:
@@ -531,6 +543,135 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             cur().network_settings.setdefault(net, {})[key] = value
             _save()
 
+        def _ig_spec() -> Any:
+            """The canvas for this post's Instagram photos (None = used as they are)."""
+            p = cur()
+            sizes = list(state.get("sizes", {}).values())
+            return resolve_ig_spec(
+                sizes,
+                fmt=p.ig_format(),
+                border=p.ig_border(),
+                rgb=parse_color(p.ig_color()),
+                story=p.ig_story(),
+            )
+
+        def _ig_sizing() -> None:
+            p = cur()
+            ui.label(
+                "Instagram needs every photo in a post to be the same size. Photos are fitted "
+                "onto one canvas (never cropped)."
+            ).classes("text-xs sp-faint pt-1")
+            if not p.ig_story():
+                with ui.row().classes("items-center gap-2 pt-1"):
+                    ui.label("Instagram format").classes("text-sm")
+                    labels = {
+                        "portrait": "Portrait 1080x1350",
+                        "square": "Square 1080x1080",
+                        "landscape": "Landscape 1080x566",
+                    }
+                    t = ui.toggle(labels, value=p.ig_format()).props("dense no-caps")
+                    t.set_enabled(p.editable)
+
+                    def _fmt(e: Any) -> None:
+                        _set_setting("instagram", "format", str(e.value))
+                        _ig_preview.refresh()
+
+                    t.on_value_change(_fmt)
+            else:
+                ui.label("Story format 1080x1920").classes("text-sm pt-1")
+            with ui.row().classes("items-center gap-3 pt-1"):
+                ui.label("Border").classes("text-sm")
+                ui.label("None").classes("text-xs sp-faint")
+                bd = ui.slider(min=0, max=IG_MAX_BORDER, step=1, value=p.ig_border()).classes(
+                    "w-48"
+                )
+                ui.label("Large").classes("text-xs sp-faint")
+                ui.label("Border color").classes("text-sm pl-4")
+                # Native browser colour chooser + a hex field, kept in step.
+                picker = (
+                    ui.element("input")
+                    .props(f'type=color value="{p.ig_color()}"')
+                    .style("width:2.5rem;height:2rem;padding:0;border:0;background:none")
+                )
+                hexbox = (
+                    ui.input(value=p.ig_color(), placeholder="#rrggbb")
+                    .props("dense outlined maxlength=7 style=width:7rem")
+                    .classes("font-mono")
+                )
+                for w in (bd, hexbox):
+                    w.set_enabled(p.editable)
+                if not p.editable:
+                    picker.props("disabled")
+
+                def _border(_e: Any = None) -> None:
+                    _set_setting("instagram", "border", str(int(bd.value or 0)))
+                    _ig_preview.refresh()
+
+                bd.on("change", _border)  # on release: one save, not one per drag step
+
+                def _apply_color(value: str) -> None:
+                    v = value.strip()
+                    if not _HEX_RE.match(v):
+                        return
+                    v = v.lower() if v.startswith("#") else "#" + v.lower()
+                    _set_setting("instagram", "padColor", v)
+                    if hexbox.value != v:
+                        hexbox.set_value(v)
+                    picker.props(f'value="{v}"')
+                    picker.update()
+                    _ig_preview.refresh()
+
+                hexbox.on_value_change(lambda e: _apply_color(str(e.value or "")))
+                picker.on(
+                    "change",
+                    lambda e: _apply_color(str(e.args)),
+                    js_handler="(e) => emit(e.target.value)",
+                )
+            _ig_preview()
+
+        @ui.refreshable
+        def _ig_preview() -> None:
+            p = cur()
+            if "instagram" not in selected_networks(p, load_channel_cache(settings.paths)[0]):
+                return
+            sizes: dict[str, tuple[int, int]] = state.get("sizes", {})
+            spec = _ig_spec()
+            if not p.photos or not sizes:
+                return
+            if spec is None:
+                ui.label(
+                    "Every photo already has an Instagram ratio, so they are used as they are."
+                ).classes("text-sm pt-1")
+            tile_w = 112
+            with ui.row().classes("gap-2 flex-wrap pt-1"):
+                for h in p.photos:
+                    if spec is None:
+                        w0, h0 = sizes.get(h, (1, 1))
+                        box = f"width:{tile_w}px;aspect-ratio:{w0}/{h0};background:transparent;"
+                        pad = 0.0
+                    else:
+                        box = (
+                            f"width:{tile_w}px;aspect-ratio:{spec.width}/{spec.height};"
+                            f"background:{p.ig_color()};"
+                        )
+                        pad = spec.border / 2 * tile_w / spec.width
+                    with (
+                        ui.element("div")
+                        .classes("rounded overflow-hidden")
+                        .style(
+                            box + f"padding:{pad:.2f}px;box-sizing:border-box;"
+                            "outline:1px solid var(--sp-border);"
+                        )
+                    ):
+                        ui.image(A._thumb_src(h, thumb_small)).props("fit=contain").classes(
+                            "w-full h-full"
+                        )
+            if spec is not None:
+                ui.label(
+                    f"Preview: {spec.width}x{spec.height}"
+                    + (f", {spec.border}px border" if spec.border else "")
+                ).classes("text-xs sp-faint")
+
         def _post_type_row(net: str, label: str, choices: tuple[str, ...]) -> None:
             p = cur()
             with ui.row().classes("items-center gap-2 pt-2"):
@@ -539,7 +680,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     {c: c.title() for c in choices}, value=p.setting(net, "postType", "POST")
                 ).props("dense no-caps")
                 t.set_enabled(p.editable)
-                t.on_value_change(lambda e: _set_setting(net, "postType", str(e.value or "POST")))
+
+                def _pt(e: Any) -> None:
+                    _set_setting(net, "postType", str(e.value or "POST"))
+                    if net == "instagram":
+                        _dest.refresh()
+
+                t.on_value_change(_pt)
 
         def _pinterest_row() -> None:
             p = cur()

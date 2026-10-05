@@ -7,6 +7,19 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🚧 2026-10-05 — V3 started (`V3Plan.md`)
+
+- **P0 done**: `V3.md` items numbered + phase-tagged and linked to `V3Plan.md`;
+  `Achievements/Achievements.md` typos / empty row / Y-N case fixed (text and points untouched).
+- **P1a done** (user-tested): `post_export.fit_and_pad` / `IgSpec` / `is_instagram_ratio`
+  (exactly 4:5, 1:1, 1.91:1; 9:16 for a Story; ~1.5% tolerance) / `resolve_ig_spec` /
+  `upright_sizes`; `export_jpeg(..., ig=)` and `export_key(..., ig=)`. `Post.ig_format/ig_border/
+  ig_color` live in `network_settings["instagram"]` (`format`, `border` 0-100 px, `padColor`),
+  never sent to robopost. Composer: format toggle (Story only for STORIES), border slider,
+  native color picker + hex field, live CSS preview. **Not yet wired into the send.**
+- **Next: P1b** (split Instagram send, Opus) on the same branch `v3-p0-p1-instagram`;
+  plan in `~/.claude/plans/` / V3Plan.md. Wire `IgSpec` through `post_send.pool_exporter`.
+
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 
 - Issues.md "the whole app freezes while a macOS Keychain prompt is open": `/settings` read the
