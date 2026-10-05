@@ -722,6 +722,12 @@ How they're applied:
   so redirects are never followed. `image_object_ids` takes the upload's
   **`storage_object_id`**, not its `id` (robopost silently accepts a wrong id and posts no
   image). There is no read / edit / delete for a post and no alt text.
+- **Zernio facts** (verified live 2026-10-05): base `https://zernio.com/api`, `Authorization: Bearer
+  <key>`; no auth-check endpoint (`GET /v1/accounts` is used); uploads are presigned
+  (`POST /v1/media/presign` → `PUT` to `uploadUrl` with no API key → `publicUrl` in `mediaItems`);
+  `POST /v1/posts` with `isDraft: true` (platforms optional) or `scheduledFor`; reply `post._id`;
+  an `Idempotency-Key` header is sent; an identical post is refused (409) for 24 h. Buffer was skipped:
+  its API takes public media URLs only (no upload).
 - **Posts** live in `sync/posts/<post_id>.json`, one file each (a deliberate exception to
   constraint #4, like collections: not `pixel_hash` state, not in `changes`, not merged). Status:
   `draft` → `sending` → `sent_draft` | `scheduled` (or `failed`, retryable). A sent post is

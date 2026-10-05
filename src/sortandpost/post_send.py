@@ -28,9 +28,10 @@ import logging
 import multiprocessing
 import shutil
 import threading
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -211,6 +212,7 @@ def _send(
                 )
                 req = make_request(post, channels, mode, media, spec, now=now, only=group.channels)
                 phase = "create"
+                req = replace(req, idempotency_key=uuid.uuid4().hex)
                 ids = api.create_post(req)
             except PostingError as exc:
                 return _failed(

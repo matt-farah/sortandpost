@@ -106,6 +106,7 @@ class CreateRequest:
     schedule_at: datetime | None = None  # aware UTC; None = no time sent
     first_comment: str = ""
     settings: dict[str, dict[str, str]] = field(default_factory=dict)
+    idempotency_key: str = ""  # one per create call, for providers that dedupe on it
 
     def settings_for(self, channel: Channel) -> dict[str, str]:
         return dict(self.settings.get(channel.network, {}))
