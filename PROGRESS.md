@@ -3,11 +3,25 @@
 _Last updated: 2026-10-05 (pre-V3 cleanup)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
-> **▶️ Next:** pre-V3 cleanup — photo-page tag follow-ups (✕ on CLIP-approved tags, tag edits
-> fan out to the stack), then the **Keychain freeze** fix + bump to **2.0.0**. The macOS +
+> **▶️ Next:** pre-V3 cleanup — the **Keychain freeze** fix + bump to **2.0.0**. The macOS +
 > Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo decisions
 > (ToDo.md) and don't block V3. Then plan **V3** (`V3.md`). Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## 🏷️ 2026-10-05 — Photo-page tags: ✕ on CLIP tags; a stack's tags live on its top photo
+
+- ✕ on every applied tag. On an approved CLIP tag it calls `clip.tagging.unapprove`: drops the
+  `photo_tags` row, rejects the prediction (so it isn't re-suggested), `tag_remove` +
+  `clip_reject` change rows; merge already replays both (test in `test_sync_merge.py`).
+- In a stack, tags live on **one member only**, `app._tag_home` = `stacks.embed_target` (the
+  top photo; the JPEG when the top is a RAW). Photo-page add / approve / reject and bulk tag
+  act there and write only its file, so tagging never changes the top. Remove clears every
+  member (DB only for the hidden ones) — cleans up tags the old fan-out spread. The photo page
+  shows the tag home's tags, with a note on hidden members. Ratings still fan out.
+- "Make this the top photo" moves the tags first (`db.tags.move_tags`: keeps each tag's
+  source, skips the `to-edit` marker, `tag_add` / `clip_approve` + `tag_remove` rows) and
+  rolls the move back if the file write fails.
+- Hands-on tested by the user.
 
 ## 🥇 2026-10-03 — "Make this the top photo" (PR #47)
 

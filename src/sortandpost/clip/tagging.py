@@ -16,6 +16,9 @@ Review (called from the UI, off the event loop): the user's decision in
   (hard constraints #2, #5) + ``ChangeOp.clip_approve``.
 * **reject** -> ``predictions.state='rejected'`` (row created if missing, so it
   stays rejected even after the pending row is pruned) + ``ChangeOp.clip_reject``.
+* **unapprove** (the photo page's ✕ on an approved CLIP tag) -> drop the
+  ``photo_tags(source='clip')`` row (``ChangeOp.tag_remove``), then **reject** so
+  a re-run doesn't suggest it again, then re-embed the reduced keyword set.
 """
 
 from __future__ import annotations
@@ -274,6 +277,56 @@ def reject(
         field=tag_name,
         new_value=tag_name,
     )
+
+
+def unapprove(
+    session: Session,
+    *,
+    device_id: str,
+    model: str,
+    pixel_hash: str,
+    tag_name: str,
+    now: datetime,
+    exiftool: ExiftoolClient | None,
+) -> bool:
+    """Take an approved CLIP tag back off *pixel_hash*. Writes ``tag_remove`` +
+    ``clip_reject`` change rows, which the conflict merge already replays (the
+    removal whatever the tag's source, the rejection onto ``predictions``).
+    ``False`` = the photo had no CLIP-sourced row for that tag. The caller commits."""
+    tag = session.exec(select(Tag).where(Tag.name == tag_name)).first()
+    if tag is None or tag.id is None:
+        return False
+    row = session.exec(
+        select(PhotoTag).where(
+            PhotoTag.pixel_hash == pixel_hash,
+            PhotoTag.tag_id == tag.id,
+            PhotoTag.source == TagSource.clip,
+        )
+    ).first()
+    if row is None:
+        return False
+
+    session.delete(row)
+    session.flush()
+    record_change(
+        session,
+        device_id=device_id,
+        op=ChangeOp.tag_remove,
+        pixel_hash=pixel_hash,
+        ts=now,
+        field=tag_name,
+        old_value=tag_name,
+    )
+    reject(
+        session,
+        device_id=device_id,
+        model=model,
+        pixel_hash=pixel_hash,
+        tag_name=tag_name,
+        now=now,
+    )
+    _embed_keywords(session, pixel_hash, exiftool)  # rewrites the reduced set
+    return True
 
 
 # --------------------------------------------------------------------------- #

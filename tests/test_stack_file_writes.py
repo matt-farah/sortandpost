@@ -30,8 +30,15 @@ from sortandpost.app import (
 )
 from sortandpost.config import Settings, StackingConfig
 from sortandpost.db import init_db, make_engine
-from sortandpost.db.models import PhotoPath, Rating
-from sortandpost.db.tags import photo_keywords
+from sortandpost.db.models import (
+    PhotoPath,
+    PhotoTag,
+    Prediction,
+    PredictionState,
+    Rating,
+    TagSource,
+)
+from sortandpost.db.tags import add_manual_tag, photo_keywords
 from sortandpost.indexer.pipeline import _is_embed_target
 from sortandpost.indexer.reconcile import reconcile_metadata
 from sortandpost.metadata import EmbeddedMetadata, ExiftoolClient
@@ -134,24 +141,94 @@ def test_bulk_rating_and_tag_write_only_the_top_file(
 
     assert_only_changed(before, snapshot_folder(library), "IMG copy.jpg")
     with Session(db) as session:
-        assert photo_keywords(session, orig) == ["sunset"]
+        assert photo_keywords(session, copy) == ["sunset"]
+        assert photo_keywords(session, orig) == [], "tags live on the top photo only"
     with ExiftoolClient() as exiftool:
         md = exiftool.read(library / "IMG copy.jpg")
     assert md.rating == 3
     assert "sunset" in md.keywords
 
 
-def test_photo_page_tag_on_hidden_member_leaves_its_file(
+def test_photo_page_tag_on_hidden_member_goes_on_the_top_only(
     library: Path, db: Engine, settings: Settings, copy_stack: tuple[str, str]
 ) -> None:
-    orig, _copy = copy_stack
+    orig, copy = copy_stack
     before = snapshot_folder(library)
 
     assert _apply_photo_tag(settings, db, orig, "beach", "add")
 
-    assert_only_changed(before, snapshot_folder(library))
+    assert_only_changed(before, snapshot_folder(library), "IMG copy.jpg")
     with Session(db) as session:
-        assert photo_keywords(session, orig) == ["beach"]
+        assert photo_keywords(session, copy) == ["beach"]
+        assert photo_keywords(session, orig) == []
+    _rescan_mtimes(db)
+    assert _top(db, orig) == copy, "tagging changed the stack's top photo"
+
+    before = snapshot_folder(library)
+    assert _apply_photo_tag(settings, db, orig, "beach", "remove")
+    assert_only_changed(before, snapshot_folder(library), "IMG copy.jpg")
+    with Session(db) as session:
+        assert photo_keywords(session, copy) == []
+
+
+def test_photo_page_remove_clears_legacy_tags_off_hidden_members(
+    library: Path, db: Engine, settings: Settings, copy_stack: tuple[str, str]
+) -> None:
+    """Tags fanned out to every member before the top-only rule: removing one
+    from the photo page takes it off all of them, writing only the top's file."""
+    orig, copy = copy_stack
+    with Session(db) as session:
+        for h in (orig, copy):
+            add_manual_tag(session, pixel_hash=h, tag_name="old", device_id="d", now=NOW)
+        session.commit()
+    before = snapshot_folder(library)
+
+    assert _apply_photo_tag(settings, db, copy, "old", "remove")
+
+    assert_only_changed(before, snapshot_folder(library), "IMG copy.jpg")
+    with Session(db) as session:
+        assert photo_keywords(session, orig) == []
+        assert photo_keywords(session, copy) == []
+
+
+def test_photo_page_clip_suggestion_on_the_top_and_removable(
+    library: Path, db: Engine, settings: Settings, copy_stack: tuple[str, str]
+) -> None:
+    orig, copy = copy_stack
+    model = settings.config.clip.model
+    with Session(db) as session:
+        session.add(
+            Prediction(
+                pixel_hash=copy,
+                tag_name="red",
+                score=0.5,
+                model=model,
+                run_at=NOW,
+                state=PredictionState.pending,
+            )
+        )
+        session.commit()
+    before = snapshot_folder(library)
+
+    # viewed from the hidden member, the suggestion shown is the top's
+    assert _apply_photo_tag(settings, db, orig, "red", "approve")
+
+    assert_only_changed(before, snapshot_folder(library), "IMG copy.jpg")
+    with Session(db) as session:
+        assert photo_keywords(session, orig) == []
+        pt = session.exec(select(PhotoTag).where(PhotoTag.pixel_hash == copy)).one()
+        assert pt.source == TagSource.clip
+    with ExiftoolClient() as exiftool:
+        assert "red" in exiftool.read(library / "IMG copy.jpg").keywords
+
+    # ✕ on the approved CLIP pill: gone, and rejected so it isn't re-suggested
+    assert _apply_photo_tag(settings, db, orig, "red", "remove")
+    with Session(db) as session:
+        assert photo_keywords(session, copy) == []
+        pred = session.exec(select(Prediction).where(Prediction.pixel_hash == copy)).one()
+        assert pred.state == PredictionState.rejected
+    with ExiftoolClient() as exiftool:
+        assert "red" not in exiftool.read(library / "IMG copy.jpg").keywords
 
 
 def test_stacking_off_writes_the_photo_itself(
@@ -238,6 +315,9 @@ def test_make_top_restamps_only_that_file_and_regroups(
         md = exiftool.read(library / "IMG.jpg")
     assert md.rating == 4
     assert "sunset" in md.keywords
+    with Session(db) as session:  # the tags moved with the top
+        assert photo_keywords(session, orig) == ["sunset"]
+        assert photo_keywords(session, copy) == []
 
 
 def test_make_top_on_an_unrated_untagged_photo_still_moves_it(

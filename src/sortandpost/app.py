@@ -63,6 +63,7 @@ from sortandpost.clip.tagging import (
     pending_for_tag,
     pending_groups,
     reject,
+    unapprove,
 )
 from sortandpost.clip.vocab import load_vocab
 from sortandpost.collections import (
@@ -111,7 +112,12 @@ from sortandpost.db.models import (
     Tag,
     TagSource,
 )
-from sortandpost.db.tags import RESERVED_TAG_NAMES, embeddable_keywords, photo_keywords
+from sortandpost.db.tags import (
+    RESERVED_TAG_NAMES,
+    embeddable_keywords,
+    move_tags,
+    photo_keywords,
+)
 from sortandpost.desktop import control as desktop_control
 from sortandpost.grouping import PhotoGroup, parse_folder_sort
 from sortandpost.helper import HelperInfo, read_helper_info
@@ -1756,22 +1762,29 @@ def build_ui(settings: Settings) -> None:
             state = await nicegui_run.io_bound(_photo_tag_state, settings, engine, pixel_hash)
             if state is None:  # the pool was shut down under us (app closing)
                 return
-            have, suggested = state
+            have, suggested, tag_home = state
             with client:
                 tags_wrap.clear()
                 with tags_wrap:
                     ui.label("Tags").classes("font-bold text-sm")
+                    if tag_home != pixel_hash:
+                        ui.label("This stack's tags live on its top photo.").classes(
+                            "text-xs sp-muted"
+                        )
                     with ui.row().classes("items-center gap-1 flex-wrap"):
                         for name, source in have:
                             with ui.row().classes(
                                 "items-center gap-0 rounded-full sp-placeholder px-2"
                             ):
                                 ui.label(name).classes("text-sm py-0.5")
-                                if tags_writable and source == TagSource.manual:
+                                if tags_writable:
+                                    tip = f'remove "{name}"'
+                                    if source == TagSource.clip:
+                                        tip += " (it won't be suggested again)"
                                     ui.button(
                                         icon="close",
                                         on_click=lambda n=name: _tag_action(n, "remove"),
-                                    ).props("flat dense round size=xs").tooltip(f'remove "{name}"')
+                                    ).props("flat dense round size=xs").tooltip(tip)
                         if not have:
                             ui.label("No tags yet.").classes("text-xs sp-muted")
                     if suggested:
@@ -3134,6 +3147,13 @@ def _file_exif(
     return exiftool
 
 
+def _tag_home(session: Session, stacks: StackIndex, pixel_hash: str) -> str:
+    """Where a stack's tags live: its embed target -- the top photo, or, when the
+    top is a RAW, the newest member that can carry them. Only that one file is
+    ever written, so tagging never changes which photo is on top."""
+    return embed_target(session, stacks, pixel_hash)
+
+
 def _apply_review_bulk(settings: Settings, engine: Engine, tag_name: str, decision: str) -> int:
     """Off the event loop (``run.io_bound``): approve/reject every pending
     prediction for *tag_name*. Approve embeds keywords via exiftool, so it must
@@ -3216,11 +3236,13 @@ def _apply_review_one(
 
 def _photo_tag_state(
     settings: Settings, engine: Engine, pixel_hash: str
-) -> tuple[list[tuple[str, TagSource]], list[tuple[str, float]]]:
+) -> tuple[list[tuple[str, TagSource]], list[tuple[str, float]], str]:
     """Off the event loop: the photo page's tag section -- the tags it has
     (``(name, source)``, reserved workflow markers hidden) and its still-pending CLIP
-    suggestions (``(name, score)``, best first)."""
+    suggestions (``(name, score)``, best first), and the photo they belong to: in
+    a stack, its :func:`_tag_home` (tags live there only)."""
     with Session(engine) as session:
+        pixel_hash = _tag_home(session, _stacks(session, settings), pixel_hash)
         have = session.exec(
             select(Tag.name, PhotoTag.source)
             .join(PhotoTag, col(PhotoTag.tag_id) == col(Tag.id))
@@ -3240,6 +3262,7 @@ def _photo_tag_state(
     return (
         [(n, TagSource(s)) for n, s in have if n.casefold() not in RESERVED_TAG_NAMES],
         [(n, float(sc)) for n, sc in pending if n.casefold() not in have_names],
+        pixel_hash,
     )
 
 
@@ -3247,58 +3270,71 @@ def _apply_photo_tag(
     settings: Settings, engine: Engine, pixel_hash: str, tag_name: str, action: str
 ) -> bool:
     """Off the event loop: one tag change from the photo page. ``add`` / ``remove``
-    are manual tags; ``approve`` / ``reject`` decide a CLIP suggestion. Each writes
-    its ``changes`` row and (add / remove / approve) re-embeds the photo's keywords
-    through exiftool (hard constraints #4, #5, #7). ``False`` = nothing changed."""
+    put a tag on / take it off (``remove`` works on manual and approved CLIP tags);
+    ``approve`` / ``reject`` decide a CLIP suggestion. In a stack, tags live on its
+    **top photo only** (:func:`_tag_home`): add / approve / reject act on it, and
+    only its file is written, so tagging never changes which photo is on top.
+    ``remove`` also clears the tag off the other members (DB only), for tags put
+    there before this rule. Each writes its ``changes`` rows and (all but reject)
+    re-embeds the keywords (hard constraints #4, #5, #7). ``False`` = nothing
+    changed."""
     model_name = settings.config.clip.model
-    with Session(engine) as session:
+    with Session(engine) as session, _exif(settings) as shared_exiftool:
+        stacks = _stacks(session, settings)
+        top = _tag_home(session, stacks, pixel_hash)
+        exiftool = _file_exif(session, stacks, top, shared_exiftool)
         if action == "reject":
             reject(
                 session,
                 device_id=settings.device_id,
                 model=model_name,
-                pixel_hash=pixel_hash,
+                pixel_hash=top,
                 tag_name=tag_name,
                 now=utcnow(),
             )
-            session.commit()
-            return True
-        with _exif(settings) as shared_exiftool:
-            # a hidden stack member's own file is never written
-            exiftool = _file_exif(session, _stacks(session, settings), pixel_hash, shared_exiftool)
-            if action == "approve":
-                if not is_pending(
-                    session, model=model_name, pixel_hash=pixel_hash, tag_name=tag_name
-                ):
-                    return False
-                approve(
+            changed = True
+        elif action == "approve":
+            if not is_pending(session, model=model_name, pixel_hash=top, tag_name=tag_name):
+                return False
+            approve(
+                session,
+                device_id=settings.device_id,
+                model=model_name,
+                pixel_hash=top,
+                tag_name=tag_name,
+                facet=load_vocab(settings.paths.tags_file).facet_of(tag_name),
+                now=utcnow(),
+                exiftool=exiftool,
+            )
+            changed = True
+        elif action == "add":
+            changed = add_manual_tag(
+                session,
+                pixel_hash=top,
+                tag_name=tag_name,
+                device_id=settings.device_id,
+                now=utcnow(),
+                exiftool=exiftool,
+            )
+        else:
+            changed = False
+            for member in stacks.members(top):
+                member_exif = exiftool if member == top else None
+                changed |= remove_manual_tag(
+                    session,
+                    pixel_hash=member,
+                    tag_name=tag_name,
+                    device_id=settings.device_id,
+                    now=utcnow(),
+                    exiftool=member_exif,
+                ) or unapprove(
                     session,
                     device_id=settings.device_id,
                     model=model_name,
-                    pixel_hash=pixel_hash,
+                    pixel_hash=member,
                     tag_name=tag_name,
-                    facet=load_vocab(settings.paths.tags_file).facet_of(tag_name),
                     now=utcnow(),
-                    exiftool=exiftool,
-                )
-                changed = True
-            elif action == "add":
-                changed = add_manual_tag(
-                    session,
-                    pixel_hash=pixel_hash,
-                    tag_name=tag_name,
-                    device_id=settings.device_id,
-                    now=utcnow(),
-                    exiftool=exiftool,
-                )
-            else:
-                changed = remove_manual_tag(
-                    session,
-                    pixel_hash=pixel_hash,
-                    tag_name=tag_name,
-                    device_id=settings.device_id,
-                    now=utcnow(),
-                    exiftool=exiftool,
+                    exiftool=member_exif,
                 )
         session.commit()
     return changed
@@ -3335,9 +3371,10 @@ def _bulk_targets(session: Session, settings: Settings, hashes: list[str]) -> li
 
 
 def _apply_make_top(settings: Settings, engine: Engine, pixel_hash: str) -> str | None:
-    """Off the event loop: make *pixel_hash* its stack's top photo. The top is
-    the member whose file changed last, so this rewrites the photo's own rating
-    and keywords into its file(s) through exiftool -- a metadata write
+    """Off the event loop: make *pixel_hash* its stack's top photo. The old top's
+    tags move to it first (tags live on the top only). The top is the member
+    whose file changed last, so this rewrites the photo's rating and keywords
+    into its file(s) through exiftool -- a metadata write
     (constraint #1), never a RAW -- which moves its mtime. ``photo_paths`` is
     refreshed right away so the stack regroups without waiting for a rescan.
     Returns ``None`` on success, else why it couldn't."""
@@ -3359,6 +3396,10 @@ def _apply_make_top(settings: Settings, engine: Engine, pixel_hash: str) -> str 
         ]
         if not writable:
             return "RAW files and this file type are never written, so it can't be made the top"
+        # tags live on the top photo only: carry them over to the new top
+        home = _tag_home(session, stacks, pixel_hash)
+        if home != pixel_hash:
+            move_tags(session, src=home, dst=pixel_hash, device_id=settings.device_id, now=utcnow())
         stars = get_rating(session, pixel_hash) or 0
         keywords = embeddable_keywords(photo_keywords(session, pixel_hash))
         done = 0
@@ -3373,8 +3414,11 @@ def _apply_make_top(settings: Settings, engine: Engine, pixel_hash: str) -> str 
             row.size, row.mtime_ns = st.st_size, st.st_mtime_ns
             session.add(row)
             done += 1
+        if not done:
+            session.rollback()  # it stays the top's: don't move its tags
+            return "the file couldn't be written (see the log)"
         session.commit()
-    return None if done else "the file couldn't be written (see the log)"
+    return None
 
 
 def _expand_stacks(stacks: StackIndex, hashes: list[str]) -> list[str]:
@@ -3408,11 +3452,11 @@ def _apply_bulk_rating(settings: Settings, engine: Engine, hashes: list[str], st
 
 
 def _apply_bulk_tag(settings: Settings, engine: Engine, hashes: list[str], tag_name: str) -> int:
-    """Off the event loop: add *tag_name* to every selected photo (+ stack
-    members; only each stack's embed target gets the file write)."""
+    """Off the event loop: add *tag_name* to every selected photo -- in a stack,
+    to its top photo only (:func:`_tag_home`)."""
     with Session(engine) as session, _exif(settings) as exiftool:
         stacks = _stacks(session, settings)
-        for target in _expand_stacks(stacks, hashes):
+        for target in dict.fromkeys(_tag_home(session, stacks, h) for h in hashes):
             add_manual_tag(
                 session,
                 pixel_hash=target,
@@ -5072,16 +5116,16 @@ def _stack_filmstrip(
     browser) always returns to wherever you opened the stack from."""
     with ui.column().classes("w-full px-4 gap-1"):
         with ui.row().classes("items-center gap-3"):
-            ui.label(f"Stack · {len(members)} photos — rating is shared").classes(
-                "font-bold text-sm"
-            )
+            ui.label(
+                f"Stack · {len(members)} photos — rating is shared, tags are on the top photo"
+            ).classes("font-bold text-sm")
             if on_make_top is not None:
                 ui.button("Make this the top photo", icon="vertical_align_top").props(
                     "flat dense no-caps size=sm"
                 ).on_click(on_make_top).tooltip(
-                    "Rewrites this photo's rating and tags into its file, which makes it the "
-                    "newest file in the stack -- the top photo, and the one ratings and tags "
-                    "are written to from now on"
+                    "Moves the stack's tags to this photo and rewrites its rating and tags "
+                    "into its file, which makes it the newest file in the stack -- the top "
+                    "photo, and the one ratings and tags are written to from now on"
                 )
         with ui.row().classes("gap-2 flex-wrap"):
             for i, member in enumerate(members):

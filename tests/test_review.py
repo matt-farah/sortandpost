@@ -19,6 +19,7 @@ from sortandpost.clip.tagging import (
     pending_for_tag,
     pending_groups,
     reject,
+    unapprove,
 )
 from sortandpost.clip.vocab import load_vocab
 from sortandpost.config import Settings
@@ -294,6 +295,95 @@ def test_reject_creates_row_when_prediction_absent(settings: Settings) -> None:
         row = s.exec(select(Prediction)).one()
         assert row.state == PredictionState.rejected
         assert row.tag_name == "blue"
+
+
+# --------------------------------------------------------------------------- #
+# unapprove (the photo page's ✕ on an approved CLIP tag)
+# --------------------------------------------------------------------------- #
+def test_unapprove_removes_tag_rejects_and_stays_gone(settings: Settings) -> None:
+    _jpeg(_lib(settings) / "red.jpg", (240, 6, 6))
+    scan_once(settings)
+    scan_clip_once(settings, model=AlignedFakeModel())
+    model = settings.config.clip.model
+
+    et = MockExiftool()
+    with _session(settings) as s:
+        ph = s.exec(select(Prediction).where(Prediction.tag_name == "red")).one().pixel_hash
+        approve(
+            s,
+            device_id=settings.device_id,
+            model=model,
+            pixel_hash=ph,
+            tag_name="red",
+            facet="colour",
+            now=NOW,
+            exiftool=et,
+        )
+        s.commit()
+
+        assert unapprove(
+            s,
+            device_id=settings.device_id,
+            model=model,
+            pixel_hash=ph,
+            tag_name="red",
+            now=NOW,
+            exiftool=et,
+        )
+        s.commit()
+
+        assert s.exec(select(PhotoTag).where(PhotoTag.pixel_hash == ph)).all() == []
+        pred = s.exec(select(Prediction).where(Prediction.tag_name == "red")).one()
+        assert pred.state == PredictionState.rejected
+        ops = {c.op for c in s.exec(select(Change).where(Change.field == "red")).all()}
+        assert {ChangeOp.tag_remove, ChangeOp.clip_reject} <= ops
+        # nothing left to take off: a second call is a no-op
+        assert not unapprove(
+            s,
+            device_id=settings.device_id,
+            model=model,
+            pixel_hash=ph,
+            tag_name="red",
+            now=NOW,
+            exiftool=et,
+        )
+
+    assert et.calls[-1] == ("red.jpg", [])  # the reduced (empty) keyword set was embedded
+
+    scan_clip_once(settings, reembed=True, model=AlignedFakeModel())
+    with _session(settings) as s:
+        preds = s.exec(select(Prediction).where(Prediction.tag_name == "red")).all()
+        assert [p.state for p in preds] == [PredictionState.rejected]
+
+
+def test_unapprove_leaves_manual_tags_alone(settings: Settings) -> None:
+    ph = "m" * 64
+    with _session(settings) as s:
+        _add_photo(s, ph, "/library/m.jpg")
+        tag = Tag(name="red")
+        s.add(tag)
+        s.flush()
+        assert tag.id is not None
+        s.add(
+            PhotoTag(
+                pixel_hash=ph,
+                tag_id=tag.id,
+                source=TagSource.manual,
+                added_at=NOW,
+                added_by_device="dev",
+            )
+        )
+        s.commit()
+        assert not unapprove(
+            s,
+            device_id=settings.device_id,
+            model=settings.config.clip.model,
+            pixel_hash=ph,
+            tag_name="red",
+            now=NOW,
+            exiftool=None,
+        )
+        assert len(s.exec(select(PhotoTag)).all()) == 1
 
 
 # --------------------------------------------------------------------------- #

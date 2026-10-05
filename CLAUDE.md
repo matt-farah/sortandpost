@@ -493,13 +493,16 @@ The **only** module allowed to write under a library root. Wraps a persistent
   mtime update so sync tools and other apps notice the change.
 - **Never** writes CLIP predictions, UUIDs, or anything else. RAW paths are rejected at this
   layer as a safety net.
-- **Stacks write one file.** Ratings / tags fan out to every stack member in the DB, but
-  only the stack's `stacks.embed_target` (its newest non-RAW, embed-capable member) gets
-  the file write (`app._file_exif`; reconcile's write-back too). Writing every member
+- **Stacks write one file.** Ratings fan out to every stack member in the DB; **tags live
+  on one member only** (`app._tag_home`: add / approve / bulk tag go there, the photo page
+  shows its tags, remove clears every member). Only the stack's `stacks.embed_target` (its
+  newest non-RAW, embed-capable member — the top photo unless the top is a RAW) gets the
+  file write (`app._file_exif`; reconcile's write-back too). Writing every member
   changed the originals' mtimes and flipped the stack's top photo.
   The photo page's **"Make this the top photo"** (`app._apply_make_top`) picks the top on
-  purpose: `ExiftoolClient.restamp` rewrites that photo's rating + keywords (unrated as an
-  explicit `XMP:Rating=0`, so the file always changes) and refreshes `photo_paths`.
+  purpose: it moves the stack's tags onto that photo (`db.tags.move_tags`), then
+  `ExiftoolClient.restamp` rewrites that photo's rating + keywords (unrated as an explicit
+  `XMP:Rating=0`, so the file always changes) and refreshes `photo_paths`.
 - `-stay_open` reads **one argument per line**: `_execute` refuses any argument containing
   `\n` / `\r` / NUL, since a line break would inject exiftool options (`-Directory=` moves
   the file, `-if` runs Perl — Security.md C1). Tag names are normalized / validated by
@@ -568,8 +571,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   Subject/tag also matches un-rejected CLIP suggestions.
 - `/photo/{pixel_hash}` — large preview, star widget, EXIF panel, a **Tags** section between
   the facts and Paths (applied pills; dashed ghost pills for pending CLIP suggestions with
-  ✓ approve / ✕ dismiss; an add-tag input — each change re-embeds the keywords into the
-  file, one photo only, not its stack), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
+  ✓ approve / ✕ dismiss; ✕ on every applied tag — on an approved CLIP tag it also rejects the
+  suggestion so it isn't re-suggested; an add-tag input — in a stack, tags live on its top photo
+  only, see "Stacks write one file"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
   prev/next walk the same resolved view (`resolve_view`, cached per query for 30 min).
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/review` — pending CLIP predictions grouped by tag for bulk approve/reject.
