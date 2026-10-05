@@ -191,9 +191,14 @@ class DeletionConfig(BaseModel):
 
 
 class PostingConfig(BaseModel):
-    """The clean JPEG made from each photo before it is uploaded to robopost.
-    Never the source file: orientation applied, sRGB, all EXIF/GPS stripped."""
+    """Which posting back-end is used, plus the clean JPEG made from each photo
+    before it is uploaded. Never the source file: orientation applied, sRGB,
+    all EXIF/GPS stripped. API keys are never here (OS keychain / env var)."""
 
+    provider: str = "robopost"  # a key of sortandpost.posting.PROVIDERS
+    base_urls: dict[str, str] = Field(default_factory=dict)  # provider -> its API address
+    # provider -> {operation: calls per the spec's window}; 0 turns a limit off
+    rate_limit_overrides: dict[str, dict[str, int]] = Field(default_factory=dict)
     export_long_edge: int = 2048  # 0 = full resolution
     export_quality: int = 90
 

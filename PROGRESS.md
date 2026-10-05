@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-05 (V3 P3 achievements)._
+_Last updated: 2026-10-05 (V3 P4a posting providers + Postiz)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
 > **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
@@ -52,7 +52,45 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   directly), "github" in the `/` search, Devil mode from Settings. Settings → Profile & achievements;
   wizard step "You" (new library, or joined with no profile). No nav-bar entry — the 🏆 chip links there.
   Also: "Reader" devil text fixed ("…looked at the GitHub!").
-- **Next: P4a** (posting provider interface + Postiz, Opus). P5 copy export can run any time now.
+- **P5a done**: `tools/export_copy.py` (AST walk from the `/settings` + `/welcome` page functions
+  through everything they call) → `copy/onboarding_settings.csv` (295 strings; `new_text` column;
+  rows matched back on `text`, not line). User is editing it; P5b applies it.
+- **P4a done** (user-tested live against a self-hosted Postiz + robopost regression): new
+  `sortandpost.posting` package — `ProviderSpec` (declarative: auth placement, endpoints, JSON
+  paths, errors, rate limits, timeouts, capabilities, base-URL rules, per-network `FieldSpec`s) +
+  one `build_payload` per provider; one shared `ApiClient`; generic `ratelimit` (whole send
+  checked up front, log in `local/<provider>.json`, `posting.rate_limit_overrides`). robopost
+  and Postiz are spec modules; top-level `robopost.py` removed. `secrets_store` keyed by spec
+  (`get_key/set_key/clear_key/cached_key`); robopost's keychain item unchanged. `Post.provider`,
+  parts carry `provider` + `remote_post_ids`, media cache entries carry `provider` (legacy files
+  load as robopost). Settings → Posting: provider toggle, per-spec key row / server address
+  (autosaves; Cloud / Self-hosted presets; http only to LAN hosts) / rate-limit line / connection
+  test that names the server. Composer renders per-network fields from the spec, flags channels
+  not in the active provider ("Clear them"). Found live: Postiz took > 60 s to answer a create
+  (it was created) → generic `create_timeout_s`, Postiz 180 s. Also fixed a circular import when
+  `sortandpost.posting` is imported first. Tests: `test_posting_client.py` (every check × every
+  spec), `test_ratelimit.py`, `test_postiz.py`, send-path provider tests.
+- **Next: P4b** (Buffer, only if API access is available — a new spec module) or **P5b** (apply
+  the copy CSV — waiting on the user's edits to `copy/onboarding_settings.csv`).
+
+### P4b handoff (Buffer)
+- PR #54 (P5a + P4a) is open on `v3-p4a-posting-providers`; branch P4b from it (or from main once
+  merged; see the stacked-PR note in memory: retarget before deleting the base branch).
+- **First check Buffer API access** (new developer apps / keys may not be available); if there is
+  none, P4b is skipped.
+- Recipe: add `src/sortandpost/posting/buffer.py` with a `SPEC = ProviderSpec(...)` +
+  `build_payload(CreateRequest)`, register it in `posting/__init__.py` `PROVIDERS`. Shared code
+  should need **no** edits — if Buffer needs something new (OAuth refresh, GraphQL body, a
+  different upload flow), add a generic `ProviderSpec` field rather than a vendor branch
+  (user rule: no vendor lock-in; limits/capabilities are spec values).
+- `tests/test_posting_client.py` automatically runs every client check against the new spec;
+  add a small `tests/test_buffer.py` for its payload (like `test_postiz.py`).
+- Verify live like Postiz: a scratchpad probe reading the key via `secrets_store.get_key(SPEC)`;
+  read-only calls first, then (with the user's OK) one upload + one **draft**. Never retry a
+  create; on a timeout check whether it was created before doing anything else.
+- Open P4a follow-ups: Postiz first comment assumed working (`value[1]`; flip
+  `first_comment=False` if not); Pinterest board is a text field (no live Pinterest channel to
+  check board listing); Instagram via Postiz untested live.
 
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 

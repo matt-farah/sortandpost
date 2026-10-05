@@ -18,7 +18,7 @@ def _frozen() -> bool:
 
 def _frozen_ca_bundle() -> None:
     """A packaged app has no system Python CA store: point HTTPS (the CLIP
-    weights download, robopost) at the bundled certifi file."""
+    weights download, posting APIs) at the bundled certifi file."""
     try:
         import certifi
     except ImportError:  # pragma: no cover

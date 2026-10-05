@@ -14,7 +14,7 @@ Two roots: a machine-local one and a shared (synced) one. Two ways to place them
         sortandpost.db (+ -wal/-shm/-journal while running)
         device.json
         publish_state.json
-        robopost.json  cached robopost channel list (no secrets)
+        <provider>.json  posting back-end cache: channels, rate-limit log (no secrets)
         post_exports/  temporary clean JPEGs made for an upload
         models/        downloaded CLIP weights
         logs/
@@ -135,12 +135,12 @@ class Paths:
         reads it to know whether/how to reach the helper. Never synced."""
         return self.local / "helper.json"
 
-    @property
-    def robopost_file(self) -> Path:
-        """Non-secret robopost cache (channel list). The API key is NEVER stored
-        here -- it lives in the OS keychain or ``ROBOPOST_API_KEY`` (see
+    def provider_file(self, provider: str) -> Path:
+        """Non-secret per-posting-provider state (``robopost.json``,
+        ``postiz.json``): channel list + rate-limit log. API keys are NEVER
+        stored here -- they live in the OS keychain or an env var (see
         :mod:`sortandpost.secrets_store`). Never synced."""
-        return self.local / "robopost.json"
+        return self.local / f"{provider}.json"
 
     @property
     def post_exports_dir(self) -> Path:

@@ -2,18 +2,34 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 
-from sortandpost.robopost import Channel, RobopostClient, RobopostError, network_key, redact
+from sortandpost.posting.client import ApiClient, redact
+from sortandpost.posting.model import (
+    Channel,
+    CreateRequest,
+    MediaRef,
+    PostingError,
+    network_key,
+)
+from sortandpost.posting.robopost import SPEC
 
 KEY = "rp_live_SECRET_abcdef123456"
 
 
-def _client(handler: httpx.MockTransport) -> RobopostClient:
-    return RobopostClient(KEY, transport=handler)
+NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+
+
+def _client(handler: httpx.MockTransport) -> ApiClient:
+    return ApiClient(SPEC, KEY, transport=handler)
+
+
+def _req(caption: str = "hi") -> CreateRequest:
+    return CreateRequest(mode="draft", caption=caption, media=(), channels=(), now=NOW)
 
 
 def test_auth_ok_sends_key_as_query_param() -> None:
@@ -34,7 +50,7 @@ def test_401_is_friendly_and_redacted() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"detail": f"Invalid API key. {req.url}"})
 
-    with _client(httpx.MockTransport(handler)) as rp, pytest.raises(RobopostError) as ei:
+    with _client(httpx.MockTransport(handler)) as rp, pytest.raises(PostingError) as ei:
         rp.check_auth()
     err = ei.value
     assert err.status == 401
@@ -77,7 +93,7 @@ def test_upload_is_multipart_and_returns_id(tmp_path: Path) -> None:
         )
 
     with _client(httpx.MockTransport(handler)) as rp:
-        assert rp.upload_media(f) == "m-1"
+        assert rp.upload_media(f) == MediaRef("m-1")
     req = seen[0]
     assert req.method == "POST" and req.url.path == "/v1/medias/upload"
     assert req.headers["content-type"].startswith("multipart/form-data")
@@ -90,7 +106,7 @@ def test_upload_415(tmp_path: Path) -> None:
     f = tmp_path / "a.jpg"
     f.write_bytes(b"x")
     resp = httpx.Response(415, json={"error": "File extension 'xyz' not supported."})
-    with _client(httpx.MockTransport(lambda r: resp)) as rp, pytest.raises(RobopostError) as ei:
+    with _client(httpx.MockTransport(lambda r: resp)) as rp, pytest.raises(PostingError) as ei:
         rp.upload_media(f)
     assert ei.value.status == 415
     assert "file type" in ei.value.friendly
@@ -108,7 +124,7 @@ def test_upload_retries_once_on_network_error(tmp_path: Path) -> None:
         return httpx.Response(201, json={"id": 1, "storage_object_id": 77})
 
     with _client(httpx.MockTransport(handler)) as rp:
-        assert rp.upload_media(f) == "77"
+        assert rp.upload_media(f).id == "77"
     assert calls[0] == 2
 
 
@@ -120,24 +136,24 @@ def test_create_post_returns_ids_and_is_never_retried() -> None:
         return httpx.Response(200, json={"scheduled_posts": [{"id": "p1"}, {"id": "p2"}]})
 
     with _client(httpx.MockTransport(handler)) as rp:
-        assert rp.create_post({"text": "hi", "is_draft": True}) == ["p1", "p2"]
-    assert calls == [{"text": "hi", "is_draft": True}]
+        assert rp.create_post(_req()) == ["p1", "p2"]
+    assert calls == [{"text": "hi", "image_object_ids": [], "is_draft": True}]
 
     def boom(req: httpx.Request) -> httpx.Response:
         calls.append({})
         raise httpx.ReadTimeout("slow", request=req)
 
     calls.clear()
-    with _client(httpx.MockTransport(boom)) as rp, pytest.raises(RobopostError) as ei:
-        rp.create_post({"text": "hi"})
+    with _client(httpx.MockTransport(boom)) as rp, pytest.raises(PostingError) as ei:
+        rp.create_post(_req())
     assert ei.value.status == 0
     assert len(calls) == 1
 
 
 def test_plan_limit_code() -> None:
     resp = httpx.Response(409, json={"msg": "PLAN_LIMIT_HIT"})
-    with _client(httpx.MockTransport(lambda r: resp)) as rp, pytest.raises(RobopostError) as ei:
-        rp.create_post({"text": "x"})
+    with _client(httpx.MockTransport(lambda r: resp)) as rp, pytest.raises(PostingError) as ei:
+        rp.create_post(_req("x"))
     assert ei.value.code == "PLAN_LIMIT_HIT"
     assert "plan limit" in ei.value.friendly
 
@@ -146,7 +162,7 @@ def test_network_error_message_is_redacted() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError(f"cannot reach {req.url}", request=req)
 
-    with _client(httpx.MockTransport(handler)) as rp, pytest.raises(RobopostError) as ei:
+    with _client(httpx.MockTransport(handler)) as rp, pytest.raises(PostingError) as ei:
         rp.check_auth()
     assert KEY not in str(ei.value)
     assert "apikey=***" in str(ei.value)
@@ -168,7 +184,9 @@ def test_redact() -> None:
 
 def test_https_only() -> None:
     with pytest.raises(ValueError):
-        RobopostClient(KEY, base_url="http://public-api.robopost.app/v1")
+        ApiClient(SPEC, KEY, base_url="http://public-api.robopost.app/v1")
+    with pytest.raises(ValueError):  # robopost has no LAN server to allow http for
+        ApiClient(SPEC, KEY, base_url="http://192.168.1.5/v1")
 
 
 def test_channel_json_round_trip() -> None:
@@ -185,7 +203,7 @@ def test_redirect_is_an_error_and_never_followed() -> None:
             307, headers={"location": f"http://public-api.robopost.app/v1/auth?apikey={KEY}"}
         )
 
-    with _client(httpx.MockTransport(handler)) as rp, pytest.raises(RobopostError) as ei:
+    with _client(httpx.MockTransport(handler)) as rp, pytest.raises(PostingError) as ei:
         rp.check_auth()
     assert len(calls) == 1  # the plain-http redirect target was never requested
     assert ei.value.status == 307 and KEY not in str(ei.value)
@@ -208,7 +226,7 @@ def test_exact_endpoint_paths(tmp_path: Path) -> None:
         rp.check_auth()
         rp.list_channels()
         rp.upload_media(f)
-        rp.create_post({"text": "x"})
+        rp.create_post(_req("x"))
     assert paths == [
         "GET /v1/auth",
         "GET /v1/channels/",
@@ -222,7 +240,7 @@ def test_upload_returns_storage_object_id_not_record_id(tmp_path: Path) -> None:
     f.write_bytes(b"x")
     ok = httpx.Response(201, json={"id": "record-id", "storage_object_id": "storage-uuid"})
     with _client(httpx.MockTransport(lambda r: ok)) as rp:
-        assert rp.upload_media(f) == "storage-uuid"
+        assert rp.upload_media(f).id == "storage-uuid"
     no_storage = httpx.Response(201, json={"id": "record-id"})
-    with _client(httpx.MockTransport(lambda r: no_storage)) as rp, pytest.raises(RobopostError):
+    with _client(httpx.MockTransport(lambda r: no_storage)) as rp, pytest.raises(PostingError):
         rp.upload_media(f)

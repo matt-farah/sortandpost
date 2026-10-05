@@ -85,8 +85,9 @@ def _isolated_machine_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 
 @pytest.fixture(autouse=True)
 def memory_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[MemoryKeyring]:
-    """Every test gets a fresh in-memory keyring and no ROBOPOST_API_KEY."""
+    """Every test gets a fresh in-memory keyring and no posting API key env vars."""
     monkeypatch.delenv("ROBOPOST_API_KEY", raising=False)
+    monkeypatch.delenv("POSTIZ_API_KEY", raising=False)
     previous = keyring.get_keyring()
     kr = MemoryKeyring()
     keyring.set_keyring(kr)

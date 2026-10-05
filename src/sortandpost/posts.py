@@ -1,4 +1,5 @@
-"""Social posts composed for robopost.app, stored one file per post in
+"""Social posts, composed here and sent through a posting back-end
+(:mod:`sortandpost.posting`), stored one file per post in
 ``sync/posts/<post_id>.json``.
 
 Like collections these ride along in the sync folder but are **not** merged
@@ -9,20 +10,26 @@ one collections and saved searches have.) One file per post rather than one
 conflict copy -- losing a post's send log could lead to a double post.
 
 A post's life: ``draft`` → (Send as draft | Schedule) → ``sending`` →
-``sent_draft`` / ``scheduled`` (or ``failed``, which can be retried). robopost's
-API cannot read, edit or cancel a post afterwards, so a sent post is frozen
-here; "Duplicate" starts a new draft from it. ``sending`` is written *before*
+``sent_draft`` / ``scheduled`` (or ``failed``, which can be retried). The
+back-ends' APIs can't be relied on to edit a post afterwards, so a sent post is
+frozen here; "Duplicate" starts a new draft from it. ``sending`` is written *before*
 the create call and is never retried automatically: a send interrupted by a
 crash is resolved by hand ("it was sent" / "it wasn't").
 
 **Split sends.** When the chosen channels mix Instagram with other networks and
-the photos need Instagram sizing, one post becomes two robopost creates (see
+the photos need Instagram sizing, one post becomes two creates (see
 :func:`plan_send`): the other channels first, then Instagram. Each create is a
 *part* (``Post.parts``) with its own ``sending → sent | failed`` state and its
 channel ids, so a retry or "it was sent / it wasn't" only touches the part in
 doubt, and channels a ``sent`` part already reached are never sent to again.
 A post with a sent part but channels still to go is ``failed`` (retryable,
 "partly sent").
+
+**Providers.** ``Post.provider`` records the back-end its first send went
+through; a draft that hasn't gone out follows the active back-end
+(:func:`sortandpost.posting.provider_for`). Per-network settings are stored
+under provider-neutral keys and mapped to each API's wire keys by its spec
+(:func:`make_request`), so a draft keeps them across a switch.
 """
 
 from __future__ import annotations
@@ -47,13 +54,16 @@ from sortandpost.post_export import (
     parse_color,
     resolve_ig_spec,
 )
-from sortandpost.robopost import Channel
+from sortandpost.posting.model import Channel, CreateRequest, MediaRef
+from sortandpost.posting.model import SendMode as SendMode
+from sortandpost.posting.spec import ProviderSpec
+from sortandpost.posting.store import load_channel_cache as load_channel_cache
+from sortandpost.posting.store import save_channel_cache as save_channel_cache
 from sortandpost.sync.clock import utcnow
 
 log = logging.getLogger(__name__)
 
 PostStatus = Literal["draft", "sending", "sent_draft", "scheduled", "failed"]
-SendMode = Literal["draft", "schedule"]
 PartStatus = Literal["sending", "sent", "failed"]
 
 SENT_STATUSES: frozenset[str] = frozenset({"sent_draft", "scheduled"})
@@ -72,7 +82,6 @@ TEXT_LIMITS_SOFT = {
     "threads": 500,
     "pinterest": 500,
 }
-POST_TYPES = ("POST", "REELS", "STORIES")  # instagram; facebook uses the first two
 IG_MAX_BORDER = 100
 MIN_LEAD = timedelta(minutes=2)  # a schedule time must be at least this far ahead
 # Quick-pick schedule slots (local time): morning, afternoon, after work, evening.
@@ -112,18 +121,20 @@ class Post:
     caption: str = ""
     first_comment: str = ""
     channel_ids: list[str] = field(default_factory=list)
-    # {"instagram": {"postType": "POST"}, "facebook": {"postType": "POST"},
-    #  "pinterest": {"pinTitle": "", "destinationLink": ""}}
+    # provider-neutral keys (see each spec's network_fields), e.g.
+    # {"instagram": {"postType": "POST", "format": "portrait"},
+    #  "pinterest": {"pinTitle": "", "destinationLink": "", "board": ""}}
     network_settings: dict[str, dict[str, str]] = field(default_factory=dict)
     schedule_at: str | None = None  # UTC ISO-8601
     status: str = "draft"
     sending_mode: str | None = None  # the mode of the in-flight / interrupted send
+    provider: str = ""  # the back-end its first send went through ("" = never sent)
     # pixel_hash (or "<pixel_hash>#ig" for an Instagram-sized upload) ->
-    # {"export_key", "storage_object_id", "uploaded_at"}
+    # {"export_key", "provider", "media_id", "media_path", "uploaded_at"}
     media_cache: dict[str, dict[str, str]] = field(default_factory=dict)
-    # one entry per robopost create attempt, oldest first:
-    # {"group", "status": sending|sent|failed, "mode", "channel_ids": [...],
-    #  "robopost_post_ids": [...], "started_at"}
+    # one entry per create attempt, oldest first:
+    # {"group", "status": sending|sent|failed, "mode", "provider",
+    #  "channel_ids": [...], "remote_post_ids": [...], "started_at"}
     parts: list[dict[str, Any]] = field(default_factory=list)
     log: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = ""
@@ -163,7 +174,7 @@ class Post:
         return {cid for pt in self.parts if pt.get("status") == "sent" for cid in pt["channel_ids"]}
 
     def sending_part(self) -> dict[str, Any] | None:
-        """The part whose create may or may not have reached robopost."""
+        """The part whose create may or may not have reached the provider."""
         return next((pt for pt in self.parts if pt.get("status") == "sending"), None)
 
     def cover(self) -> str | None:
@@ -276,7 +287,7 @@ def _coerce(raw: dict[str, Any]) -> Post | None:
         if isinstance(v, dict)
     }
     mc = {
-        str(k): {str(kk): str(vv) for kk, vv in v.items()}
+        str(k): _media_entry({str(kk): str(vv) for kk, vv in v.items()})
         for k, v in _dict("media_cache").items()
         if isinstance(v, dict)
     }
@@ -287,16 +298,21 @@ def _coerce(raw: dict[str, Any]) -> Post | None:
     for pt in rawparts if isinstance(rawparts, list) else []:
         if not isinstance(pt, dict) or pt.get("status") not in ("sending", "sent", "failed"):
             continue
+        remote = pt.get("remote_post_ids") or pt.get("robopost_post_ids") or []
         parts.append(
             {
                 "group": str(pt.get("group") or ""),
                 "status": pt["status"],
                 "mode": str(pt.get("mode") or "draft"),
+                "provider": str(pt.get("provider") or _LEGACY_PROVIDER),
                 "channel_ids": [str(c) for c in pt.get("channel_ids") or [] if c],
-                "robopost_post_ids": [str(c) for c in pt.get("robopost_post_ids") or [] if c],
+                "remote_post_ids": [str(c) for c in remote if c],
                 "started_at": str(pt.get("started_at") or ""),
             }
         )
+    provider = _s("provider")
+    if not provider and (parts or status in ("sending", "sent_draft", "scheduled")):
+        provider = _LEGACY_PROVIDER  # sent before there was more than one back-end
     return Post(
         title=_s("title"),
         id=pid,
@@ -311,6 +327,7 @@ def _coerce(raw: dict[str, Any]) -> Post | None:
         if status in ("draft", "sending", "sent_draft", "scheduled", "failed")
         else "draft",
         sending_mode=_s("sending_mode") or None,
+        provider=provider,
         media_cache=mc,
         parts=parts,
         log=[e for e in logv if isinstance(e, dict)] if isinstance(logv, list) else [],
@@ -318,6 +335,18 @@ def _coerce(raw: dict[str, Any]) -> Post | None:
         updated_at=_s("updated_at"),
         updated_by_device=_s("updated_by_device"),
     )
+
+
+_LEGACY_PROVIDER = "robopost"  # every post / upload from before P4a went there
+
+
+def _media_entry(e: dict[str, str]) -> dict[str, str]:
+    """A ``media_cache`` entry; one written before P4a held robopost's
+    ``storage_object_id``."""
+    if "media_id" not in e and e.get("storage_object_id"):
+        e = {**e, "media_id": e["storage_object_id"], "provider": _LEGACY_PROVIDER}
+        e.pop("storage_object_id", None)
+    return e
 
 
 def _read(path: Path) -> Post | None:
@@ -430,8 +459,8 @@ _posted_cache: dict[Path, tuple[int, frozenset[str]]] = {}
 
 
 def posted_hashes(paths: Paths) -> frozenset[str]:
-    """``pixel_hash`` of every photo in a post that was sent to robopost (as a
-    draft or scheduled). Cached on the posts folder's mtime (every save is a
+    """``pixel_hash`` of every photo in a post that was sent to a posting
+    back-end (as a draft or scheduled). Cached on the posts folder's mtime (every save is a
     rename into it, which bumps it)."""
     d = paths.posts_dir
     try:
@@ -450,38 +479,6 @@ def posts_containing(paths: Paths, pixel_hash: str) -> list[Post]:
     return [p for p in list_posts(paths) if pixel_hash in p.photos]
 
 
-# --- channel cache (non-secret; local/robopost.json) --------------------------
-
-
-def load_channel_cache(paths: Paths) -> tuple[list[Channel], str | None]:
-    try:
-        raw = json.loads(paths.robopost_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return [], None
-    if not isinstance(raw, dict):
-        return [], None
-    rows = raw.get("channels_cache")
-    chans = (
-        [c for c in (Channel.from_json(r) for r in rows if isinstance(r, dict)) if c]
-        if isinstance(rows, list)
-        else []
-    )
-    fetched = raw.get("channels_fetched_at")
-    return chans, fetched if isinstance(fetched, str) else None
-
-
-def save_channel_cache(paths: Paths, channels: list[Channel]) -> None:
-    path = paths.robopost_file
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "channels_cache": [c.to_json() for c in channels],
-        "channels_fetched_at": _now(),
-    }
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(path)
-
-
 # --- validation + payload ----------------------------------------------------
 
 
@@ -498,7 +495,7 @@ def unsent_channels(post: Post, channels: list[Channel]) -> list[Channel]:
 
 @dataclass(frozen=True)
 class SendGroup:
-    """One robopost create: these channels, with uploads sized by ``ig`` (or
+    """One create call: these channels, with uploads sized by ``ig`` (or
     the normal export when ``None``). ``name``: instagram | other | all."""
 
     name: str
@@ -536,18 +533,28 @@ def validate(
     post: Post,
     channels: list[Channel],
     mode: SendMode,
+    spec: ProviderSpec,
     *,
     now: datetime | None = None,
     unavailable: set[str] | None = None,
+    active: str | None = None,
 ) -> tuple[list[str], list[str]]:
-    """``(errors, warnings)`` for sending *post* in *mode*. Any error blocks the
-    send. *unavailable* = hashes with no present file on this machine."""
+    """``(errors, warnings)`` for sending *post* in *mode* through *spec*. Any
+    error blocks the send. *unavailable* = hashes with no present file on this
+    machine; *active* = the provider chosen in Settings (a partly-sent post can
+    only be finished through the one it started on)."""
     now = now or utcnow()
     errors: list[str] = []
     warnings: list[str] = []
+    name = spec.name
     n = len(post.photos)
     if not post.editable:
         errors.append("This post was already sent. Duplicate it to send again.")
+    if active is not None and post.partly_sent and post.provider and post.provider != active:
+        errors.append(
+            f"This post was partly sent through {name}. Switch back to {name} in "
+            "Settings → Posting to finish it."
+        )
     if n == 0:
         errors.append("Add at least one photo.")
     if unavailable:
@@ -561,14 +568,18 @@ def validate(
     unknown = [cid for cid in post.channel_ids if cid not in known and cid not in done]
     if unknown:
         errors.append(
-            f"{len(unknown)} selected channel(s) are no longer in robopost. Refresh channels."
+            f"{len(unknown)} selected channel(s) aren't in {name}. "
+            "Refresh channels, or untick them."
         )
     chosen = unsent_channels(post, channels)
-    if mode == "schedule" and not chosen and not post.partly_sent:
-        errors.append("Pick at least one channel to schedule.")
+    if not chosen and not post.partly_sent:
+        if mode == "schedule":
+            errors.append("Pick at least one channel to schedule.")
+        elif not spec.channelless_drafts:
+            errors.append(f"Pick at least one channel — {name} drafts belong to a channel.")
     for c in chosen:
         if c.must_reconnect:
-            errors.append(f"{c.name} ({c.social_network}) must be reconnected in robopost first.")
+            errors.append(f"{c.name} ({c.social_network}) must be reconnected in {name} first.")
     when = post.schedule_dt()
     if mode == "schedule":
         if when is None:
@@ -590,54 +601,63 @@ def validate(
             warnings.append(
                 f"Caption is {len(post.caption)} characters; {net.title()} allows {tl}."
             )
-    if "pinterest" in networks:
-        if not post.setting("pinterest", "pinTitle").strip():
-            errors.append("Pinterest needs a pin title.")
-        link = post.setting("pinterest", "destinationLink").strip()
-        if link and not re.match(r"^https?://\S+$", link):
-            errors.append("Pinterest link must start with http:// or https://.")
+        for f in spec.fields_for(net):
+            value = post.setting(net, f.key, f.default).strip()
+            label = f.label.removesuffix(" (optional)").lower()
+            if f.required and not value:
+                errors.append(f"{net.title()} needs a {label}.")
+            elif f.kind == "url" and value and not re.match(r"^https?://\S+$", value):
+                errors.append(f"{net.title()} {label} must start with http:// or https://.")
     if not post.caption.strip():
         warnings.append("The caption is empty.")
+    if post.first_comment.strip() and not spec.first_comment:
+        warnings.append(f"{name} can't post a first comment; it is left out.")
     return errors, warnings
 
 
-def build_payload(
+def network_values(post: Post, spec: ProviderSpec, network: str) -> dict[str, str]:
+    """*network*'s settings for *spec*, mapped to its wire keys and values:
+    a select sends its option's wire value (an unknown stored value falls
+    back to the default); an empty optional text field is left out."""
+    out: dict[str, str] = {}
+    for f in spec.fields_for(network):
+        raw = post.setting(network, f.key, f.default).strip()
+        if f.kind == "select":
+            opt = f.option(raw)
+            if opt is not None:
+                out[f.sent_key] = opt.sent
+        elif raw or f.required:
+            out[f.sent_key] = raw
+    return out
+
+
+def make_request(
     post: Post,
     channels: list[Channel],
     mode: SendMode,
-    storage_ids: list[str],
+    media: list[MediaRef],
+    spec: ProviderSpec,
     *,
     now: datetime | None = None,
     only: tuple[Channel, ...] | None = None,
-) -> dict[str, Any]:
-    """The ``POST /v1/scheduled_posts/`` body. Per-network settings are only
-    included for networks that have a selected channel. *only* = the channels
-    of one :class:`SendGroup` (default: every selected channel)."""
+) -> CreateRequest:
+    """The neutral create for *post*: the channels of one :class:`SendGroup`
+    (*only*; default every selected channel), and the settings of the networks
+    among them. A schedule time is sent when scheduling, or with a draft when
+    it is still in the future."""
     now = now or utcnow()
-    payload: dict[str, Any] = {
-        "text": post.caption,
-        "image_object_ids": list(storage_ids),
-        "is_draft": mode == "draft",
-    }
-    chosen = list(only) if only is not None else selected_channels(post, channels)
-    if chosen:
-        payload["channel_ids"] = [c.id for c in chosen]
+    chosen = tuple(only) if only is not None else tuple(selected_channels(post, channels))
     when = post.schedule_dt()
-    if when is not None and (mode == "schedule" or when > now):
-        payload["schedule_at"] = when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if post.first_comment.strip():
-        payload["first_comment"] = post.first_comment
-    networks = {c.network for c in chosen}
-    if "instagram" in networks:
-        pt = post.setting("instagram", "postType", "POST")
-        payload["instagram_settings"] = {"postType": pt if pt in POST_TYPES else "POST"}
-    if "facebook" in networks:
-        pt = post.setting("facebook", "postType", "POST")
-        payload["facebook_settings"] = {"postType": pt if pt in POST_TYPES[:2] else "POST"}
-    if "pinterest" in networks:
-        pin: dict[str, str] = {"pinTitle": post.setting("pinterest", "pinTitle").strip()}
-        link = post.setting("pinterest", "destinationLink").strip()
-        if link:
-            pin["destinationLink"] = link
-        payload["pinterest_settings"] = pin
-    return payload
+    send_when = when if when is not None and (mode == "schedule" or when > now) else None
+    networks = sorted({c.network for c in chosen})
+    settings = {net: v for net in networks if (v := network_values(post, spec, net))}
+    return CreateRequest(
+        mode=mode,
+        caption=post.caption,
+        media=tuple(media),
+        channels=chosen,
+        now=now.astimezone(UTC),
+        schedule_at=send_when.astimezone(UTC) if send_when else None,
+        first_comment=post.first_comment if spec.first_comment else "",
+        settings=settings,
+    )

@@ -1,6 +1,6 @@
 """A keychain read must never run on the web event loop (Issues.md "Keychain
 freeze", 2026-09-30): a rebuilt ad-hoc-signed app makes macOS ask again whether
-it may read the robopost key, and every page hung until that prompt was answered.
+it may read a posting API key, and every page hung until that prompt was answered.
 
 A keyring backend that blocks until released stands in for the open prompt; the
 Settings → Posting panel must render (and keep serving) meanwhile, then show the
@@ -19,6 +19,7 @@ from nicegui.testing.user_simulation import user_simulation
 from sortandpost import secrets_store as ss
 from sortandpost.config import AppConfig, Env, Settings
 from sortandpost.paths import Paths
+from sortandpost.posting.robopost import SPEC as RP
 from sortandpost.posts_ui import posting_settings_panel
 from tests.conftest import MemoryKeyring
 
@@ -42,7 +43,7 @@ class PromptKeyring(MemoryKeyring):
 @pytest.fixture
 def prompt_keyring() -> Iterator[PromptKeyring]:
     kr = PromptKeyring()
-    kr.store[(ss.SERVICE, ss.ROBOPOST_ACCOUNT)] = "rp_secret_value_1234"
+    kr.store[(ss.SERVICE, RP.keychain_account)] = "rp_secret_value_1234"
     keyring.set_keyring(kr)
     ss.forget_cached_key()
     yield kr
@@ -74,26 +75,26 @@ async def test_settings_panel_renders_while_the_keychain_prompt_is_open(
 
 def test_key_is_read_once_and_cached(prompt_keyring: PromptKeyring) -> None:
     prompt_keyring.answered.set()
-    assert ss.cached_robopost_key() is None  # not read yet: callers show "checking…"
-    assert ss.get_robopost_key() == ("rp_secret_value_1234", "keychain")
-    assert ss.get_robopost_key() == ("rp_secret_value_1234", "keychain")
+    assert ss.cached_key(RP) is None  # not read yet: callers show "checking…"
+    assert ss.get_key(RP) == ("rp_secret_value_1234", "keychain")
+    assert ss.get_key(RP) == ("rp_secret_value_1234", "keychain")
     assert prompt_keyring.reads == 1
-    assert ss.cached_robopost_key() == ("rp_secret_value_1234", "keychain")
+    assert ss.cached_key(RP) == ("rp_secret_value_1234", "keychain")
 
 
 def test_save_and_remove_keep_the_cache_current(prompt_keyring: PromptKeyring) -> None:
     prompt_keyring.answered.set()
-    ss.set_robopost_key("rp_new_value_5678")
-    assert ss.cached_robopost_key() == ("rp_new_value_5678", "keychain")
-    ss.clear_robopost_key()
-    assert ss.get_robopost_key() == (None, None)
+    ss.set_key(RP, "rp_new_value_5678")
+    assert ss.cached_key(RP) == ("rp_new_value_5678", "keychain")
+    ss.clear_key(RP)
+    assert ss.get_key(RP) == (None, None)
     assert prompt_keyring.reads == 0  # both answered from the cache
 
 
 def test_env_var_needs_no_keychain_read(
     prompt_keyring: PromptKeyring, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(ss.ROBOPOST_ENV, "docker-key-1234")
-    assert ss.cached_robopost_key() == ("docker-key-1234", "env")
-    assert ss.get_robopost_key() == ("docker-key-1234", "env")
+    monkeypatch.setenv(RP.env_var, "docker-key-1234")
+    assert ss.cached_key(RP) == ("docker-key-1234", "env")
+    assert ss.get_key(RP) == ("docker-key-1234", "env")
     assert prompt_keyring.reads == 0

@@ -1,4 +1,4 @@
-"""Clean JPEG exports for upload to robopost.
+"""Clean JPEG exports for upload to a posting service.
 
 The uploaded file is **never** the source photo: each one is decoded with the
 indexer's own decoder (RAW -> embedded preview, HEIC via pillow-heif), rotated
