@@ -3,10 +3,22 @@
 _Last updated: 2026-10-05 (pre-V3 cleanup)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
-> **▶️ Next:** pre-V3 cleanup — the **Keychain freeze** fix + bump to **2.0.0**. The macOS +
-> Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo decisions
-> (ToDo.md) and don't block V3. Then plan **V3** (`V3.md`). Backlog (#12, #17, #18) stays
-> "fix if it bites".
+> **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
+> The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
+> decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
+
+- Issues.md "the whole app freezes while a macOS Keychain prompt is open": `/settings` read the
+  robopost key on the event loop. Now every keychain call (`get` / `set` / `clear`, backend
+  name) runs via `run.io_bound`; `secrets_store` caches the read per process (a lock makes
+  concurrent first readers share one prompt; a denied read is cached until restart or a save).
+  Settings → Posting renders "Checking the keychain…" then fills in; the compose page's
+  send checks use `cached_robopost_key()` and load it off-loop. `post_send` was already off-loop.
+- Test: `tests/test_keychain_off_loop.py` — a keyring that blocks like an open prompt; the panel
+  renders under `nicegui.testing.user_simulation` and shows `••••1234` once released (fails on
+  the old code). Cache: one read, save / remove / env var need none.
+- `__version__` → **2.0.0**. Rebuild + GitHub release still wait on the ToDo.md decisions.
 
 ## 🏷️ 2026-10-05 — Photo-page tags: ✕ on CLIP tags; a stack's tags live on its top photo
 

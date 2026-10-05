@@ -10,6 +10,13 @@ that tree can end up in a sync folder or a backup by mistake. Sources, in order:
 
 There is deliberately no plaintext fallback: with no usable keychain backend
 (e.g. inside a Docker container) the only way in is the env var.
+
+A keychain call can **block for as long as an OS prompt stays open**: an
+ad-hoc-signed app gets a new signature on every rebuild, so macOS asks again
+whether it may read the item. Every keychain call here is therefore blocking --
+callers on the web event loop go through ``run.io_bound`` (hard constraint #7)
+-- and the key is read once per process and cached in memory
+(:func:`cached_robopost_key` is the non-blocking view of that cache).
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import threading
 from typing import Literal
 
 import keyring
@@ -29,6 +37,12 @@ ROBOPOST_ACCOUNT = "robopost_api_key"
 ROBOPOST_ENV = "ROBOPOST_API_KEY"
 
 KeySource = Literal["env", "keychain"]
+KeyResult = tuple[str | None, KeySource | None]
+
+# the keychain read, once per process (set / clear keep it current); the lock
+# makes concurrent first readers wait on one keychain prompt, not raise several
+_lock = threading.Lock()
+_cached: KeyResult | None = None
 
 
 def keychain_available() -> bool:
@@ -54,11 +68,40 @@ def keychain_name() -> str:
     return "keychain"
 
 
-def get_robopost_key() -> tuple[str | None, KeySource | None]:
-    """``(key, source)``; ``(None, None)`` when no key is configured."""
-    env = os.environ.get(ROBOPOST_ENV, "").strip()
+def get_robopost_key() -> KeyResult:
+    """``(key, source)``; ``(None, None)`` when no key is configured. **Blocking**
+    the first time (it may wait on a keychain prompt): call it off the event loop.
+    A failed or denied read is cached too, so it doesn't prompt again until the
+    app restarts or a key is saved."""
+    global _cached
+    env = _env_key()
     if env:
-        return env, "env"
+        return env
+    with _lock:
+        if _cached is None:
+            _cached = _read_keychain()
+        return _cached
+
+
+def cached_robopost_key() -> KeyResult | None:
+    """Non-blocking: the env var key, or what :func:`get_robopost_key` already
+    read. ``None`` = the keychain hasn't been read yet in this process."""
+    return _env_key() or _cached
+
+
+def forget_cached_key() -> None:
+    """Drop the cached keychain read (tests; the next read goes to the keychain)."""
+    global _cached
+    with _lock:
+        _cached = None
+
+
+def _env_key() -> KeyResult | None:
+    env = os.environ.get(ROBOPOST_ENV, "").strip()
+    return (env, "env") if env else None
+
+
+def _read_keychain() -> KeyResult:
     if not keychain_available():
         return None, None
     try:
@@ -72,22 +115,28 @@ def get_robopost_key() -> tuple[str | None, KeySource | None]:
 
 def set_robopost_key(key: str) -> None:
     """Store *key* in the OS keychain. Raises ``RuntimeError`` when there is no
-    keychain (the caller tells the user to use the env var instead)."""
+    keychain (the caller tells the user to use the env var instead). Blocking."""
+    global _cached
     key = key.strip()
     if not key:
         raise ValueError("empty API key")
     if not keychain_available():
         raise RuntimeError(f"no OS keychain available; set {ROBOPOST_ENV} instead")
-    keyring.set_password(SERVICE, ROBOPOST_ACCOUNT, key)
+    with _lock:
+        keyring.set_password(SERVICE, ROBOPOST_ACCOUNT, key)
+        _cached = (key, "keychain")
 
 
 def clear_robopost_key() -> None:
     """Remove the keychain entry (a no-op when there is none). The env var, if
-    set, is outside our control and keeps working."""
+    set, is outside our control and keeps working. Blocking."""
+    global _cached
     if not keychain_available():
         return
-    with contextlib.suppress(keyring.errors.PasswordDeleteError):
-        keyring.delete_password(SERVICE, ROBOPOST_ACCOUNT)
+    with _lock:
+        with contextlib.suppress(keyring.errors.PasswordDeleteError):
+            keyring.delete_password(SERVICE, ROBOPOST_ACCOUNT)
+        _cached = (None, None)
 
 
 def mask(key: str | None) -> str:
