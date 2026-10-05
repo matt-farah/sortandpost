@@ -25,7 +25,11 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   stops the send. Retries go only to `unsent_channels`; `resolve_interrupted` settles just the
   part in doubt (legacy no-parts posts keep the old path). "Partly sent" = `failed` with a sent
   part (editable, sent channels locked, counts as posted). Confirm dialog lists the creates in order.
-- **Next:** Buffer-style schedule-time picker in the composer (user request), then **P2**.
+- **Schedule quick-pick done** (user request, user-tested): the composer's "When" is a
+  Buffer-style grid — today + 6 days × `posts.SLOT_HOURS` (9 / 12 / 17 / 19 local), one minute
+  per day (1-29, `slot_minute` seeded by post id + date, so stable), past slots greyed;
+  "Pick a date & time" opens the old date/time inputs (auto-open for an off-grid time).
+- **Next: P2** (CLIP off-switch, Sonnet) — new session. Branch `v3-p0-p1-instagram` ready for a PR.
 
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 

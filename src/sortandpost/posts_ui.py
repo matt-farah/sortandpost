@@ -32,7 +32,9 @@ from sortandpost.post_export import (
 from sortandpost.post_send import is_in_flight, resolve_interrupted, send_post
 from sortandpost.posts import (
     IG_MAX_BORDER,
+    MIN_LEAD,
     POST_TYPES,
+    SLOT_HOURS,
     Post,
     SendGroup,
     SendMode,
@@ -45,6 +47,7 @@ from sortandpost.posts import (
     plan_send,
     save_channel_cache,
     save_post,
+    schedule_slots,
     selected_networks,
     validate,
 )
@@ -61,6 +64,7 @@ from sortandpost.secrets_store import (
     set_robopost_key,
 )
 from sortandpost.sync import WriteMode
+from sortandpost.sync.clock import utcnow
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -759,22 +763,66 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             p = cur()
             when = p.schedule_dt()
             local = when.astimezone(tz) if when else None
+            slots = schedule_slots(p.id, tz)
+            picked = when is not None and any(when == t for _d, ts in slots for t in ts)
+            custom = state.get("custom_time", False) or (when is not None and not picked)
+            earliest = utcnow() + MIN_LEAD
             with ui.column().classes("w-full max-w-2xl gap-1 px-4 pt-4"):
                 ui.label("When").classes("font-bold")
-                with ui.row().classes("items-center gap-2"):
-                    d = ui.input("Date", value=local.strftime("%Y-%m-%d") if local else "").props(
-                        "type=date dense outlined"
-                    )
-                    t = ui.input("Time", value=local.strftime("%H:%M") if local else "").props(
-                        "type=time dense outlined"
-                    )
+                with ui.element("div").classes(
+                    "grid grid-cols-[auto_repeat(4,minmax(0,1fr))] gap-1 items-center w-full"
+                ):
+                    ui.element("div")
+                    for label, _hour in SLOT_HOURS:
+                        ui.label(label).classes("text-xs sp-faint text-center")
+                    for day, times in slots:
+                        ui.label(f"{day:%a} {day.day} {day:%b}").classes(
+                            "text-sm pr-2 whitespace-nowrap"
+                        )
+                        for t in times:
+                            on = when is not None and when == t
+                            b = ui.button(f"{t:%H:%M}", on_click=lambda t=t: _pick(t)).props(
+                                "dense no-caps unelevated" if on else "dense no-caps outline"
+                            )
+                            if on:
+                                b.props("color=primary")
+                            b.set_enabled(p.editable and t > earliest)
+                with ui.row().classes("items-center gap-2 pt-1"):
+                    ui.button(
+                        "Pick a date & time",
+                        icon="edit_calendar",
+                        on_click=lambda: _show_custom(not custom),
+                    ).props("flat dense no-caps").set_enabled(p.editable)
                     clear = (
                         ui.button(icon="event_busy")
                         .props("flat dense round")
                         .tooltip("Clear the time")
                     )
-                    for w in (d, t, clear):
-                        w.set_enabled(p.editable)
+                    clear.set_enabled(p.editable and when is not None)
+                    clear.on_click(_clear)
+                if custom:
+                    with ui.row().classes("items-center gap-2"):
+                        d = ui.input(
+                            "Date", value=local.strftime("%Y-%m-%d") if local else ""
+                        ).props("type=date dense outlined")
+                        t_in = ui.input(
+                            "Time", value=local.strftime("%H:%M") if local else ""
+                        ).props("type=time dense outlined")
+                        for w in (d, t_in):
+                            w.set_enabled(p.editable)
+
+                    def _apply() -> None:
+                        if not d.value:
+                            return
+                        try:
+                            naive = datetime.fromisoformat(f"{d.value}T{t_in.value or '09:00'}")
+                        except ValueError:
+                            ui.notify("Can't read that date/time.", type="warning")
+                            return
+                        _set_when(naive.replace(tzinfo=tz))
+
+                    d.on("change", _apply)
+                    t_in.on("change", _apply)
                 ui.label(
                     f"{_fmt_local(p.schedule_at, tz)} ({getattr(tz, 'key', tz)})"
                     + (f"  ·  {when:%Y-%m-%d %H:%M} UTC" if when else "")
@@ -782,28 +830,24 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     else "No time set — required to schedule; optional for a robopost draft."
                 ).classes("text-xs sp-muted")
 
-                def _apply() -> None:
-                    if not d.value:
-                        return
-                    try:
-                        naive = datetime.fromisoformat(f"{d.value}T{t.value or '09:00'}")
-                    except ValueError:
-                        ui.notify("Can't read that date/time.", type="warning")
-                        return
-                    cur().schedule_at = (
-                        naive.replace(tzinfo=tz).astimezone(ZoneInfo("UTC")).isoformat()
-                    )
-                    _save()
-                    _when.refresh()
+        def _set_when(local_dt: datetime) -> None:
+            cur().schedule_at = local_dt.astimezone(ZoneInfo("UTC")).isoformat()
+            _save()
+            _when.refresh()
 
-                def _clear() -> None:
-                    cur().schedule_at = None
-                    _save()
-                    _when.refresh()
+        def _pick(t: datetime) -> None:
+            state["custom_time"] = False
+            _set_when(t)
 
-                d.on("change", _apply)
-                t.on("change", _apply)
-                clear.on_click(_clear)
+        def _show_custom(on: bool) -> None:
+            state["custom_time"] = on
+            _when.refresh()
+
+        def _clear() -> None:
+            cur().schedule_at = None
+            state["custom_time"] = False
+            _save()
+            _when.refresh()
 
         # -- checks + send --------------------------------------------------- #
         @ui.refreshable

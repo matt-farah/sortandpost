@@ -30,10 +30,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import random
 import re
 import secrets
 from dataclasses import asdict, dataclass, field, fields
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Literal
 
@@ -74,6 +75,14 @@ TEXT_LIMITS_SOFT = {
 POST_TYPES = ("POST", "REELS", "STORIES")  # instagram; facebook uses the first two
 IG_MAX_BORDER = 100
 MIN_LEAD = timedelta(minutes=2)  # a schedule time must be at least this far ahead
+# Quick-pick schedule slots (local time): morning, afternoon, after work, evening.
+SLOT_HOURS: tuple[tuple[str, int], ...] = (
+    ("Morning", 9),
+    ("Afternoon", 12),
+    ("After work", 17),
+    ("Evening", 19),
+)
+SLOT_DAYS = 7
 
 
 def _new_id() -> str:
@@ -199,6 +208,38 @@ class Post:
             rgb=parse_color(self.ig_color()),
             story=self.ig_story(),
         )
+
+
+# --- quick-pick schedule slots -----------------------------------------------
+
+
+def slot_minute(post_id: str, day: date) -> int:
+    """The minute past the hour every slot on *day* uses (1-29): random-looking
+    so posts don't all land on the hour, but stable for a post and a day, so
+    the choices don't move while the user looks at them."""
+    return random.Random(f"{post_id}:{day.isoformat()}").randint(1, 29)
+
+
+def schedule_slots(
+    post_id: str, tz: tzinfo, *, now: datetime | None = None, days: int = SLOT_DAYS
+) -> list[tuple[date, list[datetime]]]:
+    """Today and the next ``days - 1`` days, each with one aware local time per
+    :data:`SLOT_HOURS` entry. Past slots are included (the UI greys them out)."""
+    today = (now or utcnow()).astimezone(tz).date()
+    out: list[tuple[date, list[datetime]]] = []
+    for i in range(days):
+        day = today + timedelta(days=i)
+        minute = slot_minute(post_id, day)
+        out.append(
+            (
+                day,
+                [
+                    datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz)
+                    for _label, hour in SLOT_HOURS
+                ],
+            )
+        )
+    return out
 
 
 # --- storage -----------------------------------------------------------------

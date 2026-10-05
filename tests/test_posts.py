@@ -243,3 +243,20 @@ def test_instagram_sizing_settings_validated_and_not_in_payload() -> None:
     )
     assert body["instagram_settings"] == {"postType": "STORIES"}
     assert "padColor" not in str(body) and "border" not in str(body)
+
+
+def test_schedule_slots_next_seven_days_stable_minutes() -> None:
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, 10, 5, 23, 30, tzinfo=UTC)  # 16:30 in LA
+    slots = P.schedule_slots("abcdabcdabcdabcd", tz, now=now)
+    assert slots[0][0].isoformat() == "2026-10-05"
+    assert len(slots) == 7
+    for day, times in slots:
+        assert [t.hour for t in times] == [9, 12, 17, 19]
+        assert len({t.minute for t in times}) == 1 and 1 <= times[0].minute <= 29
+        assert all(t.date() == day and t.tzinfo is tz for t in times)
+    # stable for a post, varies across posts / days
+    assert slots == P.schedule_slots("abcdabcdabcdabcd", tz, now=now)
+    assert len({ts[0].minute for _, ts in slots}) > 1
