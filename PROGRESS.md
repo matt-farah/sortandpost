@@ -86,6 +86,8 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   req/min → `rate_limits["upload"] = 50/min` (one presign per photo).
   Tests: `test_zernio.py`; `test_posting_client.py` runs every check on Zernio plus presigned-PUT
   and idempotency tests (its fake server now handles two ops on one route).
+- Merged to main as #54 (P5a + P4a) then #55 (P4b). The live-probe test posts in Zernio are deleted; the key
+  leaked once in a probe's output and was rotated. Dev app on :8081 shut down.
 - **Next: P4c — Upload-Post** (free: 10 uploads/month, 2 profiles; presigned uploads — likely fits
   the new `upload_style`; needs a free account + key to probe live) so users have 4 providers
   (robopost, Postiz, Zernio, Upload-Post). Or **P5b** (apply the copy CSV).
