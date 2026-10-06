@@ -86,9 +86,16 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
   req/min → `rate_limits["upload"] = 50/min` (one presign per photo).
   Tests: `test_zernio.py`; `test_posting_client.py` runs every check on Zernio plus presigned-PUT
   and idempotency tests (its fake server now handles two ops on one route).
-- **Next: P4c — Upload-Post** (free: 10 uploads/month, 2 profiles; presigned uploads — likely fits
-  the new `upload_style`; needs a free account + key to probe live) so users have 4 providers
-  (robopost, Postiz, Zernio, Upload-Post). Or **P5b** (apply the copy CSV).
+## P4c — Upload-Post (branch `v3-p4c-upload-post`)
+
+- Fourth posting provider (`posting/upload_post.py`). It did **not** fit presigned uploads: photos go
+  inside the create (multipart), and there are no drafts. New generic spec fields: `upload_style="inline"`,
+  `drafts`, `single_account`, `parse_channels`, plus `Channel.account`. Schedule-only in the composer.
+  Facts + what's unverified: CLAUDE.md "Upload-Post facts". Verified live with a Bluesky post scheduled
+  for 2026-11-05 (deleted afterwards in the Upload-Post web UI).
+- Tests: `test_upload_post.py`; the shared client suite skips upload/channel checks that don't apply.
+- Not done: cancel a scheduled job from the app; first comment / Story / Pinterest live checks.
+- **Next: P5b** (apply the copy CSV).
 
 ## 🔑 2026-10-05 — Keychain freeze fixed; version 2.0.0
 

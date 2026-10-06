@@ -4,7 +4,8 @@
 * :mod:`.model` -- neutral types (:class:`Channel`, :class:`CreateRequest`, …)
 * :mod:`.client` -- :class:`ApiClient`, the one HTTP client, driven by a spec
 * :mod:`.ratelimit` / :mod:`.store` -- generic rate limits and per-provider local state
-* one module per provider (:mod:`.robopost`, :mod:`.postiz`, :mod:`.zernio`), registered below
+* one module per provider (:mod:`.robopost`, :mod:`.postiz`, :mod:`.zernio`,
+  :mod:`.upload_post`), registered below
 
 Which back-end is active is ``posting.provider`` in config.yaml. A post that
 already went out (fully, partly, or with a send in doubt) stays with the
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sortandpost.posting import postiz, robopost, zernio
+from sortandpost.posting import postiz, robopost, upload_post, zernio
 from sortandpost.posting.client import ApiClient, PostingClient
 from sortandpost.posting.ratelimit import RateLimiter, effective_limits
 from sortandpost.posting.spec import ProviderSpec
@@ -24,7 +25,9 @@ if TYPE_CHECKING:
     from sortandpost.config import Settings
     from sortandpost.posts import Post
 
-PROVIDERS: dict[str, ProviderSpec] = {s.key: s for s in (robopost.SPEC, postiz.SPEC, zernio.SPEC)}
+PROVIDERS: dict[str, ProviderSpec] = {
+    s.key: s for s in (robopost.SPEC, postiz.SPEC, zernio.SPEC, upload_post.SPEC)
+}
 DEFAULT_PROVIDER = robopost.SPEC.key
 
 

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal
 
-from sortandpost.posting.model import CreateRequest
+from sortandpost.posting.model import Channel, CreateRequest
 
 FieldKind = Literal["text", "url", "select"]
 
@@ -49,6 +49,8 @@ class RateLimit:
             return f"{self.calls} {what} per hour"
         if self.per_seconds == 86400:
             return f"{self.calls} {what} per day"
+        if self.per_seconds == 30 * 86400:
+            return f"{self.calls} {what} per month"
         return f"{self.calls} {what} per {self.per_seconds} s"
 
 
@@ -139,8 +141,10 @@ class ProviderSpec:
     upload_field: str = "file"
     # "multipart": POST the file to the upload endpoint. "presigned": POST a small JSON
     # body (``presign_fields``) to it, then PUT the bytes -- with no API key -- to the
-    # URL found at ``upload_put_url`` in the reply.
-    upload_style: Literal["multipart", "presigned"] = "multipart"
+    # URL found at ``upload_put_url`` in the reply. "inline": there is no upload step; the
+    # files travel inside the create call (multipart, field ``upload_field``, with
+    # ``build_payload``'s dict as the form fields), so nothing is cached between sends.
+    upload_style: Literal["multipart", "presigned", "inline"] = "multipart"
     upload_put_url: str = ""
     presign_fields: Mapping[str, str] = field(
         default_factory=lambda: _frozen(
@@ -148,6 +152,10 @@ class ProviderSpec:
         )
     )
     created_ids: str = ""
+    # For a channel list the dotted paths above can't describe: reply -> channels
+    parse_channels: Callable[[Any], list[Channel]] | None = field(
+        default=None, compare=False, repr=False
+    )
 
     # -- errors -------------------------------------------------------------------
     error_fields: tuple[str, ...] = ("msg", "error", "detail", "message")
@@ -163,7 +171,11 @@ class ProviderSpec:
     upload_retries: int = 1  # an upload is harmless to repeat; a create never is
 
     # -- capabilities ---------------------------------------------------------------
+    drafts: bool = True  # False = only a scheduled send exists (no "save as draft")
     channelless_drafts: bool = True  # a draft may go out with no channel chosen
+    # True = one create serves one ``Channel.account`` (a profile), so a post may only
+    # pick channels of a single account
+    single_account: bool = False
     first_comment: bool = True
     idempotency_header: str = ""  # header that carries CreateRequest.idempotency_key
     can_delete_remote: bool = False  # (future: cancel a sent post)

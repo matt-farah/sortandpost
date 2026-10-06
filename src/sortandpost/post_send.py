@@ -296,7 +296,11 @@ def _upload(
     def cached(h: str) -> dict[str, str]:
         return post.media_cache.get(h + suffix, {})
 
+    inline = api.spec.upload_style == "inline"  # the files go with the create: nothing to reuse
+
     def usable(h: str) -> bool:
+        if inline:
+            return False
         e = cached(h)
         return (
             e.get("export_key") == ekey
@@ -311,8 +315,12 @@ def _upload(
     exporter(
         [(str(sources[h]), str(dest)) for h, dest in jobs.items()], long_edge, quality, group.ig
     )
+    refs: dict[str, MediaRef] = {}
     for h, dest in jobs.items():
         ref = api.upload_media(dest)
+        refs[h] = ref
+        if inline:
+            continue
         post.media_cache[h + suffix] = {
             "export_key": ekey,
             "provider": provider,
@@ -321,7 +329,10 @@ def _upload(
             "uploaded_at": utcnow().isoformat(),
         }
         save_post(settings.paths, post, device_id=settings.device_id)
-    return [MediaRef(cached(h)["media_id"], cached(h).get("media_path", "")) for h in post.photos]
+    return [
+        refs[h] if h in refs else MediaRef(cached(h)["media_id"], cached(h).get("media_path", ""))
+        for h in post.photos
+    ]
 
 
 def _start_part(post: Post, group: SendGroup, mode: SendMode, spec: ProviderSpec) -> dict[str, Any]:

@@ -55,6 +55,7 @@ class Channel:
     social_network: str
     must_reconnect: bool = False
     logo_url: str = ""
+    account: str = ""  # the profile/workspace it belongs to, for providers that group by one
 
     @property
     def network(self) -> str:
@@ -67,6 +68,7 @@ class Channel:
             "social_network": self.social_network,
             "must_reconnect": self.must_reconnect,
             "logo_url": self.logo_url,
+            "account": self.account,
         }
 
     @classmethod
@@ -80,6 +82,7 @@ class Channel:
             social_network=str(raw.get("social_network") or ""),
             must_reconnect=bool(raw.get("must_reconnect")),
             logo_url=str(raw.get("logo_url") or ""),
+            account=str(raw.get("account") or ""),
         )
 
 

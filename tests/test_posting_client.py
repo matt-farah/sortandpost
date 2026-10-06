@@ -91,6 +91,8 @@ class FakeServer:
             if s.auth_ok:
                 parts.append(_put(s.auth_ok, True))
             return _merge(*parts) if parts else {}
+        if op == "channels" and s.parse_channels:
+            return {}
         if op == "channels":
             f = s.channel_fields
 
@@ -142,7 +144,8 @@ def spec(request: pytest.FixtureRequest) -> ProviderSpec:
 def test_every_spec_is_complete(spec: ProviderSpec) -> None:
     assert spec.key.isidentifier() and spec.name
     assert spec.env_var and spec.keychain_account
-    assert set(spec.endpoints) >= {"auth_check", "channels", "upload", "create"}
+    needed = {"auth_check", "channels", "create"}
+    assert set(spec.endpoints) >= needed | ({"upload"} if spec.upload_style != "inline" else set())
     assert spec.default_base_url.startswith("https://")
     assert spec.created_ids is not None and spec.upload_id
     assert spec.build_payload(_req()) != {}
@@ -173,6 +176,8 @@ def test_auth_ok_false_is_a_401(spec: ProviderSpec) -> None:
 
 
 def test_channels_parsed_skipped_and_sorted(spec: ProviderSpec) -> None:
+    if spec.parse_channels:
+        pytest.skip("custom channel parser: see that provider's own tests")
     with _client(spec, FakeServer(spec)) as api:
         chans = api.list_channels()
     ids = [c.id for c in chans]
@@ -193,13 +198,15 @@ def test_exact_endpoint_paths(spec: ProviderSpec, tmp_path: Path) -> None:
         api.upload_media(f)
         api.create_post(_req())
     base = httpx.URL(spec.default_base_url).path.rstrip("/")
+    ops = ("auth_check", "channels", "upload", "create")
     assert [(r.method, r.url.path) for r in server.requests] == [
-        (m, base + p)
-        for m, p in (spec.endpoints[op] for op in ("auth_check", "channels", "upload", "create"))
+        (m, base + p) for m, p in (spec.endpoints[op] for op in ops if op in spec.endpoints)
     ]
 
 
 def test_upload_is_sent_and_retried_once(spec: ProviderSpec, tmp_path: Path) -> None:
+    if spec.upload_style == "inline":
+        pytest.skip("no upload step")
     f = tmp_path / "00_abcdef12.jpg"
     f.write_bytes(b"\xff\xd8fakejpeg")
     server = FakeServer(spec)
@@ -223,6 +230,8 @@ def test_upload_is_sent_and_retried_once(spec: ProviderSpec, tmp_path: Path) -> 
 
 
 def test_upload_without_id_is_an_error(spec: ProviderSpec, tmp_path: Path) -> None:
+    if spec.upload_style == "inline":
+        pytest.skip("no upload step")
     f = tmp_path / "a.jpg"
     f.write_bytes(b"x")
     server = FakeServer(spec)
