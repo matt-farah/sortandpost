@@ -18,6 +18,7 @@ Shared rules, whatever the provider:
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import re
@@ -331,6 +332,10 @@ class ApiClient:
 
     def list_channels(self) -> list[Channel]:
         body = self._request("channels")
+        if self.spec.parse_channels is not None:
+            parsed = self.spec.parse_channels(body)
+            parsed.sort(key=lambda c: (c.network, c.name.casefold()))
+            return parsed
         rows = first(body, self.spec.channels_at) if self.spec.channels_at else body
         f = self.spec.channel_fields
         out: list[Channel] = []
@@ -404,7 +409,11 @@ class ApiClient:
             )
 
     def upload_media(self, path: Path) -> MediaRef:
-        """Upload one file; one retry (``spec.upload_retries``) on a network error."""
+        """Upload one file; one retry (``spec.upload_retries``) on a network error.
+        An ``inline`` provider has no upload: the file's path stands in for it and
+        goes out with the create."""
+        if self.spec.upload_style == "inline":
+            return MediaRef(id=str(path), path=str(path))
         tries = 1 + max(0, self.spec.upload_retries)
         body: Any = None
         for attempt in range(1, tries + 1):
@@ -424,14 +433,29 @@ class ApiClient:
     def create_post(self, req: CreateRequest) -> list[str]:
         """Create a draft or scheduled post; returns the ids the provider made.
         Never retried."""
-        body = self._request(
-            "create",
-            json=self.spec.build_payload(req),
-            headers=(
+        with contextlib.ExitStack() as stack:
+            body = self._request("create", **self._create_kwargs(req, stack))
+        return [str(v) for v in extract(body, self.spec.created_ids) if v is not None and v != ""]
+
+    def _create_kwargs(self, req: CreateRequest, stack: contextlib.ExitStack) -> dict[str, Any]:
+        payload = self.spec.build_payload(req)
+        body: dict[str, Any]
+        if self.spec.upload_style == "inline":
+            files = []
+            for m in req.media:
+                fh = stack.enter_context(Path(m.path).open("rb"))  # noqa: SIM115
+                files.append((self.spec.upload_field, (Path(m.path).name, fh, "image/jpeg")))
+            body = {"data": payload, "files": files}
+        else:
+            body = {"json": payload}
+        return {
+            **body,
+            "headers": (
                 {self.spec.idempotency_header: req.idempotency_key}
                 if self.spec.idempotency_header and req.idempotency_key
                 else None
             ),
-            timeout=httpx.Timeout(self.spec.create_timeout_s, connect=self.spec.connect_timeout_s),
-        )
-        return [str(v) for v in extract(body, self.spec.created_ids) if v is not None and v != ""]
+            "timeout": httpx.Timeout(
+                self.spec.create_timeout_s, connect=self.spec.connect_timeout_s
+            ),
+        }

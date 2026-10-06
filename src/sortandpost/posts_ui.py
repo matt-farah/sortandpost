@@ -904,6 +904,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             s_err, s_warn = validate(
                 p, chans, "schedule", sp, unavailable=unavailable, active=active
             )
+            if not sp.drafts:  # only a schedule exists: its checks are the checks
+                d_err, d_warn = s_err, s_warn
             budget = _budget_note(settings, sp, len(plan_send(p, chans, _sizes())) or 1)
             if budget:
                 d_err, s_err = [*d_err, budget], [*s_err, budget]
@@ -927,17 +929,18 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                             "text-sm text-red-600"
                         )
                 with ui.row().classes("gap-2 pt-2"):
-                    b1 = ui.button(
-                        "Send as draft",
-                        icon="drafts",
-                        on_click=lambda: _confirm("draft"),
-                    ).props("no-caps outline")
+                    if sp.drafts:
+                        b1 = ui.button(
+                            "Send as draft",
+                            icon="drafts",
+                            on_click=lambda: _confirm("draft"),
+                        ).props("no-caps outline")
+                        b1.set_enabled(p.editable and writable and bool(key) and not d_err)
                     b2 = ui.button(
                         "Schedule",
                         icon="schedule_send",
                         on_click=lambda: _confirm("schedule"),
                     ).props("no-caps color=primary")
-                    b1.set_enabled(p.editable and writable and bool(key) and not d_err)
                     b2.set_enabled(p.editable and writable and bool(key) and not s_err)
 
         async def _confirm(mode: SendMode) -> None:

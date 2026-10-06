@@ -728,6 +728,19 @@ How they're applied:
   `POST /v1/posts` with `isDraft: true` (platforms optional) or `scheduledFor`; reply `post._id`;
   an `Idempotency-Key` header is sent; an identical post is refused (409) for 24 h. Buffer was skipped:
   its API takes public media URLs only (no upload).
+- **Upload-Post facts** (OpenAPI checked + verified live 2026-10-05): base `https://api.upload-post.com/api`,
+  `Authorization: Apikey <key>`; `GET /uploadposts/me` → `{success, email, plan}` (auth check);
+  `GET /uploadposts/users` → `profiles[].{username, social_accounts: {platform: {…}|""|null}}`
+  (a **channel = `profile:platform`**, `Channel.account` = the profile; one create serves one profile,
+  `ProviderSpec.single_account`). **No upload step** — `POST /upload_photos` takes `photos[]` files as
+  multipart beside the form fields (`upload_style="inline"`: the upload step is a no-op, `media_cache` is
+  not used, so a retry re-exports). **No drafts** (`drafts=False`: composer hides "Send as draft"): a
+  create publishes now or, with `scheduled_date` (ISO, ≤ 365 days) + `timezone=UTC`, schedules → 202
+  `{job_id}`. Verified live: Bluesky scheduled post. **Not verified live:** first comment
+  (`<network>_first_comment`), Instagram Story (`media_type=STORIES`), Pinterest
+  (`pinterest_board_id`/`_title`/`_link`). Free plan = 10 uploads/month → `rate_limits["create"]` =
+  10 per 30 days (override in config for a paid plan). A scheduled job can be cancelled with
+  `DELETE /uploadposts/schedule/{job_id}` (not wired in).
 - **Posts** live in `sync/posts/<post_id>.json`, one file each (a deliberate exception to
   constraint #4, like collections: not `pixel_hash` state, not in `changes`, not merged). Status:
   `draft` → `sending` → `sent_draft` | `scheduled` (or `failed`, retryable). A sent post is

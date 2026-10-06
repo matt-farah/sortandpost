@@ -571,7 +571,11 @@ def validate(
             f"{len(unknown)} selected channel(s) aren't in {name}. "
             "Refresh channels, or untick them."
         )
+    if mode == "draft" and not spec.drafts:
+        errors.append(f"{name} has no drafts. Schedule the post instead.")
     chosen = unsent_channels(post, channels)
+    if spec.single_account and len({c.account for c in chosen}) > 1:
+        errors.append(f"{name} posts to one account at a time. Pick channels from a single one.")
     if not chosen and not post.partly_sent:
         if mode == "schedule":
             errors.append("Pick at least one channel to schedule.")
