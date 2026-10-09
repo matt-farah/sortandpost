@@ -30,6 +30,7 @@ from sortandpost.launcher_pref import read_pointer
 from sortandpost.library_roots import LibraryRoot, load_roots, running_in_docker, save_roots
 from sortandpost.onboarding import settle_on_startup
 from sortandpost.paths import Paths
+from sortandpost.relocate import maybe_relocate
 
 PathsSource = Literal["env", "shared", "remembered", "dotenv", "unset"]
 
@@ -121,6 +122,9 @@ class SyncConfig(BaseModel):
     lock_heartbeat_sec: int = 20
     lock_stale_after_sec: int = 300
     snapshot_every_publishes: int = 20
+    # Also snapshot when the newest one is older than this (0 = off), so a quiet
+    # library still gets a fresh backup in sync/snapshots/ every day it changes.
+    snapshot_every_hours: int = 24
     snapshot_keep: int = 10
     sync_thumbnails: bool = True
 
@@ -287,11 +291,20 @@ class Settings(BaseModel):
     # First-run wizard state for this machine (sortandpost.onboarding).
     onboarding_pending: bool = False
     joined_existing: bool = False
+    # This launch moved local/ out of a cloud-synced folder (sortandpost.relocate).
+    relocated: bool = False
 
     @classmethod
     def resolve(cls) -> Settings:
         env = Env()
         paths = env.paths
+        relocated = False
+        if env.paths_source() in ("remembered", "dotenv"):
+            # A legacy single folder inside OneDrive / Synology Drive / ...: move
+            # this machine's working files out before anything opens them.
+            moved = maybe_relocate(paths)
+            if moved is not None:
+                paths, relocated = moved, True
         paths.local.mkdir(parents=True, exist_ok=True)
         onboarding = settle_on_startup(paths)  # before bootstrap creates device.json
         bootstrap(paths)
@@ -317,6 +330,7 @@ class Settings(BaseModel):
             library_roots=roots,
             onboarding_pending=onboarding.pending,
             joined_existing=onboarding.joined_existing,
+            relocated=relocated,
         )
 
     def set_library_roots(self, roots: list[str | Path]) -> None:

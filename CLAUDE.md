@@ -183,6 +183,19 @@ one of two ways (`sortandpost.paths.Paths`):
 - **Single folder** (`Paths(app_data=X)`): `X/local` + `X/sync`. What a real `APP_DATA`
   env var (Docker, dev), a `.env` value, and pre-onboarding saved folders give. Here the user
   must point their sync tool at `sync/` only.
+- **`local/` must never sit inside a sync tool's folder.** Sync tools corrupt SQLite files
+  written in place, and on-demand clients (macOS File Provider, Files On-Demand) can evict a
+  file's bytes mid-write — on 2026-10-08 Synology Drive evicted the working DB's journal and
+  the app couldn't boot (Issues.md). `sortandpost.cloud_folders.cloud_provider` spots one
+  (`~/Library/CloudStorage/*`, iCloud, `~/Dropbox`, `~/OneDrive*`, the `OneDrive*` env vars,
+  root markers like `.SynologyWorkingDirectory`). At startup `Settings.resolve` hands a
+  single-folder install from a saved pointer or `.env` to `sortandpost.relocate.maybe_relocate`:
+  `local/` is copied (staging folder + rename; same `device.json`) into the split layout's
+  per-machine folder, CLIP weights to the shared `models/`, the pointer becomes
+  `{"sync_dir": "X/sync"}`, and the old `local/` is removed — or kept as `local.moved-<ts>` if
+  a file that matters (a trashed photo) couldn't be copied. A DB whose journal can't be read
+  goes to `local/salvage/` for boot recovery. Recorded in `local/relocated.json`. A real
+  `APP_DATA` env var is never moved: `/` and `/settings` warn instead.
 
 **Which folders?** In order (`Env.resolve_paths()` / `Env.paths_source()`,
 `sortandpost.config`): a genuine process/shell `APP_DATA` env var (Docker's fixed container
@@ -231,6 +244,10 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
     post_exports/<post_id>/    # temporary clean JPEGs for an upload; removed after the send
     models/                    # downloaded CLIP weights
     logs/
+    recovery.json              # last boot recovery of a broken working DB (sortandpost.sync.recovery)
+    recovered/                 # broken-<ts>/ (the damaged DB + journal, never deleted), salvage-<ts>/
+    salvage/                   # DBs waiting to be merged in by boot recovery
+    relocated.json             # this local/ was moved out of a sync tool's folder (sortandpost.relocate)
   sync/                        # user points OneDrive / Drive / Synology / Dropbox HERE
     sortandpost.db             # published snapshot of the DB — the cross-machine source of truth
     .sortandpost.lock          # {device_id, hostname, pid, acquired_at, heartbeat_at, db_generation}
@@ -286,6 +303,7 @@ sync:
   lock_heartbeat_sec: 20
   lock_stale_after_sec: 300        # a lock older than this (no heartbeat) may be taken over
   snapshot_every_publishes: 20
+  snapshot_every_hours: 24         # also snapshot when the newest is older than this (0 = off)
   snapshot_keep: 10
   sync_thumbnails: true            # thumbnails can be GBs; set false to keep them in local/ only
 clip:
@@ -327,10 +345,21 @@ never rebuilds. Third-party sync tools corrupt SQLite files that are written in 
   `fsync`, then `os.replace()` onto `sync/sortandpost.db`. The synced file is therefore always a
   complete, consistent snapshot. Bump a monotonic `db_generation` counter (stored in a
   `meta` row and in the lock file).
-- **Snapshots**: every `snapshot_every_publishes` publishes, also write
-  `sync/snapshots/sortandpost-<ts>.db.zst`; prune to `snapshot_keep`. This is the only
+- **Snapshots**: every `snapshot_every_publishes` publishes — and on any publish when the
+  newest snapshot is older than `snapshot_every_hours` — also write
+  `sync/snapshots/sortandpost-<ts>.db.zst`; prune to `snapshot_keep`. `/settings` →
+  Sync & storage shows the newest and has **Back up now** (`SyncManager.snapshot`). This is the only
   recovery path that ever forces a rescan.
 - **Startup**:
+  0. **Before anything opens the working DB** (web app, indexer CLI, db CLI):
+     `sync.recovery.recover_working_db` opens it the way the app will and runs
+     `quick_check`. If it's broken (incl. an unreadable hot `-journal` → `disk I/O error`, the
+     2026-10-08 crash), it moves the DB + sidecars to `local/recovered/broken-<ts>/`, rebuilds
+     from the intact published DB or newest snapshot (higher `db_generation`; each read fully
+     first, so a cloud placeholder downloads or is reported), then folds in every intact
+     `local/salvage/*.db` — incl. the damaged DB file alone — with the conflict-copy merge, so
+     unpublished edits survive. A stale journal is never left beside a replaced DB. Report in
+     `local/recovery.json`, a `/` banner and `/settings`.
   1. Read `.sortandpost.lock`. If it has a fresh heartbeat from another `device_id` →
      **read-only mode** (see below). Otherwise write our own lock and start the heartbeat.
   2. Scan `sync/` for conflicted copies (`sortandpost*.db` other than the canonical name,
@@ -589,7 +618,8 @@ The **only** module allowed to write under a library root. Wraps a persistent
   `_settings_card`): Overview (stat tiles + indexing progress), Library, Indexing & AI,
   Appearance & apps, Posting, Deleting, Sync & storage. Lock-gated panels still render in
   read-only mode with a note instead of disappearing. Contents: CLIP model & thresholds, re-index / re-embed actions, sync status (lock holder,
-  last publish, `db_generation`, snapshots, last merge summary), the shared-folder picker with Save & restart (see
+  last publish, `db_generation`, backups + Back up now, this computer's files folder, any move
+  out of a sync folder / boot recovery, last merge summary), the shared-folder picker with Save & restart (see
   "App-data layout" above), and a CLIP-weights cache check / force-download control (`Check if
   downloaded` / `Download / verify CLIP model`, `sortandpost.clip.model.check_cached` /
   `ensure_downloaded` — toggles `HF_HUB_OFFLINE` around the probe so it works even when the app
