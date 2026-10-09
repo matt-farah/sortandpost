@@ -75,6 +75,7 @@ from sortandpost.clip.tagging import (
     unapprove,
 )
 from sortandpost.clip.vocab import load_vocab
+from sortandpost.cloud_folders import cloud_provider
 from sortandpost.collections import (
     Collection,
     add_to_collection,
@@ -187,6 +188,7 @@ from sortandpost.prefs import (
     set_season,
     set_theme,
 )
+from sortandpost.relocate import read_record as read_relocation
 from sortandpost.reveal import (
     open_in_default_app,
     open_multiple_in_default_app,
@@ -206,6 +208,8 @@ from sortandpost.searches import (
 from sortandpost.stacks import StackIndex, build_stacks, embed_target
 from sortandpost.sync import SyncManager, WriteMode
 from sortandpost.sync.clock import utcnow
+from sortandpost.sync.recovery import RecoveryReport, recover_working_db
+from sortandpost.sync.recovery import read_report as read_recovery
 from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
 from sortandpost.themes import (
     PALETTES,
@@ -591,6 +595,11 @@ class State:
     # (trash batch id, photos deleted, time.monotonic()) of the most recent
     # delete on this machine -- drives the status bar's "Undo delete" button.
     last_delete: tuple[str, int, float] | None = None
+    # The working DB was broken at boot and rebuilt (sortandpost.sync.recovery).
+    recovery: RecoveryReport | None = None
+    # local/ is inside a sync tool's folder and couldn't be moved (a real
+    # APP_DATA env var): the sync tool's name, for a warning banner.
+    local_in_cloud: str | None = None
 
     @classmethod
     def apply(cls, manager: SyncManager) -> None:
@@ -878,11 +887,66 @@ def _add_tailwind_css() -> None:
     ui.add_head_html(f'<link rel="stylesheet" href="{_TAILWIND_URL}?v={digest}">', shared=True)
 
 
+_WARN_BANNER = (
+    "mx-4 mt-2 items-center gap-3 rounded-md border border-amber-300 "
+    "bg-amber-50 px-3 py-2 text-sm text-amber-800 "
+    "dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+)
+
+
+def _storage_banners(settings: Settings) -> None:
+    """`/` notices about this computer's working files: they're inside a sync
+    tool's folder (can't be moved: a real APP_DATA), they were just moved out of
+    one, or the database was rebuilt at boot."""
+    notes: list[str] = []
+    if State.local_in_cloud:
+        notes.append(
+            f"This computer's working files ({settings.paths.local}) are inside "
+            f"{State.local_in_cloud}. Sync tools can damage the database; set "
+            "APP_DATA to a folder outside it."
+        )
+    if settings.relocated:
+        moved = read_relocation(settings.paths)
+        where = moved.provider if moved else "your sync folder"
+        text = (
+            f"This computer's working files were moved out of {where} so the sync tool "
+            "can't damage them. Your library and settings still sync as before."
+        )
+        if moved and moved.old_kept_at:
+            text += f" Some files couldn't be copied and were left in {moved.old_kept_at}."
+        notes.append(text)
+    if State.recovery is not None:
+        rec = State.recovery
+        text = f"The library database was damaged and has been rebuilt from {rec.base}."
+        if rec.salvaged:
+            text += " Edits made since the last sync were recovered too."
+        notes.append(text + " Details in Settings → Sync & storage.")
+    for text in notes:
+        banner = ui.row().classes(_WARN_BANNER)
+        with banner:
+            ui.label(f"⚠ {text}").classes("flex-1")
+            ui.button(icon="close", on_click=lambda b=banner: b.set_visibility(False)).props(
+                "flat dense round size=sm"
+            ).tooltip("dismiss")
+
+
 def build_ui(settings: Settings) -> None:
     _add_tailwind_css()  # stands in for NiceGUI's in-browser Tailwind (see ui.run)
     ui.add_css(_GRID_KB_CSS, shared=True)  # grid keyboard-focus styling, all pages
     ui.add_css(_THEME_CSS, shared=True)  # design tokens + component polish, all pages
     ui.add_css(theme_css(), shared=True)  # seasonal token sets (sortandpost.themes)
+    State.local_in_cloud = cloud_provider(settings.paths.local)
+    if State.local_in_cloud:
+        log.warning(
+            "this computer's working files (%s) are inside %s; sync tools can corrupt "
+            "the database -- set APP_DATA to a folder outside it",
+            settings.paths.local,
+            State.local_in_cloud,
+        )
+    try:  # before anything opens the working DB (a broken one can't even connect)
+        State.recovery = recover_working_db(settings.paths, device_id=settings.device_id)
+    except Exception:
+        log.exception("working DB recovery failed")
     engine = make_engine(settings.paths.working_db)
     init_db(engine)  # ensure an empty DB still renders an empty grid
     State.engine = engine
@@ -1061,12 +1125,9 @@ def build_ui(settings: Settings) -> None:
 
         _refresh_flag_link(flag_n)
 
+        _storage_banners(settings)
         if cloud_n > 0:
-            cloud_banner = ui.row().classes(
-                "mx-4 mt-2 items-center gap-3 rounded-md border border-amber-300 "
-                "bg-amber-50 px-3 py-2 text-sm text-amber-800 "
-                "dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
-            )
+            cloud_banner = ui.row().classes(_WARN_BANNER)
             with cloud_banner:
                 _n_txt = "1 photo is" if cloud_n == 1 else f"{cloud_n} photos are"
                 ui.label(f"⛅ {_n_txt} online-only and weren't downloaded.").classes("flex-1")
@@ -2828,12 +2889,28 @@ def build_ui(settings: Settings) -> None:
                 last_pub.isoformat(sep=" ", timespec="seconds") if last_pub else "—",
             ),
             ("Publishes this session", str(getattr(manager, "_publish_count", 0))),
-            ("Snapshots", f"{len(snaps)} (newest {snaps[-1].name})" if snaps else "0"),
+            ("Backups", _backup_summary(manager, len(snaps))),
+            ("This computer's files", str(settings.paths.local)),
         ]
+        if State.local_in_cloud:
+            rows.append(("⚠ Warning", f"those files are inside {State.local_in_cloud}"))
+        moved = read_relocation(settings.paths)
+        if moved is not None:
+            note = f"{_local_when(moved.moved_at)}, out of {moved.provider}"
+            if moved.old_kept_at:
+                note += f" ({len(moved.leftovers)} file(s) left in {moved.old_kept_at})"
+            rows.append(("Moved out of sync folder", note))
         if manager.last_merge is not None:
             rows.append(("Last merge", str(manager.last_merge)))
         if manager.restored_from_snapshot is not None:
             rows.append(("Restored from", manager.restored_from_snapshot.name))
+        recovered = State.recovery or read_recovery(settings.paths)
+        if recovered is not None:
+            rows.append(
+                ("Last DB recovery", f"{_local_when(recovered.at)}: {recovered.describe()}")
+            )
+            if recovered.set_aside:
+                rows.append(("Damaged files kept in", recovered.set_aside))
 
         writable = State.write_mode == WriteMode.writable
         tiles: list[tuple[str, str, str]] = [  # (icon, value, caption)
@@ -2959,15 +3036,49 @@ def build_ui(settings: Settings) -> None:
                             _needs_lock()
 
                 with _settings_section("sync"):
-                    with (
-                        _settings_card("Sync status", "cloud_sync"),
-                        ui.grid(columns="auto 1fr").classes("gap-x-6 gap-y-1 text-sm"),
-                    ):
-                        for key, value in rows:
-                            ui.label(key).classes("sp-faint")
-                            ui.label(value).classes("break-all")
+                    with _settings_card("Sync status", "cloud_sync"):
+                        with ui.grid(columns="auto 1fr").classes("gap-x-6 gap-y-1 text-sm"):
+                            for key, value in rows:
+                                ui.label(key).classes("sp-faint")
+                                ui.label(value).classes("break-all")
+                        if writable:
+
+                            async def _back_up_now() -> None:
+                                try:
+                                    snap = await nicegui_run.io_bound(manager.snapshot)
+                                except Exception as exc:
+                                    log.exception("manual backup failed")
+                                    ui.notify(f"Backup failed: {exc}", type="negative")
+                                    return
+                                if snap is None:  # io_bound cancelled / shutting down
+                                    return
+                                ui.notify(f"Backed up to snapshots/{snap.name}", type="positive")
+
+                            ui.button("Back up now", icon="backup", on_click=_back_up_now).props(
+                                "flat dense no-caps"
+                            ).tooltip(
+                                "Save a compressed copy of the database in the shared "
+                                "folder's snapshots/ -- it syncs with everything else"
+                            )
                     with _settings_card("Shared library folder", "folder_shared"):
                         _app_data_editor(settings)
+
+
+def _local_when(iso: str) -> str:
+    """An ISO timestamp from a record file, in this computer's local time."""
+    try:
+        return datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return iso
+
+
+def _backup_summary(manager: SyncManager, count: int) -> str:
+    last = manager.last_snapshot()
+    if last is None or count == 0:
+        return "none yet"
+    snap, taken = last
+    when = taken.astimezone().strftime("%Y-%m-%d %H:%M") if taken else snap.name
+    return f"{count} in snapshots/, newest {when}"
 
 
 _SETTINGS_SECTIONS: list[tuple[str, str, str]] = [  # (anchor key, title, icon)

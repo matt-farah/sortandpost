@@ -180,6 +180,48 @@ def test_snapshot_cadence_and_prune(
     mgr.stop()
 
 
+def test_daily_snapshot_even_with_few_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    settings = _settings(monkeypatch, tmp_path / "a")
+    settings.config.sync.snapshot_every_publishes = 1000
+    settings.config.sync.snapshot_every_hours = 24
+    snaps_dir = settings.paths.snapshots_dir
+
+    mgr = SyncManager(settings, clock=clock)
+    mgr.start(background=False)  # the startup publish: no backup yet -> one now
+    first = sorted(snaps_dir.glob("sortandpost-*.db*"))
+    assert len(first) == 1
+
+    clock.advance(3600)
+    mgr.publish(force=True)
+    assert len(list(snaps_dir.glob("sortandpost-*.db*"))) == 1  # not due yet
+
+    clock.advance(24 * 3600)
+    mgr.publish(force=True)
+    assert len(list(snaps_dir.glob("sortandpost-*.db*"))) == 2
+    last = mgr.last_snapshot()
+    assert last is not None and last[1] == clock.now.replace(microsecond=0)
+
+    settings.config.sync.snapshot_every_hours = 0  # off: back to publish counting
+    clock.advance(48 * 3600)
+    mgr.publish(force=True)
+    assert len(list(snaps_dir.glob("sortandpost-*.db*"))) == 2
+    mgr.stop()
+
+
+def test_back_up_now_writes_a_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    settings = _settings(monkeypatch, tmp_path / "a")
+    mgr = SyncManager(settings, clock=clock)
+    mgr.start(background=False)
+    clock.advance(5)
+    snap = mgr.snapshot()
+    assert snap.exists() and mgr.last_snapshot() == (snap, clock.now.replace(microsecond=0))
+    mgr.stop()
+
+
 def test_stop_releases_the_lock_and_publishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
 ) -> None:

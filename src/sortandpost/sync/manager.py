@@ -54,6 +54,7 @@ from sortandpost.sync.snapshots import (
     newest_snapshot,
     prune_snapshots,
     restore_snapshot,
+    snapshot_time,
     write_snapshot,
 )
 
@@ -168,16 +169,31 @@ class SyncManager:
         self.heartbeat()
 
         self._publishes_since_snapshot += 1
-        if self._publishes_since_snapshot >= self.cfg.snapshot_every_publishes:
-            self._publishes_since_snapshot = 0
-            write_snapshot(wdb, self.paths.snapshots_dir, now=now)
-            prune_snapshots(self.paths.snapshots_dir, self.cfg.snapshot_keep)
+        if self._snapshot_due(now):
+            self.snapshot()
         return True
 
     def snapshot(self) -> Path:
+        """Back up the working DB to ``sync/snapshots/`` now (also "Back up now")."""
         path = write_snapshot(self.paths.working_db, self.paths.snapshots_dir, now=self._clock())
         prune_snapshots(self.paths.snapshots_dir, self.cfg.snapshot_keep)
+        self._publishes_since_snapshot = 0
         return path
+
+    def last_snapshot(self) -> tuple[Path, datetime | None] | None:
+        snap = newest_snapshot(self.paths.snapshots_dir)
+        return (snap, snapshot_time(snap)) if snap is not None else None
+
+    def _snapshot_due(self, now: datetime) -> bool:
+        if self._publishes_since_snapshot >= self.cfg.snapshot_every_publishes:
+            return True
+        hours = self.cfg.snapshot_every_hours
+        if hours <= 0:
+            return False
+        last = self.last_snapshot()
+        if last is None or last[1] is None:
+            return True
+        return (now - last[1]).total_seconds() >= hours * 3600
 
     def stop(self) -> None:
         self._stop.set()

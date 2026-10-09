@@ -1,7 +1,8 @@
 """Compressed DB snapshots under ``sync/snapshots/``.
 
-Every ``snapshot_every_publishes`` publishes we also drop a zstd-compressed copy
-of the DB here and prune to ``snapshot_keep``. This is the only recovery path
+Every ``snapshot_every_publishes`` publishes -- and whenever the newest snapshot
+is older than ``snapshot_every_hours`` -- we also drop a zstd-compressed copy of
+the DB here and prune to ``snapshot_keep``. This is the only recovery path
 that ever forces a rescan: if ``PRAGMA quick_check`` fails on startup we restore
 the newest snapshot and let the next reconcile scan catch up.
 
@@ -12,7 +13,7 @@ uncompressed ``.db`` snapshots rather than losing the recovery path entirely.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sortandpost.sync.publish import replace_file
@@ -64,6 +65,14 @@ def list_snapshots(snapshots_dir: Path) -> list[Path]:
     if not snapshots_dir.is_dir():
         return []
     return sorted(p for p in snapshots_dir.iterdir() if p.is_file() and _NAME_RE.match(p.name))
+
+
+def snapshot_time(path: Path) -> datetime | None:
+    """When *path* was taken (UTC, from its name), or ``None`` for a foreign name."""
+    m = re.match(r"^sortandpost-(\d{8}-\d{6})", path.name)
+    if m is None:
+        return None
+    return datetime.strptime(m.group(1), _TS_FMT).replace(tzinfo=UTC)
 
 
 def newest_snapshot(snapshots_dir: Path) -> Path | None:

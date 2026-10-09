@@ -16,6 +16,7 @@ sync:
   lock_heartbeat_sec: 20
   lock_stale_after_sec: 300       # a lock older than this may be taken over
   snapshot_every_publishes: 20
+  snapshot_every_hours: 24        # also back up at least daily while the DB changes (0 = off)
   snapshot_keep: 10
   sync_thumbnails: true           # thumbnails can be large; false keeps them in local/ only
 

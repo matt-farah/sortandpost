@@ -21,6 +21,7 @@ from sortandpost.logging_setup import configure
 from sortandpost.sync.clock import utcnow
 from sortandpost.sync.merge import merge_all
 from sortandpost.sync.publish import read_generation
+from sortandpost.sync.recovery import recover_working_db, sidecars
 from sortandpost.sync.snapshots import prune_snapshots, restore_snapshot, write_snapshot
 
 
@@ -38,6 +39,8 @@ def _cmd_restore(settings: Settings, snapshot: Path) -> int:
     if not snapshot.exists():
         print(f"no such snapshot: {snapshot}", file=sys.stderr)
         return 2
+    for side in sidecars(settings.paths.working_db):  # a stale journal must not meet it
+        side.unlink(missing_ok=True)
     restore_snapshot(snapshot, settings.paths.working_db)
     print(f"restored {settings.paths.working_db} from {snapshot}")
     print("run `python -m sortandpost.indexer --once` to reconcile anything newer.")
@@ -107,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 1
     configure(settings.paths.logs_dir)
+    if args.command != "restore":  # restore is the user's own explicit recovery
+        recover_working_db(settings.paths, device_id=settings.device_id)
 
     if args.command == "snapshot":
         return _cmd_snapshot(settings)

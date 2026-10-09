@@ -26,6 +26,7 @@ from sortandpost.indexer.scan import scan_clip_once, scan_once
 from sortandpost.indexer.service import IndexerLoopConfig, run_indexer
 from sortandpost.logging_setup import configure
 from sortandpost.sync import SyncManager, WriteMode
+from sortandpost.sync.recovery import recover_working_db
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 1
     configure(settings.paths.logs_dir)
+    recover_working_db(settings.paths, device_id=settings.device_id)  # before any open
     if settings.onboarding_pending:
         # The wizard's promise: nothing is scanned until setup is finished.
         print(

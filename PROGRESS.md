@@ -1,11 +1,21 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-05 (V3 P4a posting providers + Postiz)._
+_Last updated: 2026-10-08 (prod crash fix: local/ out of sync folders + boot recovery)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
 > **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🛟 2026-10-08 — Prod crash fix: working files out of sync folders + boot recovery
+
+- Prod (a legacy single-folder install inside Synology Drive) stopped booting: Synology evicted
+  `local/sortandpost.db-journal` before uploading it → `disk I/O error` on every open. Fixed
+  by hand, then prod moved to the split layout (Issues.md has the full write-up).
+- **Shipped** (user-tested on a simulated Synology install): `cloud_folders`, `relocate`
+  (automatic move of `local/` out of a sync folder at startup), `sync.recovery` (boot
+  recovery before any DB open, merging salvaged unpublished edits), daily snapshots
+  (`snapshot_every_hours`) + Settings "Back up now", `/` banners. New DMG built from it.
 
 ## 🚧 2026-10-05 — V3 started (`V3Plan.md`)
 
