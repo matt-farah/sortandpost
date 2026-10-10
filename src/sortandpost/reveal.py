@@ -40,8 +40,17 @@ def reveal_supported() -> bool:
             return which("xdg-open") is not None
 
 
-def _spawn(args: list[str]) -> None:
+def _spawn(args: list[str] | str) -> None:
     subprocess.Popen(args, stdout=_DEVNULL, stderr=_DEVNULL)  # fire and forget
+
+
+def _explorer_select(path: Path) -> str:
+    """Explorer's ``/select`` as a raw Windows command line. Explorer parses
+    its own command line and wants only the path quoted (``/select,"C:\\a b"``);
+    an argv list makes Popen quote the whole ``"/select,C:\\a b"``, which
+    Explorer can't parse once the path has a space, so it opens Documents
+    instead. ``"`` can't occur in a Windows path, so this quoting is exact."""
+    return f'explorer /select,"{path}"'
 
 
 def reveal_in_file_manager(path: Path) -> None:
@@ -51,7 +60,7 @@ def reveal_in_file_manager(path: Path) -> None:
         case "darwin":
             _spawn(["open", "-R", str(path)])
         case "win":
-            _spawn(["explorer", f"/select,{path}"])
+            _spawn(_explorer_select(path))
         case _:
             target = path.parent if path.parent.is_dir() else path
             _spawn(["xdg-open", str(target)])
@@ -111,32 +120,59 @@ def _win_select_grouped(paths: list[Path]) -> bool:
     file in that folder at once. Best effort -- returns ``False`` on any failure
     so the caller can fall back to one Explorer window per file. Windows only;
     the body is skipped by mypy on other platforms via the literal
-    ``sys.platform`` guard (see ``sortandpost.cpu.lower_process_priority``)."""
+    ``sys.platform`` guard (see ``sortandpost.cpu.lower_process_priority``).
+
+    The PIDLs are 64-bit pointers: without explicit ``restype`` / ``argtypes``
+    ctypes truncates them to ``int`` and the call faults (which made every bulk
+    reveal fall back to one window per file). The shell call also needs COM on
+    the calling thread -- a NiceGUI worker thread hasn't initialised it."""
     if sys.platform != "win32":
         return False
     import ctypes
+    from ctypes import wintypes
 
     try:
         shell32 = ctypes.windll.shell32
+        ole32 = ctypes.windll.ole32
+        shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+        shell32.ILCreateFromPathW.argtypes = [wintypes.LPCWSTR]
+        shell32.ILFree.restype = None
+        shell32.ILFree.argtypes = [ctypes.c_void_p]
+        shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long  # HRESULT
+        shell32.SHOpenFolderAndSelectItems.argtypes = [
+            ctypes.c_void_p,
+            wintypes.UINT,
+            ctypes.POINTER(ctypes.c_void_p),
+            wintypes.DWORD,
+        ]
+        # S_OK / S_FALSE (already initialised) pair with CoUninitialize;
+        # RPC_E_CHANGED_MODE (< 0) means COM is up in another mode -- still usable.
+        com_ok = ole32.CoInitialize(None) >= 0
         by_folder: dict[Path, list[Path]] = defaultdict(list)
         for p in paths:
             by_folder[p.parent].append(p)
-        for folder, files in by_folder.items():
-            pidl_folder = shell32.ILCreateFromPathW(str(folder))
-            if not pidl_folder:
-                continue
-            pidl_files = []
-            try:
-                for f in files:
-                    pidl = shell32.ILCreateFromPathW(str(f))
-                    if pidl:
-                        pidl_files.append(pidl)
-                arr = (ctypes.c_void_p * len(pidl_files))(*pidl_files)
-                shell32.SHOpenFolderAndSelectItems(pidl_folder, len(pidl_files), arr, 0)
-            finally:
-                shell32.ILFree(pidl_folder)
-                for pidl in pidl_files:
-                    shell32.ILFree(pidl)
+        try:
+            for folder, files in by_folder.items():
+                pidl_folder = shell32.ILCreateFromPathW(str(folder))
+                if not pidl_folder:
+                    return False
+                pidl_files: list[int] = []
+                try:
+                    for f in files:
+                        pidl = shell32.ILCreateFromPathW(str(f))
+                        if pidl:
+                            pidl_files.append(pidl)
+                    arr = (ctypes.c_void_p * len(pidl_files))(*pidl_files)
+                    hr = shell32.SHOpenFolderAndSelectItems(pidl_folder, len(pidl_files), arr, 0)
+                    if hr < 0:
+                        return False
+                finally:
+                    shell32.ILFree(pidl_folder)
+                    for pidl in pidl_files:
+                        shell32.ILFree(pidl)
+        finally:
+            if com_ok:
+                ole32.CoUninitialize()
         return True
     except (OSError, AttributeError):
         return False
@@ -145,7 +181,7 @@ def _win_select_grouped(paths: list[Path]) -> bool:
 def _reveal_multiple_win(paths: list[Path]) -> None:
     if len(paths) == 1 or not _win_select_grouped(paths):
         for p in paths:
-            _spawn(["explorer", f"/select,{p}"])
+            _spawn(_explorer_select(p))
 
 
 def _reveal_multiple_linux(paths: list[Path]) -> None:

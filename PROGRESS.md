@@ -7,6 +7,17 @@ _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🪟 2026-10-10 — Windows Reveal fixes (user-tested on the rebuilt Windows app)
+
+- **Reveal opened Documents**: `["explorer", "/select,<path>"]` made Popen quote the whole
+  `"/select,C:\a b"`, which Explorer can't parse once the path has a space, so it opened
+  Documents (OneDrive-redirected here). `reveal._explorer_select` now passes the raw command
+  line `explorer /select,"<path>"`; same fix in `tools/sortandpost_helper.py`.
+- **Bulk Reveal opened one window per file**: `_win_select_grouped` never worked — ctypes
+  truncated the 64-bit PIDLs (no `restype`) and the call faulted into the fallback. Now typed,
+  COM-initialised on the calling thread, and the HRESULT is checked: one window per folder with
+  every file selected. (The Docker host helper still opens one window per file on Windows.)
+
 ## 🛟 2026-10-08 — Prod crash fix: working files out of sync folders + boot recovery
 
 - Prod (a legacy single-folder install inside Synology Drive) stopped booting: Synology evicted
