@@ -27,6 +27,9 @@ dependencies = [
     "Send2Trash>=1.8",
     "httpx>=0.27",
     "keyring>=25.0",
+    # Windows has no system tz database: without it ZoneInfo("UTC") raises
+    # (scheduling a post).
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.scripts]

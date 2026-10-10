@@ -3,6 +3,7 @@ lazy cross-machine tombstone sweep (CLAUDE.md constraint #1, exception 2)."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -414,13 +415,13 @@ def test_delete_never_moves_a_file_outside_the_library_roots(
 
 
 def test_delete_never_follows_a_symlink_out_of_the_library(
-    engine: Engine, paths: Paths, tmp_path: Path
+    engine: Engine, paths: Paths, tmp_path: Path, dir_link: Callable[[Path, Path], None]
 ) -> None:
     library = tmp_path / "library"
     elsewhere = tmp_path / "Documents"
     library.mkdir()
     elsewhere.mkdir()
-    (library / "escape").symlink_to(elsewhere, target_is_directory=True)
+    dir_link(library / "escape", elsewhere)
     with Session(engine) as s:
         ph = _make_photo(s, paths, "a", library=library / "escape")
         s.commit()
