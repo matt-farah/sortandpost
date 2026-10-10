@@ -97,8 +97,15 @@ def _safe_abspath(raw: object) -> Path | None:
 # --------------------------------------------------------------------------- #
 # openers
 # --------------------------------------------------------------------------- #
-def _spawn(args: list[str]) -> None:
+def _spawn(args: list[str] | str) -> None:
     subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _explorer_select(path: Path) -> str:
+    """Explorer's ``/select`` as a raw command line, path alone quoted -- see
+    ``sortandpost.reveal._explorer_select`` (an argv list quotes the whole
+    ``/select,…`` and Explorer then opens Documents)."""
+    return f'explorer /select,"{path}"'
 
 
 def reveal(path: Path) -> None:
@@ -106,7 +113,7 @@ def reveal(path: Path) -> None:
         case "darwin":
             _spawn(["open", "-R", str(path)])
         case "win":
-            _spawn(["explorer", f"/select,{path}"])
+            _spawn(_explorer_select(path))
         case _:
             target = path.parent if path.parent.is_dir() else path
             _spawn(["xdg-open", str(target)])
@@ -161,7 +168,7 @@ def reveal_multiple(paths: list[Path]) -> None:
             )
         case "win":
             for p in paths:
-                _spawn(["explorer", f"/select,{p}"])
+                _spawn(_explorer_select(p))
         case _:
             if which_dbus_send():
                 uris = ",".join(f'"file://{quote(str(p))}"' for p in paths)
