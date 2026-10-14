@@ -58,6 +58,45 @@ def watchdog_available() -> bool:
     return _WATCHDOG_ERROR is None
 
 
+class RebuildControl:
+    """The "Rebuild AI index" request (V3 P10), shared between the UI and the
+    indexer thread. A re-embed deletes the embedding matrix, so it must never
+    run beside a normal CLIP pass: the UI only *asks* here, and the indexer
+    loop (the one thread that touches the matrix) picks the request up between
+    cycles. ``mismatch`` carries the message of a CLIP pass that found the
+    stored embeddings written by a different model, for the banners."""
+
+    def __init__(self) -> None:
+        self._requested = threading.Event()
+        self._running = threading.Event()
+        self.mismatch: str | None = None
+
+    def request(self) -> None:
+        self._requested.set()
+
+    @property
+    def pending(self) -> bool:
+        return self._requested.is_set()
+
+    @property
+    def running(self) -> bool:
+        return self._running.is_set()
+
+    @property
+    def busy(self) -> bool:
+        return self.pending or self.running
+
+    def _take(self) -> bool:
+        if not self._requested.is_set():
+            return False
+        self._requested.clear()
+        return True
+
+
+# The app's one request channel; ``run_indexer`` is handed this by the app.
+REBUILD = RebuildControl()
+
+
 @dataclass
 class IndexerLoopConfig:
     full_scan_interval_sec: float
@@ -257,11 +296,15 @@ def run_indexer(
     loop_config: IndexerLoopConfig | None = None,
     clip_model: ClipModel | None = None,
     paused: threading.Event | None = None,
+    rebuild: RebuildControl | None = None,
 ) -> None:
     """Run scan cycles until ``stop`` is set. While ``paused`` is set (the
     desktop tray's "Pause indexing") no new cycle starts; one already running
     finishes, so a pause never leaves a file half-indexed (constraint #6).
-    FS events that arrive meanwhile stay pending and trigger a cycle on resume."""
+    FS events that arrive meanwhile stay pending and trigger a cycle on resume.
+    A ``rebuild`` request (Settings -> Rebuild AI index) runs a full re-embed here,
+    on this thread, between cycles; pause / quit stop it between batches and the
+    ordinary CLIP pass carries on from the rows already written."""
     cfg = loop_config or IndexerLoopConfig.from_settings(settings)
     roots = _online_roots(settings)
     debouncer = _Debouncer(cfg.debounce_sec)
@@ -312,16 +355,26 @@ def run_indexer(
                     missing.invalidate()
                     next_full = 0.0
             if is_writable() and not _halt():
+                if (
+                    rebuild is not None
+                    and model is not None
+                    and settings.config.clip.enabled
+                    and rebuild._take()
+                ):
+                    _run_rebuild(settings, model, rebuild, interrupt=_halt)
+                    continue
                 if time.monotonic() >= next_full:
                     # A full pass covers every event so far; ones arriving
                     # while it runs stay pending for a scoped pass after.
                     debouncer.clear()
-                    if not _run_cycle(settings, clip_model=model, interrupt=_halt):
+                    if not _run_cycle(settings, clip_model=model, interrupt=_halt, rebuild=rebuild):
                         continue  # cut short: next_full stays due, so it reruns on resume
                     next_full = time.monotonic() + cfg.full_scan_interval_sec
                 elif (pending := debouncer.take_if_ready()) is not None:
                     scope = None if pending.full else sorted(pending.paths)
-                    if not _run_cycle(settings, clip_model=model, interrupt=_halt, scope=scope):
+                    if not _run_cycle(
+                        settings, clip_model=model, interrupt=_halt, scope=scope, rebuild=rebuild
+                    ):
                         debouncer.requeue(pending)  # rerun on resume
                         continue
                     if pending.full:
@@ -342,12 +395,34 @@ def _stop_observer(observer: Observer | None) -> None:
         observer.join(timeout=5)
 
 
+def _run_rebuild(
+    settings: Settings,
+    model: ClipModel,
+    rebuild: RebuildControl,
+    *,
+    interrupt: Callable[[], bool] | None,
+) -> None:
+    """Re-embed every photo. Cut short by pause / quit it simply stops: the
+    matrix is partly rebuilt and the next ordinary CLIP pass embeds the rest."""
+    rebuild._running.set()
+    try:
+        stats = scan_clip_once(settings, reembed=True, model=model, interrupt=interrupt)
+        log.info("AI index rebuild: %s", stats)
+        if not stats.skipped_no_model:
+            rebuild.mismatch = None
+    except Exception:  # a bad rebuild must not kill the loop
+        log.exception("AI index rebuild failed")
+    finally:
+        rebuild._running.clear()
+
+
 def _run_cycle(
     settings: Settings,
     *,
     clip_model: ClipModel | None,
     interrupt: Callable[[], bool] | None = None,
     scope: list[Path] | None = None,
+    rebuild: RebuildControl | None = None,
 ) -> bool:
     """One scan + CLIP pass (a scoped one when ``scope`` is given). False if
     ``interrupt`` cut it short (pause / quit)."""
@@ -359,10 +434,14 @@ def _run_cycle(
         if clip_model is not None and settings.config.clip.enabled:
             clip_stats = scan_clip_once(settings, model=clip_model, interrupt=interrupt)
             log.info("indexer cycle: %s", clip_stats)
+            if rebuild is not None and not clip_stats.skipped_no_model:
+                rebuild.mismatch = None
             if clip_stats.interrupted:
                 return False
     except ModelMismatch as exc:
-        log.error("CLIP pass needs --reembed: %s", exc)
+        log.error("CLIP pass needs an AI index rebuild: %s", exc)
+        if rebuild is not None:
+            rebuild.mismatch = str(exc)
     except Exception:  # a bad cycle must not kill the loop
         log.exception("indexer cycle failed")
     return True

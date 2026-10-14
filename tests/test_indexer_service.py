@@ -427,3 +427,54 @@ def test_folder_coming_back_is_scanned_at_once(tmp_path: Path, settings: Setting
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+def test_rebuild_request_runs_a_reembed_on_the_indexer_thread(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The UI only files a request; the loop thread runs the re-embed (V3 P10)."""
+    from sortandpost.indexer import service
+    from sortandpost.indexer.scan import ClipStats
+
+    calls: list[tuple[str, bool]] = []
+
+    def _fake_clip(settings: Settings, **kw: object) -> ClipStats:
+        calls.append((threading.current_thread().name, bool(kw.get("reembed"))))
+        return ClipStats()
+
+    monkeypatch.setattr(service, "scan_clip_once", _fake_clip)
+    settings.config.clip.enabled = True
+    rebuild = service.RebuildControl()
+    rebuild.mismatch = "old model"
+    cfg = IndexerLoopConfig(
+        full_scan_interval_sec=3600, debounce_sec=0.1, poll_sec=0.02, watch=False, run_clip=True
+    )
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=run_indexer,
+        kwargs={
+            "settings": settings,
+            "is_writable": lambda: True,
+            "stop": stop,
+            "loop_config": cfg,
+            "clip_model": object(),  # never used: scan_clip_once is faked
+            "rebuild": rebuild,
+        },
+        name="idx-test",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not calls:
+            time.sleep(0.02)  # the startup cycle's ordinary CLIP pass
+        rebuild.request()
+        assert rebuild.busy
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(r for _, r in calls):
+            time.sleep(0.02)
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert ("idx-test", True) in calls
+    assert not rebuild.busy and rebuild.mismatch is None

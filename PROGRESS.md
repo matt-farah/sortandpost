@@ -1,11 +1,24 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-14 (V3 P9 missing photos)._
+_Last updated: 2026-10-14 (V3 P10 rebuild AI index)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
 > **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🔎 2026-10-14 — V3 P10: Rebuild AI index button (branch `v3-p10-rebuild-ai-index`)
+
+- **Settings → AI search & tagging → Rebuild AI index** (lock-gated, confirm dialog). It only files
+  a request on `indexer.service.REBUILD` (`RebuildControl`); the indexer loop thread runs
+  `scan_clip_once(reembed=True)` between cycles, never beside a normal CLIP pass (a re-embed
+  deletes the matrix). Pause / Quit stop it between batches; the ordinary CLIP pass resumes.
+- **Mismatch banner** on `/` (and a line in the Settings card) when a CLIP pass hits `ModelMismatch`
+  (`REBUILD.mismatch`, cleared after a good pass / rebuild), with the same button.
+- Removed the CLI hint label; `--reembed` error texts point at the button (CLI flag stays).
+- Download button renamed "Download AI Tagging Model (CLIP)" (copy CSV updated).
+- Test: `test_rebuild_request_runs_a_reembed_on_the_indexer_thread`. User-tested in the browser.
+- **Next:** below the two-week cut line — P6a Docker validate + harden.
 
 ## 🔎 2026-10-14 — V3 P9: missing photos judged per computer (branch `v3-p9-missing-photos`)
 
