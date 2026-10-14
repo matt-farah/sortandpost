@@ -184,7 +184,7 @@ def _existing(raw: str, sync_dir: Path) -> FolderInspection:
         for d in (sync_dir / "devices").glob("*")
         if d.is_dir() and "-" in d.name
     )
-    parts = ["Found an existing sortandpost library"]
+    parts = ["Found an existing sortandpost.photos library"]
     if photos is not None:
         parts.append(f"with {photos:,} photo{'s' if photos != 1 else ''}")
     msg = " ".join(parts) + "."

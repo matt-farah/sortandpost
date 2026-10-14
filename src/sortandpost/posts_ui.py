@@ -1176,7 +1176,9 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
                 _body.refresh()
 
             t.on_value_change(_switch)
-        ui.label(f"sortandpost {spec.about} {spec.key_help}").classes("text-xs sp-faint max-w-xl")
+        ui.label(f"sortandpost.photos {spec.about} {spec.key_help}").classes(
+            "text-xs sp-faint max-w-xl"
+        )
         _key_panel(spec, client)
         if spec.base_url_editable:
             _base_url_panel(settings, spec, writable=writable)
@@ -1237,8 +1239,8 @@ def _key_panel(spec: ProviderSpec, client: Any) -> None:
             if st is None:
                 ui.label("Checking the keychain…").classes("text-sm sp-muted")
                 ui.label(
-                    "If macOS asks whether sortandpost may use its keychain item, answer "
-                    "that prompt (Always Allow avoids it next time)."
+                    "sortandpost.photos stores your key securely using Mac OS Keychain. Always "
+                    "allow access to ignore this prompt next time"
                 ).classes("text-xs sp-faint")
                 return
             if st.source == "env":
@@ -1306,8 +1308,8 @@ def _key_panel(spec: ProviderSpec, client: Any) -> None:
 
                     ui.button("Remove", on_click=_remove).props("flat dense color=negative")
             ui.label(
-                "Only the last 4 characters are ever shown. The key never goes to the browser "
-                "or into the app-data folder."
+                "Only the last 4 characters of your API key are shown. The key is stored securely "
+                "in your local vault."
             ).classes("text-xs sp-faint")
 
     _key_row()

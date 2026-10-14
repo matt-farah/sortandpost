@@ -45,7 +45,7 @@ def build_payload(req: CreateRequest) -> dict[str, Any]:
 SPEC = ProviderSpec(
     key="robopost",
     name="Robopost",
-    about="uploads clean JPEG copies of your photos to robopost.app and creates a draft or "
+    about="uploads JPEG copies of your photos to robopost.app and creates a draft or "
     "scheduled post.",
     key_help="Get an API key in robopost → Team → Manage API Keys.",
     account_label="team",
