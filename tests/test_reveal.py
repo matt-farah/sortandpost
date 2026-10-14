@@ -19,8 +19,8 @@ def _abs(p: str) -> str:
 
 
 @pytest.fixture
-def spawned(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    calls: list[list[str]] = []
+def spawned(monkeypatch: pytest.MonkeyPatch) -> list[list[str] | str]:
+    calls: list[list[str] | str] = []
     monkeypatch.setattr(reveal, "_spawn", calls.append)
     return calls
 
@@ -57,7 +57,18 @@ def test_reveal_in_file_manager_windows_selects_file(
 ) -> None:
     monkeypatch.setattr(reveal, "_os", lambda: "win")
     reveal.reveal_in_file_manager(Path("/photos/a.jpg"))
-    assert spawned == [["explorer", f"/select,{_abs('/photos/a.jpg')}"]]
+    assert spawned == [f'explorer /select,"{_abs("/photos/a.jpg")}"']
+
+
+def test_reveal_windows_quotes_only_the_path(
+    monkeypatch: pytest.MonkeyPatch, spawned: list[list[str] | str]
+) -> None:
+    """An argv list would be quoted as ``"/select,C:\\a b\\c.jpg"``, which
+    Explorer can't parse -- it opens Documents instead of selecting the file."""
+    monkeypatch.setattr(reveal, "_os", lambda: "win")
+    photo = _abs("/Film and digital/New Year's Eve/a.jpg")
+    reveal.reveal_in_file_manager(Path(photo))
+    assert spawned == [f'explorer /select,"{photo}"']
 
 
 def test_reveal_in_file_manager_linux_opens_containing_dir(
@@ -130,8 +141,8 @@ def test_reveal_multiple_windows_falls_back_to_one_explorer_per_file(
     monkeypatch.setattr(reveal, "_win_select_grouped", lambda paths: False)
     reveal.reveal_multiple_in_file_manager([Path("/photos/a.jpg"), Path("/photos/b.jpg")])
     assert spawned == [
-        ["explorer", f"/select,{_abs('/photos/a.jpg')}"],
-        ["explorer", f"/select,{_abs('/photos/b.jpg')}"],
+        f'explorer /select,"{_abs("/photos/a.jpg")}"',
+        f'explorer /select,"{_abs("/photos/b.jpg")}"',
     ]
 
 
