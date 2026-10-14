@@ -1,11 +1,36 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-14 (onboarding/settings copy pass)._
+_Last updated: 2026-10-14 (V3 P9 missing photos)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
 > **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🔎 2026-10-14 — V3 P9: missing photos judged per computer (branch `v3-p9-missing-photos`)
+
+- **Bug confirmed** (`tests/test_missing.py::test_unscoped_sweep_marks_the_other_computers_photos_missing`):
+  a full scan's `sweep_presence` judged every shared `photo_paths` row, so machine B marked
+  A-only photos absent + set the shared `missing_since` (and hid them from B's grid).
+- **New `sortandpost.missing`**: `PathScope` (this computer's roots + other devices' roots from
+  `sync/devices/*/library.json`, `library_roots.other_device_roots`). A path is *mine* (under my
+  roots), *another device's* (left alone), or an *orphan* (under nobody's roots, e.g. a removed
+  folder — judged by whoever scans). The sweep takes `judged=` and only touches mine + orphans.
+  **Missing here** = has a judged path, none present (SQL `missing_here_clause`, substr prefix
+  match, case-sensitive). `missing_since` keeps its shared "no copy anywhere" meaning.
+- Grid / filters / dedup / camera list / Rate / collections use "missing here" (fallback to
+  `missing_since` when no scope is configured — tests, scripts). A-only photos show in B's grid
+  (user's choice). Known limitation (accepted): identical root spellings on two machines can't
+  be told apart.
+- UI: ⋯ filter → **Missing photos only** (one by one, no stack collapsing / badges), tile pill +
+  photo-page reason **folder offline / file gone / folder removed** with a hint; paths on
+  another computer say "(another computer)" without Reveal/Open. Status bar shows
+  "N missing (folder offline)" only while a root is offline; Overview "missing" tile removed.
+- **Indexer re-checks roots** every `root_check_sec` (5 s): a folder coming back / going away /
+  added re-arms the watchdog observer and runs a full pass at once (before: watched only roots
+  present at start, so a re-plugged drive waited for the 15-min full scan).
+- User-tested on `browser_test_data` with scratch folders (offline drive, deleted file, fake
+  second device). +13 tests.
 
 ## ✍️ 2026-10-14 — Onboarding + settings copy pass
 

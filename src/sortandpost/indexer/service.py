@@ -15,6 +15,11 @@ back to a full pass, and the periodic full pass is the safety net for any event
 the watcher misses (queue overflow, coalesced FSEvents). Filesystem watching
 needs ``watchdog``; when it is not installed the loop degrades to timer-only
 and logs once.
+
+The watcher only covers library folders that are there. Every
+``root_check_sec`` the loop re-checks which ones are (a drive plugged in or
+unplugged, a folder added in Settings); on a change it re-arms the watcher and
+runs a full pass straight away.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sortandpost import missing
 from sortandpost.clip.model import ClipModel
 from sortandpost.clip.store import ModelMismatch
 from sortandpost.config import Settings
@@ -59,6 +65,10 @@ class IndexerLoopConfig:
     poll_sec: float = 1.0
     watch: bool = True
     run_clip: bool = True
+    # how often to check which library folders are mounted: one coming back
+    # (drive plugged in) or going away is scanned at once, not at the next
+    # full pass, and the watcher is re-armed for it (V3 P9)
+    root_check_sec: float = 5.0
 
     @classmethod
     def from_settings(cls, settings: Settings) -> IndexerLoopConfig:
@@ -253,17 +263,23 @@ def run_indexer(
     finishes, so a pause never leaves a file half-indexed (constraint #6).
     FS events that arrive meanwhile stay pending and trigger a cycle on resume."""
     cfg = loop_config or IndexerLoopConfig.from_settings(settings)
-    roots = [r for r in container_roots(settings.library_roots) if r.is_dir()]
-
+    roots = _online_roots(settings)
     debouncer = _Debouncer(cfg.debounce_sec)
-    scope_filter = _ScopeFilter(
-        roots,
-        exclude=settings.paths.roots(),
-        exclude_names=settings.config.indexer.exclude_dir_names,
-    )
-    observer = _start_observer(roots, debouncer, scope_filter) if cfg.watch else None
+
+    def _watch(online: list[Path]) -> Observer | None:
+        if not cfg.watch:
+            return None
+        scope_filter = _ScopeFilter(
+            online,
+            exclude=settings.paths.roots(),
+            exclude_names=settings.config.indexer.exclude_dir_names,
+        )
+        return _start_observer(online, debouncer, scope_filter)
+
+    observer = _watch(roots)
     if cfg.watch and observer is None and not watchdog_available():
         log.info("watchdog not installed; continuous indexer runs on the timer only")
+    next_root_check = time.monotonic() + cfg.root_check_sec
 
     # One CLIP model for the whole loop. ``ClipModel.load()`` is a no-op after the
     # first call, so every cycle after the first reuses the weights already in
@@ -281,6 +297,20 @@ def run_indexer(
     next_full = 0.0  # run immediately on start
     try:
         while not stop.is_set():
+            if time.monotonic() >= next_root_check:
+                next_root_check = time.monotonic() + cfg.root_check_sec
+                online = _online_roots(settings)
+                if online != roots:
+                    log.info(
+                        "library folders now available: %s (was %s); rescanning",
+                        [str(r) for r in online],
+                        [str(r) for r in roots],
+                    )
+                    roots = online
+                    _stop_observer(observer)
+                    observer = _watch(roots)
+                    missing.invalidate()
+                    next_full = 0.0
             if is_writable() and not _halt():
                 if time.monotonic() >= next_full:
                     # A full pass covers every event so far; ones arriving
@@ -298,9 +328,18 @@ def run_indexer(
                         next_full = time.monotonic() + cfg.full_scan_interval_sec
             stop.wait(cfg.poll_sec)
     finally:
-        if observer is not None:
-            observer.stop()
-            observer.join(timeout=5)
+        _stop_observer(observer)
+
+
+def _online_roots(settings: Settings) -> list[Path]:
+    """The library folders that are there right now (in Settings order)."""
+    return [r for r in container_roots(settings.library_roots) if r.is_dir()]
+
+
+def _stop_observer(observer: Observer | None) -> None:
+    if observer is not None:
+        observer.stop()
+        observer.join(timeout=5)
 
 
 def _run_cycle(

@@ -385,3 +385,45 @@ def test_fs_event_runs_a_scoped_pass_not_a_full_one(
     assert len(scopes) >= 2 and all(s is not None for s in scopes[1:])
     walked = {p for s in scopes[1:] for p in (s or [])}
     assert walked and all(p.is_relative_to(library) for p in walked)
+
+
+def test_folder_coming_back_is_scanned_at_once(tmp_path: Path, settings: Settings) -> None:
+    """A library folder that wasn't there when the loop started (an unplugged
+    drive) is scanned as soon as it appears -- not at the next full pass."""
+    drive = tmp_path / "drive"
+    settings.set_library_roots([Path(settings.library_roots[0].container), drive])
+    cfg = IndexerLoopConfig(
+        full_scan_interval_sec=3600,
+        debounce_sec=0.1,
+        poll_sec=0.02,
+        watch=False,
+        run_clip=False,
+        root_check_sec=0.1,
+    )
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=run_indexer,
+        kwargs={
+            "settings": settings,
+            "is_writable": lambda: True,
+            "stop": stop,
+            "loop_config": cfg,
+        },
+        daemon=True,
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _photo_count(settings) == 0:
+            time.sleep(0.05)
+        assert _photo_count(settings) == 1  # the first full pass
+
+        drive.mkdir()
+        Image.new("RGB", (32, 32), (5, 200, 90)).save(drive / "plugged.jpg", "JPEG")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _photo_count(settings) < 2:
+            time.sleep(0.05)
+        assert _photo_count(settings) == 2
+    finally:
+        stop.set()
+        thread.join(timeout=5)

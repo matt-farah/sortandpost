@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 from sqlmodel import Session, col, select
 
+from sortandpost import missing
 from sortandpost.db.models import Photo
 
 log = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ def find_duplicate_groups(
     """Clusters of near-duplicate ``pixel_hash`` values, largest cluster first."""
     stmt = select(Photo.pixel_hash, Photo.phash).where(col(Photo.phash).is_not(None))
     if not include_missing:
-        stmt = stmt.where(col(Photo.missing_since).is_(None))
+        stmt = stmt.where(missing.shown_clause())
     rows = [(ph, int(ph_hex, 16)) for ph, ph_hex in session.exec(stmt).all() if ph_hex]
     if len(rows) < 2:
         return []

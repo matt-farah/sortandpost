@@ -28,6 +28,7 @@ from urllib.parse import parse_qsl, urlencode
 
 from sqlmodel import Session, col, select
 
+from sortandpost import missing
 from sortandpost.clip.model import ClipModelUnavailable
 from sortandpost.clip.vocab import Vocab
 from sortandpost.config import Settings
@@ -308,7 +309,7 @@ class LibraryQuery:
             tag_suggestions=suggestions,
             has_gps=True if self.gps else None,
             only_duplicates=self.dups,
-            include_missing=self.missing,
+            only_missing=self.missing,
         )
 
     def without_view(self) -> LibraryQuery:
@@ -339,7 +340,7 @@ class LibraryQuery:
             (self.gps, "place", "Has GPS", replace(self, gps=False)),
             (self.dups, "content_copy", "Detected duplicates", replace(self, dups=False)),
             (self.mark, "flag", "Marked for editing", replace(self, mark=False)),
-            (self.missing, "visibility", "Show missing files", replace(self, missing=False)),
+            (self.missing, "help_outline", "Missing photos", replace(self, missing=False)),
         ):
             if on:
                 out.append(FilterChip(icon, label, without))
@@ -367,7 +368,7 @@ class LibraryQuery:
         for key, label in (
             ("gps", "GPS"),
             ("dups", "detected duplicates"),
-            ("missing", "missing files shown"),
+            ("missing", "missing photos only"),
             ("mark", "⚑ to edit"),
         ):
             if getattr(self, key):
@@ -410,8 +411,11 @@ def resolve_view(
     *encoder* lazily supplies the CLIP text encoder; ``None`` = CLIP isn't
     installed, so a text query yields a notice instead of results."""
     stacks = build_stacks(session, settings.config.stacking)
-    all_ids = list_photo_ids(session, include_missing=lq.missing)
-    reps_all = [h for h in all_ids if not stacks.is_hidden_member(h)]
+    all_ids = list_photo_ids(session, only_missing=lq.missing)
+    # missing photos are listed one by one: a stack's top photo may be here
+    # while a member's file is gone
+    reps_all = [h for h in all_ids if lq.missing or not stacks.is_hidden_member(h)]
+    rep = _no_stacks if lq.missing else stacks.representative
     notice: str | None = None
     suggest = settings.config.clip.enabled  # subject filters also match CLIP suggestions
 
@@ -419,12 +423,12 @@ def resolve_view(
         # AI search is off: plain match on file names, tags and camera, kept in
         # the library's own order (there is no relevance score to rank by).
         matched = text_match(session, lq.q)
-        match_reps = {stacks.representative(m) for m in matched}
+        match_reps = {rep(m) for m in matched}
         ids = [h for h in reps_all if h in match_reps]
         if lq.has_filters():
             allowed = allowed_hashes(session, lq.to_filter(suggestions=suggest))
             if allowed is not None:
-                reps = {stacks.representative(h) for h in allowed}
+                reps = {rep(h) for h in allowed}
                 ids = [h for h in ids if h in reps]
     elif lq.q:
         hits: list[str] = []
@@ -446,13 +450,13 @@ def resolve_view(
                 hits = [h.pixel_hash for h in found]
             except ClipModelUnavailable:
                 notice = "The CLIP model couldn't be loaded — text search is unavailable."
-        ids = _first_rep_order(hits, stacks)
+        ids = _first_rep_order(hits, rep)
     elif lq.has_filters():
         allowed = allowed_hashes(session, lq.to_filter(suggestions=suggest))
         if allowed is None:
             ids = reps_all
         else:
-            reps = {stacks.representative(h) for h in allowed}
+            reps = {rep(h) for h in allowed}
             ids = [h for h in reps_all if h in reps]
     else:
         ids = reps_all
@@ -466,7 +470,7 @@ def resolve_view(
     groups: list[PhotoGroup] = []
     mode = lq.mode
     if mode is not None and ids:
-        rows = {r.pixel_hash: r for r in list_group_rows(session, include_missing=lq.missing)}
+        rows = {r.pixel_hash: r for r in list_group_rows(session, only_missing=lq.missing)}
         groups = group_photos(
             [rows[h] for h in ids if h in rows], mode, folder_sort=parse_folder_sort(lq.folder_sort)
         )
@@ -475,15 +479,19 @@ def resolve_view(
     return LibraryView(ids=ids, stacks=stacks, total=len(reps_all), groups=groups, notice=notice)
 
 
-def _first_rep_order(hashes: list[str], stacks: StackIndex) -> list[str]:
+def _no_stacks(pixel_hash: str) -> str:
+    return pixel_hash
+
+
+def _first_rep_order(hashes: list[str], rep: Callable[[str], str]) -> list[str]:
     """Collapse ranked hits to stack representatives, each at its best hit."""
     out: list[str] = []
     seen: set[str] = set()
     for h in hashes:
-        rep = stacks.representative(h)
-        if rep not in seen:
-            seen.add(rep)
-            out.append(rep)
+        r = rep(h)
+        if r not in seen:
+            seen.add(r)
+            out.append(r)
     return out
 
 
@@ -550,7 +558,7 @@ def camera_choices(session: Session) -> list[tuple[str, int]]:
     label ``""`` is "unknown camera"."""
     counts: dict[str, int] = {}
     rows = session.exec(
-        select(Photo.camera_make, Photo.camera_model).where(col(Photo.missing_since).is_(None))
+        select(Photo.camera_make, Photo.camera_model).where(missing.shown_clause())
     ).all()
     for make, model in rows:
         label = camera_label(make, model)

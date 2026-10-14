@@ -15,6 +15,7 @@ from datetime import datetime
 from sqlalchemy import ColumnElement, func
 from sqlmodel import Session, col, select
 
+from sortandpost import missing
 from sortandpost.db.models import (
     Photo,
     PhotoPath,
@@ -47,6 +48,9 @@ class PhotoFilter:
     # only applied ``photo_tags`` -- so "subject" filtering works before review
     tag_suggestions: bool = False
     include_missing: bool = False
+    # only photos missing on this computer (``sortandpost.missing``); wins over
+    # ``include_missing``
+    only_missing: bool = False
     only_duplicates: bool = False
     duplicate_distance: int = NEAR_DUPLICATE_DISTANCE
 
@@ -66,8 +70,15 @@ class PhotoFilter:
                 self.tags_all,
                 self.tags_any,
                 self.only_duplicates,
+                self.only_missing,
             )
         )
+
+
+def _visibility(flt: PhotoFilter) -> ColumnElement[bool] | None:
+    return missing.visibility_clause(
+        include_missing=flt.include_missing, only_missing=flt.only_missing
+    )
 
 
 def _lower_coalesce(column: object) -> ColumnElement[str]:
@@ -77,14 +88,15 @@ def _lower_coalesce(column: object) -> ColumnElement[str]:
 def allowed_hashes(session: Session, flt: PhotoFilter) -> set[str] | None:
     """The ``pixel_hash`` set matching *flt*, or ``None`` when *flt* imposes no
     membership constraint at all (``None`` = "don't filter", distinct from an
-    empty set = "nothing matches"). Note the default (drop ``missing_since``
-    photos) still yields a concrete set."""
+    empty set = "nothing matches"). Note the default (drop photos missing on
+    this computer) still yields a concrete set."""
     if not flt.is_active() and flt.include_missing:
         return None
 
     stmt = select(Photo.pixel_hash)
-    if not flt.include_missing:
-        stmt = stmt.where(col(Photo.missing_since).is_(None))
+    visible = _visibility(flt)
+    if visible is not None:
+        stmt = stmt.where(visible)
     if flt.has_gps is True:
         stmt = stmt.where(col(Photo.gps_lat).is_not(None), col(Photo.gps_lon).is_not(None))
     elif flt.has_gps is False:
@@ -131,7 +143,7 @@ def allowed_hashes(session: Session, flt: PhotoFilter) -> set[str] | None:
             for group in find_duplicate_groups(
                 session,
                 max_distance=flt.duplicate_distance,
-                include_missing=flt.include_missing,
+                include_missing=flt.include_missing or flt.only_missing,
             )
             for h in group
         }
@@ -155,8 +167,8 @@ def browse_photos(
         if not allowed:
             return []
         stmt = stmt.where(col(Photo.pixel_hash).in_(allowed))
-    elif not flt.include_missing:
-        stmt = stmt.where(col(Photo.missing_since).is_(None))
+    elif (visible := _visibility(flt)) is not None:
+        stmt = stmt.where(visible)
     stmt = (
         stmt.order_by(
             col(Photo.taken_at).is_(None), col(Photo.taken_at).desc(), col(Photo.pixel_hash)

@@ -8,20 +8,28 @@ date last, ``pixel_hash`` as the stable tie-break.
 from __future__ import annotations
 
 from collections.abc import Collection
+from typing import Any
 
-from sqlalchemy import or_
+from sqlalchemy import Select, or_
 from sqlmodel import Session, col, func, select
 
+from sortandpost import missing
 from sortandpost.db.models import Photo, PhotoPath, Rating, ScanState
 from sortandpost.grouping import GroupRow
 
 _ALL_ROWS = 1 << 62  # "no limit" for SQLite, without widening list_photos' signature
 
 
-def photo_count(session: Session, *, include_missing: bool = False) -> int:
-    stmt = select(func.count()).select_from(Photo)
-    if not include_missing:
-        stmt = stmt.where(col(Photo.missing_since).is_(None))
+def _visible[S: Select[Any]](stmt: S, include_missing: bool, only_missing: bool) -> S:
+    """*stmt* limited by the "missing on this computer" rule (``missing``)."""
+    clause = missing.visibility_clause(include_missing=include_missing, only_missing=only_missing)
+    return stmt if clause is None else stmt.where(clause)
+
+
+def photo_count(
+    session: Session, *, include_missing: bool = False, only_missing: bool = False
+) -> int:
+    stmt = _visible(select(func.count()).select_from(Photo), include_missing, only_missing)
     return int(session.exec(stmt).one())
 
 
@@ -31,10 +39,9 @@ def list_photos(
     limit: int = 120,
     offset: int = 0,
     include_missing: bool = False,
+    only_missing: bool = False,
 ) -> list[Photo]:
-    stmt = select(Photo)
-    if not include_missing:
-        stmt = stmt.where(col(Photo.missing_since).is_(None))
+    stmt = _visible(select(Photo), include_missing, only_missing)
     stmt = (
         stmt.order_by(
             col(Photo.taken_at).is_(None),
@@ -47,13 +54,13 @@ def list_photos(
     return list(session.exec(stmt).all())
 
 
-def list_photo_ids(session: Session, *, include_missing: bool = False) -> list[str]:
+def list_photo_ids(
+    session: Session, *, include_missing: bool = False, only_missing: bool = False
+) -> list[str]:
     """Every photo's ``pixel_hash`` in the same order as :func:`list_photos`.
     Used by the grid when stacking is on -- it pages over this in memory after
     dropping hidden stack members."""
-    stmt = select(Photo.pixel_hash)
-    if not include_missing:
-        stmt = stmt.where(col(Photo.missing_since).is_(None))
+    stmt = _visible(select(Photo.pixel_hash), include_missing, only_missing)
     stmt = stmt.order_by(
         col(Photo.taken_at).is_(None),
         col(Photo.taken_at).desc(),
@@ -62,7 +69,9 @@ def list_photo_ids(session: Session, *, include_missing: bool = False) -> list[s
     return list(session.exec(stmt).all())
 
 
-def list_group_rows(session: Session, *, include_missing: bool = False) -> list[GroupRow]:
+def list_group_rows(
+    session: Session, *, include_missing: bool = False, only_missing: bool = False
+) -> list[GroupRow]:
     """The fields :mod:`sortandpost.grouping` needs, in the same order as
     :func:`list_photo_ids` (newest ``taken_at`` first). The grid re-filters this
     to its representative order before grouping."""
@@ -75,12 +84,14 @@ def list_group_rows(session: Session, *, include_missing: bool = False) -> list[
             camera_model=p.camera_model,
             file_mtime_ns=p.file_mtime_ns,
         )
-        for p in list_photos(session, limit=_ALL_ROWS, include_missing=include_missing)
+        for p in list_photos(
+            session, limit=_ALL_ROWS, include_missing=include_missing, only_missing=only_missing
+        )
     ]
 
 
 # A photo is *unrated* when it has no ``ratings`` row at all, or one with
-# ``stars == 0`` (present photos only -- ``missing_since`` NULL).
+# ``stars == 0`` (photos not missing on this computer only).
 _UNRATED = or_(col(Rating.pixel_hash).is_(None), col(Rating.stars) == 0)
 
 
@@ -90,7 +101,7 @@ def unrated_count(session: Session) -> int:
         select(func.count())
         .select_from(Photo)
         .outerjoin(Rating, col(Rating.pixel_hash) == col(Photo.pixel_hash))
-        .where(col(Photo.missing_since).is_(None), _UNRATED)
+        .where(missing.shown_clause(), _UNRATED)
     )
     return int(session.exec(stmt).one())
 
@@ -107,7 +118,7 @@ def unrated_photo_ids(
     stmt = (
         select(Photo.pixel_hash)
         .outerjoin(Rating, col(Rating.pixel_hash) == col(Photo.pixel_hash))
-        .where(col(Photo.missing_since).is_(None), _UNRATED)
+        .where(missing.shown_clause(), _UNRATED)
     )
     if exclude:
         stmt = stmt.where(col(Photo.pixel_hash).not_in(list(exclude)))
