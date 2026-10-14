@@ -134,7 +134,7 @@ from sortandpost.helper import HelperInfo, read_helper_info
 from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.hydrate import hydrate_online_only
 from sortandpost.indexer.progress import PROGRESS, ProgressSnapshot
-from sortandpost.indexer.service import run_indexer
+from sortandpost.indexer.service import REBUILD, run_indexer
 from sortandpost.launcher_pref import remember_sync_dir
 from sortandpost.library_roots import (
     LibraryRoot,
@@ -921,6 +921,15 @@ def _storage_banners(settings: Settings) -> None:
         if rec.salvaged:
             text += " Edits made since the last sync were recovered too."
         notes.append(text + " Details in Settings → Sync & storage.")
+    if REBUILD.mismatch and settings.config.clip.enabled:
+        banner = ui.row().classes(_WARN_BANNER)
+        with banner:
+            ui.label(
+                "⚠ AI search is out of date: your photos' AI fingerprints came from a "
+                "different model."
+            ).classes("flex-1")
+            if State.write_mode == WriteMode.writable:
+                _rebuild_ai_index_button(dense=True)
     for text in notes:
         banner = ui.row().classes(_WARN_BANNER)
         with banner:
@@ -3009,10 +3018,8 @@ def build_ui(settings: Settings) -> None:
                             _needs_lock()
                         if settings.config.clip.enabled:
                             _clip_model_editor(settings)
-                            ui.label(
-                                "Rebuild the CLIP matrix from the CLI:  "
-                                "python -m sortandpost.indexer --reembed"
-                            ).classes("text-xs sp-faint")
+                            if writable:
+                                _rebuild_ai_index_editor()
                     with _settings_card("Image stacking", "layers"):
                         if writable:
                             _stacking_editor(settings)
@@ -3152,6 +3159,7 @@ def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
             # each hold ~600MB of weights, and so the loop stops re-loading it.
             "clip_model": State.get_clip_model(settings),
             "paused": State.indexer_paused,
+            "rebuild": REBUILD,
         },
         name="sortandpost-indexer",
         daemon=True,
@@ -4205,6 +4213,48 @@ def _clip_toggle_editor(settings: Settings, *, autosave: bool = False) -> None:
     switch.on_value_change(_changed)
 
 
+def _rebuild_ai_index_button(*, dense: bool = False) -> None:
+    """The "Rebuild AI index" button + its confirm (V3 P10). It only files a
+    request with the indexer thread (``REBUILD``): a re-embed deletes the
+    matrix, so it can't run beside a normal CLIP pass."""
+
+    def _confirm() -> None:
+        with ui.dialog() as dialog, ui.card().classes("gap-2 max-w-md"):
+            ui.label("Rebuild the AI index?").classes("font-medium")
+            ui.label(
+                "Every photo's AI fingerprint is recomputed. AI search and “more like this” "
+                "are incomplete until it finishes, which can take hours on a big library. "
+                "Suggestions you approved or rejected are kept; only pending ones are "
+                "regenerated. You can pause or quit meanwhile and it carries on."
+            ).classes("text-xs sp-muted")
+            with ui.row().classes("w-full justify-end gap-2"):
+
+                def _go() -> None:
+                    dialog.close()
+                    REBUILD.request()
+                    ui.notify("Rebuilding the AI index — progress is in the status bar")
+                    ui.navigate.reload()
+
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Rebuild", on_click=_go).props("color=primary")
+        dialog.open()
+
+    btn = ui.button("Rebuild AI index", icon="autorenew", on_click=_confirm)
+    btn.props("color=primary" + (" dense size=sm" if dense else ""))
+    if REBUILD.busy:
+        btn.props("disable")
+        btn.tooltip("A rebuild is already under way")
+
+
+def _rebuild_ai_index_editor() -> None:
+    ui.label("Recompute every photo's AI fingerprint (needed after the AI model changes).").classes(
+        "text-xs sp-faint max-w-xl"
+    )
+    if REBUILD.mismatch:
+        ui.label(f"⚠ {REBUILD.mismatch}").classes("text-xs text-amber-700")
+    _rebuild_ai_index_button()
+
+
 def _clip_model_editor(settings: Settings) -> None:
     """`/settings` control to check whether the configured CLIP weights are
     fully cached under ``local/models/`` and, if not, force a download.
@@ -4247,9 +4297,7 @@ def _clip_model_editor(settings: Settings) -> None:
 
     with ui.row().classes("gap-2"):
         ui.button("Check if downloaded", on_click=_check).props("flat dense")
-        ui.button(
-            "Download / verify AI Search and Tagging Local Model (CLIP)", on_click=_download
-        ).props("color=primary")
+        ui.button("Download AI Tagging Model (CLIP)", on_click=_download).props("color=primary")
 
 
 async def _browse_folder(target: ui.input) -> None:

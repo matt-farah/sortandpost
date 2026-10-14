@@ -45,7 +45,7 @@ _ROWMAP_VERSION = 1
 class EmbeddingDimMismatch(RuntimeError):
     """The on-disk matrix has a different dimensionality than the loaded model.
 
-    Recover with ``python -m sortandpost.indexer --reembed``.
+    Recover with Settings -> Rebuild AI index (CLI: ``--reembed``).
     """
 
 
@@ -53,7 +53,7 @@ class ModelMismatch(RuntimeError):
     """``embeddings_meta`` was written by a different model/pretrained/dim.
 
     The stored embeddings are not comparable with the ones the current config
-    would produce; recover with ``python -m sortandpost.indexer --reembed``.
+    would produce; recover with Settings -> Rebuild AI index (CLI: ``--reembed``).
     """
 
 
@@ -248,7 +248,7 @@ def check_compatible(session: Session, *, model: str, pretrained: str, dim: int)
         raise ModelMismatch(
             f"embeddings_meta has {model}/{row.pretrained} dim={row.dim}, "
             f"config wants {pretrained} dim={dim}. "
-            f"Run `python -m sortandpost.indexer --reembed`."
+            f"Use Settings -> Rebuild AI index (or `python -m sortandpost.indexer --reembed`)."
         )
 
 

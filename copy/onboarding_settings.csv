@@ -207,7 +207,7 @@
 206,/settings,src/sortandpost/app.py,4123,_download,status.set_text,✗ download failed: {detail},✗ download failed: {detail}
 207,/settings,src/sortandpost/app.py,4124,_download,ui.notify,download failed: {detail},download failed: {detail}
 208,/settings,src/sortandpost/app.py,4127,_clip_model_editor,ui.button,Check if downloaded,Check if downloaded
-209,/settings,src/sortandpost/app.py,4128,_clip_model_editor,ui.button,Download / verify CLIP model,Download / verify AI Search and Tagging Local Model (CLIP)
+209,/settings,src/sortandpost/app.py,4128,_clip_model_editor,ui.button,Download / verify CLIP model,Download AI Tagging Model (CLIP)
 210,/settings /welcome,src/sortandpost/app.py,4174,_load,,Pick a starting point,Pick a starting point
 211,/settings /welcome,src/sortandpost/app.py,4178,_load,ui.label,✓ This folder is a sortandpost library,✓ This folder is a sortandpost library
 212,/settings /welcome,src/sortandpost/app.py,4182,_load,ui.button,⬆  parent,⬆  parent
