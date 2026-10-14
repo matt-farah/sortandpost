@@ -1,11 +1,24 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-08 (prod crash fix: local/ out of sync folders + boot recovery)._
+_Last updated: 2026-10-14 (onboarding/settings copy pass)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
 > **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
+
+## ✍️ 2026-10-14 — Onboarding + settings copy pass
+
+- Applied the reviewed wording in `copy/onboarding_settings.csv` (`new_text` column) to
+  `/welcome`, `/settings` and the posting page: "sortandpost.photos" branding, "database"
+  instead of "library" for the shared folder, plainer indexing / AI / delete / trash text.
+  Strings only — no behavior change. User-tested on a fresh-install boot.
+- Removed the "This setup keeps this computer's private files…" note from Settings (no longer
+  needed). Posting intro prefix is now "sortandpost.photos" for every provider; Robopost's
+  `about` dropped "clean".
+- Stat tile "CLIP embeddings" is now "Machine suggested tags".
+- Pattern for future copy passes: edit `new_text` in the CSV, then apply by matching string
+  nodes via `ast` (many are implicit-concat / f-strings), rewrap to 100 cols, `ruff format`.
 
 ## 🛟 2026-10-08 — Prod crash fix: working files out of sync folders + boot recovery
 
