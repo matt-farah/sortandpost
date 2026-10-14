@@ -501,6 +501,16 @@ without an explicit user action (see Sync model → Deletion). A pending `tombst
 one case the scanner acts on: it skips re-indexing that `pixel_hash` and, on the post-scan
 sweep, trashes the still-present local file and purges the derived rows.
 
+**Missing is judged per computer** (`sortandpost.missing`, V3 P9). `photo_paths` is shared,
+so the presence sweep only judges paths under **this** machine's roots, plus orphans under no
+device's roots (a removed folder); a path under another device's roots
+(`sync/devices/*/library.json`) is never marked absent by this machine. A photo is **missing
+here** when it has a judged path and none is present — that is what the grid hides, the ⋯
+"Missing photos only" filter shows (reason: folder offline / file gone / folder removed) and
+Rate / collections skip; a photo whose files are only on another computer shows normally.
+`missing_since` keeps the shared meaning "no present copy anywhere". Two machines with the
+*same* root spelling can't be told apart (accepted limitation).
+
 Concurrency: `ProcessPoolExecutor` for decode/hash/thumbnails, sized by `clip.speed` (`slow` ≈ 30% of
 cores at lowered priority, the default; `fast` = `cpu_count - 1`); CLIP inference runs in the app/indexer
 process with the same thread budget. `watchdog`
@@ -508,7 +518,9 @@ observers on the library roots, debounced into a **scoped** pass over just the c
 (`scan_once(scope=…)`: folders walked, files checked alone, presence swept only under them;
 hidden / excluded / app-data / non-image events dropped, a symlinked root's resolved event
 paths mapped back onto the root's spelling; > 500 paths → full pass), plus a periodic full
-reconcile scan (`full_scan_interval_min`) as the safety net for missed events. The indexer only runs when this machine holds the write lock.
+reconcile scan (`full_scan_interval_min`) as the safety net for missed events. Every
+`root_check_sec` (5 s) the loop re-checks which roots are mounted; a root that appears (drive
+plugged in, folder added) or vanishes re-arms the observer and runs a full pass at once. The indexer only runs when this machine holds the write lock.
 
 ---
 
@@ -594,7 +606,7 @@ The **only** module allowed to write under a library root. Wraps a persistent
   keyboard-first: arrows navigate, `1`–`5` rate, `0` clears, `f` flags, `/` focuses search.
   A compact toolbar: search box, then icon buttons whose popovers hold each filter (★ stars
   incl. unrated, camera, date-range calendar, folder, subject/tag any|all, ⋯ GPS / duplicates /
-  ⚑ / missing / posted) — tinted with a count badge while active — then the group-by menu
+  ⚑ / missing-only / posted) — tinted with a count badge while active — then the group-by menu
   button (Month · Day · Folder (+ section sort) · Camera · Flat, with collapse/expand-all),
   saved searches and clear. Active filters also show as removable chips under the bar
   (`LibraryQuery.chips()`). All state lives in the URL (`sortandpost.library_view.LibraryQuery`).
@@ -628,7 +640,8 @@ The **only** module allowed to write under a library root. Wraps a persistent
   Entry points: "Compose post" on a collection, ✈ in the library's bulk toolbar. The grid
   shows a ✈ badge on posted photos and `/` has a `posted=1|0` filter.
 - Persistent status bar: index progress (`X/Y`, current stage), CLIP queue depth, write-lock
-  state (writable / read-only + holder), last publish time.
+  state (writable / read-only + holder), last publish time; "N missing (folder offline)" only
+  while a library folder is offline.
 
 ---
 

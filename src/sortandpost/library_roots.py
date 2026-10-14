@@ -152,6 +152,29 @@ def save_roots(paths: Paths, device_id: str, hostname: str, roots: list[LibraryR
     os.replace(tmp, path)
 
 
+def other_device_roots(paths: Paths, device_id: str) -> list[str]:
+    """Every *other* device's library folders, as their ``container`` paths --
+    the spelling their scanner wrote into ``photo_paths``. Read-only; an
+    unreadable file is skipped (see :mod:`sortandpost.missing`)."""
+    own_suffix = f"-{device_id[:_ID_LEN]}"
+    out: list[str] = []
+    if not paths.devices_dir.is_dir():
+        return out
+    for lib in sorted(paths.devices_dir.glob("*/library.json")):
+        if lib.parent.name.endswith(own_suffix):
+            continue
+        try:
+            data = json.loads(lib.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows = data.get("roots") if isinstance(data, dict) else data
+        for raw in rows if isinstance(rows, list) else []:
+            root = _coerce(raw)
+            if root is not None and root.container not in out:
+                out.append(root.container)
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # helpers used by the scanner / UI
 # --------------------------------------------------------------------------- #

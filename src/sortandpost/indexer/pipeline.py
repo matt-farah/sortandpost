@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntFlag
@@ -361,6 +362,7 @@ def sweep_presence(
     *,
     now: datetime,
     scope: list[Path] | None = None,
+    judged: Callable[[str], bool] | None = None,
 ) -> SweepResult:
     """Reconcile ``present``/``missing_since`` after a scan pass.
 
@@ -371,11 +373,17 @@ def sweep_presence(
 
     With *scope* (a scoped pass that walked only those paths) only rows at or
     under a scope path are judged, and only their photos are re-checked.
+
+    *judged* (``missing.PathScope.judged``) limits a full pass to the paths this
+    computer owns: ``photo_paths`` is shared, and another device's copies are
+    never under this computer's roots, so they would all look gone. A photo is
+    only re-checked if one of its paths was judged (or it has none at all).
     """
     result = SweepResult()
 
     if scope is None:
-        rows = list(session.exec(select(PhotoPath)).all())
+        all_rows = list(session.exec(select(PhotoPath)).all())
+        rows = [pp for pp in all_rows if judged is None or judged(pp.path)]
     else:
         rows = _in_scope(session, PhotoPath, "path", scope)
     for pp in rows:
@@ -388,6 +396,10 @@ def sweep_presence(
 
     if scope is None:
         photos = list(session.exec(select(Photo)).all())
+        if judged is not None:
+            with_paths = {pp.pixel_hash for pp in all_rows}
+            mine = {pp.pixel_hash for pp in rows}
+            photos = [p for p in photos if p.pixel_hash in mine or p.pixel_hash not in with_paths]
     else:
         # also photos whose primary path is in scope: a file whose pixels
         # changed moved its ``photo_paths`` row to the new hash, leaving the

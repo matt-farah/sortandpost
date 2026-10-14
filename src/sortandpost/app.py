@@ -42,7 +42,7 @@ from nicegui.events import KeyEventArguments, ValueChangeEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
-from sortandpost import __version__, achievements_ui
+from sortandpost import __version__, achievements_ui, missing
 from sortandpost.achievements import (
     EVENT_GITHUB_SEARCH,
     MODE_LABELS,
@@ -163,6 +163,7 @@ from sortandpost.library_view import (
 )
 from sortandpost.metadata import ExiftoolClient, MetadataError, can_embed_metadata, is_raw
 from sortandpost.metadata.shared import EXIFTOOL
+from sortandpost.missing import MissingReason
 from sortandpost.onboarding import (
     FolderInspection,
     cloud_folder_candidates,
@@ -765,8 +766,8 @@ def _status_bar() -> None:
         def _tick() -> None:
             try:
                 with Session(State.engine) as s:
-                    total = photo_count(s, include_missing=True)
                     present = photo_count(s)
+                    offline_n = missing.offline_missing_count(s)
                     pending = int(
                         s.exec(
                             select(func.count())
@@ -782,10 +783,9 @@ def _status_bar() -> None:
                 paused = " · indexing paused" if State.indexer_paused.is_set() else ""
                 clip_on = State.settings is None or State.settings.config.clip.enabled
                 suggestions = f"{pending} CLIP suggestions pending · " if clip_on else ""
-                summary.set_text(
-                    f"{present}/{total} photos indexed · {total - present} missing · "
-                    f"{suggestions}{lock}{paused}"
-                )
+                # missing only matters here while a library folder is offline
+                offline = f"{offline_n} missing (folder offline) · " if offline_n else ""
+                summary.set_text(f"{present} photos indexed · {offline}{suggestions}{lock}{paused}")
             except Exception:  # never let the status bar break a page
                 summary.set_text("status unavailable")
 
@@ -951,6 +951,7 @@ def build_ui(settings: Settings) -> None:
     init_db(engine)  # ensure an empty DB still renders an empty grid
     State.engine = engine
     State.settings = settings
+    missing.configure(settings)
     State.theme = get_theme(settings.paths)
     State.season = get_season(settings.paths)
 
@@ -1026,7 +1027,8 @@ def build_ui(settings: Settings) -> None:
         flag_n, cloud_n = data.flag_n, data.cloud_n
         rep_ids = view.ids
         total = len(rep_ids)
-        noun = "stacks" if stack_cfg.enabled else "photos"
+        # the missing view lists photos one by one, not stacks
+        noun = "stacks" if stack_cfg.enabled and not lq.missing else "photos"
         # carried onto every photo link so /photo's arrows page through this view
         link_query = lq.query_string()
 
@@ -1075,7 +1077,9 @@ def build_ui(settings: Settings) -> None:
         with ui.row().classes("w-full items-center justify-between px-4 pt-2 gap-2 no-wrap"):
             with ui.row().classes("items-center gap-2 flex-wrap min-w-0"):
                 counter = ui.label(f"{total} {noun}").classes("text-sm sp-muted")
-                if lq.has_filters():
+                if lq.missing:
+                    ui.label("missing on this computer").classes("text-xs sp-faint")
+                elif lq.has_filters():
                     ui.label(f"matching · {view.total} in library").classes("text-xs sp-faint")
                 _filter_chips(lq)
             flag_box = ui.row().classes("items-center gap-2 no-wrap")
@@ -1472,6 +1476,7 @@ def build_ui(settings: Settings) -> None:
                     ).all()
                 }
                 flagged_ids = edit_flagged_hashes(session, hashes)
+                reasons = missing.missing_reasons(session, hashes) if lq.missing else {}
             sent = posted_hashes(settings.paths)
             with container:
                 for h in hashes:
@@ -1480,7 +1485,7 @@ def build_ui(settings: Settings) -> None:
                         _thumb_cell(
                             photo,
                             thumb_small,
-                            stack_size=stacks.size(h),
+                            stack_size=1 if lq.missing else stacks.size(h),
                             selection=sel,
                             stars=stars_by_hash.get(h, 0),
                             on_rate=_rate_one,
@@ -1493,6 +1498,7 @@ def build_ui(settings: Settings) -> None:
                             on_hover=_on_hover,
                             link_query=link_query,
                             posted=any(m in sent for m in stacks.members(h)),
+                            missing_reason=reasons.get(h),
                         )
 
         def append_batch() -> None:
@@ -1761,6 +1767,8 @@ def build_ui(settings: Settings) -> None:
             flagged = bool(edit_flagged_hashes(session, [pixel_hash])) if photo else False
             stacks = build_stacks(session, settings.config.stacking) if stacking_on else None
             members = stacks.members(pixel_hash) if stacks else [pixel_hash]
+            missing_reason = missing.missing_reasons(session, [pixel_hash]).get(pixel_hash)
+        path_scope = missing.current()
 
         if photo is None:
             _empty_state("image_not_supported", "Photo not found", pixel_hash)
@@ -1803,12 +1811,26 @@ def build_ui(settings: Settings) -> None:
                 tags_wrap = ui.column().classes("w-full gap-1 mt-2")
                 ui.separator()
                 ui.label("Paths").classes("font-bold mt-2")
+                if missing_reason is not None:
+                    with ui.column().classes("gap-0"):
+                        ui.label(f"Missing on this computer: {missing_reason.value}").classes(
+                            "text-xs font-medium text-amber-600"
+                        )
+                        ui.label(missing.REASON_HINTS[missing_reason]).classes("text-xs sp-muted")
                 native_reveal = reveal_supported()
                 helper_info = _current_helper()
                 for pp in paths:
+                    elsewhere = path_scope is not None and not path_scope.judged(pp.path)
+                    if elsewhere:
+                        note = "another computer"
+                    elif pp.present:
+                        note = ""
+                    else:
+                        note = (path_scope or missing.PathScope.build(())).reason([pp.path])
                     _path_row(
                         pp.path,
-                        present=pp.present,
+                        present=pp.present and not elsewhere,
+                        note=note,
                         roots=settings.library_roots,
                         helper=helper_info,
                         native_reveal=native_reveal,
@@ -2081,7 +2103,8 @@ def build_ui(settings: Settings) -> None:
                 h = queue[idx[0]]
                 with _session() as session:
                     photo = get_photo(session, h)
-                if photo is None or photo.missing_since is not None:
+                    gone = photo is None or bool(missing.missing_here_set(session, [h]))
+                if gone:
                     idx[0] += 1
                     continue
                 return h
@@ -2595,12 +2618,9 @@ def build_ui(settings: Settings) -> None:
                         select(Photo).where(col(Photo.pixel_hash).in_(member_hashes))
                     ).all()
                 }
-            present = [
-                found[h] for h in member_hashes if h in found and found[h].missing_since is None
-            ]
-            gone = [
-                h for h in member_hashes if h not in found or found[h].missing_since is not None
-            ]
+                lost = missing.missing_here_set(session, member_hashes)
+            present = [found[h] for h in member_hashes if h in found and h not in lost]
+            gone = [h for h in member_hashes if h not in found or h in lost]
             return present, gone
 
         def _members_ids() -> list[str]:
@@ -2870,7 +2890,6 @@ def build_ui(settings: Settings) -> None:
                     .where(Prediction.state == PredictionState.approved)
                 ).one()
             )
-            total = photo_count(session, include_missing=True)
             present = photo_count(session)
             cloud_n = online_only_count(session)
         snaps = sorted(settings.paths.snapshots_dir.glob("*.db.zst"))
@@ -2915,7 +2934,6 @@ def build_ui(settings: Settings) -> None:
         writable = State.write_mode == WriteMode.writable
         tiles: list[tuple[str, str, str]] = [  # (icon, value, caption)
             ("photo_library", f"{present:,}", "photos indexed"),
-            ("help_outline", f"{total - present:,}", "missing"),
             ("cloud_off", f"{cloud_n:,}", "online-only"),
             ("memory", f"{embeddings:,}", "Machine suggested tags"),
             ("rate_review", f"{pending:,}", "suggestions pending"),
@@ -4509,6 +4527,7 @@ def _library_roots_editor(
     def _persist() -> None:
         save_roots(settings.paths, settings.device_id, settings.hostname, roots)
         settings.library_roots = list(roots)
+        missing.invalidate()
 
     def _drop(container: str) -> None:
         roots[:] = [r for r in roots if r.container != container]
@@ -5139,9 +5158,9 @@ def _filter_bar(
                     ("mark", "⚑ Marked for editing", ""),
                     (
                         "missing",
-                        "Show missing files",
-                        "Also show photos whose file can't be found right now "
-                        "(moved, deleted, or on a disconnected drive)",
+                        "Missing photos only",
+                        "Only photos whose file can't be found in this computer's "
+                        "library folders (moved, deleted, or on a disconnected drive)",
                     ),
                 ):
                     ui.checkbox(
@@ -5314,6 +5333,7 @@ def _path_row(
     path: str,
     *,
     present: bool,
+    note: str = "",
     roots: list[LibraryRoot],
     helper: HelperInfo | None,
     native_reveal: bool,
@@ -5321,12 +5341,16 @@ def _path_row(
     """One row in the photo page's Paths list. Shows the **host** path (translated
     from the stored container path). Reveal / Open go through the host helper
     agent under Docker, or the local openers on a native run; otherwise the Copy
-    button is the way in (paste into Finder's Go to Folder / Explorer's bar)."""
+    button is the way in (paste into Finder's Go to Folder / Explorer's bar).
+    *note* says why the file isn't usable here (a ``MissingReason``, or that
+    the copy is on another computer); Reveal / Open are offered only when
+    *present*."""
     host_path = to_host_path(path, roots)
     with ui.row().classes("items-center gap-1"):
         with ui.column().classes("min-w-0 gap-0"):
-            ui.label(host_path + ("" if present else "  (missing)")).classes(
-                "break-all text-xs " + ("sp-muted" if present else "text-red-500")
+            elsewhere = note == "another computer"
+            ui.label(host_path + (f"  ({note})" if note else "")).classes(
+                "break-all text-xs " + ("sp-muted" if present or elsewhere else "text-red-500")
             )
             if host_path != path:
                 ui.label(f"container: {path}").classes("break-all text-[10px] sp-faint")
@@ -5577,6 +5601,7 @@ def _thumb_cell(
     on_hover: Callable[[str, bool], Any] | None = None,
     link_query: str = "",
     posted: bool = False,
+    missing_reason: MissingReason | None = None,
 ) -> None:
     target = _photo_url(photo.pixel_hash, link_query)
     with ui.link(target=target).classes("group relative block") as cell:
@@ -5593,6 +5618,11 @@ def _thumb_cell(
                 "absolute left-1 bottom-1 rounded bg-black/70 px-1.5 py-0.5 "
                 "text-xs font-medium text-white"
             )
+        if missing_reason is not None:
+            ui.label(missing_reason.value).classes(
+                "absolute left-1/2 top-1 -translate-x-1/2 whitespace-nowrap rounded "
+                "bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-amber-300"
+            ).tooltip(f"Missing on this computer: {missing_reason.value}")
         if posted:
             ui.icon("send", size="0.9rem").classes(
                 "absolute right-1 bottom-1 rounded bg-black/60 p-0.5 text-emerald-400"

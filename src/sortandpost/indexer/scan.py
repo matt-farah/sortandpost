@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 from sqlmodel import Session, col, select
 
-from sortandpost import binaries
+from sortandpost import binaries, missing
 from sortandpost.clip.model import (
     ClipModel,
     ClipModelUnavailable,
@@ -278,7 +278,10 @@ def _scan_once_locked(
             log.info("scan interrupted: %s", stats)
             return stats
 
-        result = sweep_presence(session, seen_paths, now=_utcnow(), scope=scoped)
+        # only this computer's paths: the other devices' copies are in the
+        # shared photo_paths too, and never under these roots (V3 P9)
+        judged = missing.for_settings(settings).judged
+        result = sweep_presence(session, seen_paths, now=_utcnow(), scope=scoped, judged=judged)
         session.commit()
         stats.marked_absent = result.marked_absent
         stats.marked_missing = result.marked_missing
