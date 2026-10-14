@@ -2917,7 +2917,7 @@ def build_ui(settings: Settings) -> None:
             ("photo_library", f"{present:,}", "photos indexed"),
             ("help_outline", f"{total - present:,}", "missing"),
             ("cloud_off", f"{cloud_n:,}", "online-only"),
-            ("memory", f"{embeddings:,}", "CLIP embeddings"),
+            ("memory", f"{embeddings:,}", "Machine suggested tags"),
             ("rate_review", f"{pending:,}", "suggestions pending"),
             ("task_alt", f"{approved:,}", "suggestions approved"),
         ]
@@ -3739,15 +3739,17 @@ def _stacking_editor(settings: Settings, *, autosave: bool = False) -> None:
     change instead of showing a Save button."""
     cfg = settings.config.stacking
     ui.label(
-        "Group near-duplicate photos in the same folder into one entry (the "
-        "newest by modified time is shown). Ratings and tags apply to the whole "
-        "stack; only the top photo's file is written (the top JPEG for RAW + JPEG)."
+        "Stack photos together that have a similar name. The latest modified is shown on top. The "
+        "rating is shared between the photos, but only saved to the EXIF data of the top photo."
     ).classes("text-xs sp-faint max-w-xl")
 
     enabled = ui.switch("Enabled", value=cfg.enabled)
-    raw_jpeg = ui.checkbox("Pair a RAW with its same-named JPEG", value=cfg.raw_jpeg)
+    raw_jpeg = ui.checkbox(
+        "Stack together RAW and JPEG photos that have the same name", value=cfg.raw_jpeg
+    )
     similar = ui.checkbox(
-        'Group similar names — "img.jpg", "img copy.jpg", "img (1).jpg", "copy img.jpg"',
+        'Stack together images with similar names i.e "img.jpg", "img copy.jpg", "img (1).jpg", '
+        '"copy img.jpg"',
         value=cfg.similar_names,
     )
 
@@ -3764,7 +3766,7 @@ def _stacking_editor(settings: Settings, *, autosave: bool = False) -> None:
 
     def _save() -> None:
         _store()
-        ui.notify("saved — reload the library to see it")
+        ui.notify("saved. Reload the library to see it")
 
     ui.button("Save", on_click=_save).props("color=primary")
 
@@ -3833,8 +3835,8 @@ def _open_with_app_editor(settings: Settings) -> None:
     -- app paths differ across machines -- and doesn't touch the system's own
     file-type association, only what sortandpost itself launches."""
     ui.label(
-        "The app sortandpost's Open button launches, instead of the "
-        "operating system default. Saved on this machine only."
+        "Choose your preferred photo editing app. When you click open in editing app from "
+        "sortandpost.photos, the app will open with the selected photo/s"
     ).classes("text-xs sp-faint max-w-xl")
 
     with ui.row().classes("w-full items-end gap-2 no-wrap"):
@@ -3875,14 +3877,15 @@ def _cpu_speed_editor(settings: Settings) -> None:
     slow_w = default_workers("slow")
 
     ui.label(
-        "Indexing gathers your photos, stacks photos together that are the same, and "
-        "uses machine learning to determine the contents of the photos without using "
-        "any internet resources or uploading your photos anywhere."
+        "Indexing gathers your photos, stacks photos together that are the same, and uses machine "
+        "learning to determine the contents of the photos without using the Internet or uploading "
+        "your photos anywhere. sortandpost.photos is built with privacy in mind"
     ).classes("text-xs sp-faint max-w-xl")
     ui.label(
-        f"By default, indexing runs slowly using about {slow_w} cpu core(s), however "
-        f"if you'd like to run the index quickly select fast and it will use all "
-        f"available CPU cores. This may cause your computer to run slowly."
+        f"sortandpost.photos uses a slow indexing speed to run in the background without causing "
+        f"delays on your computer. The slow setting uses {slow_w} cpu core(s). If you have a large "
+        f"quantity of photos you'd like to index quickly, turn on fast indexing. It will slow down "
+        f"your computer, but index photos much faster."
     ).classes("text-xs sp-faint max-w-xl")
 
     mode = ui.toggle(
@@ -3908,10 +3911,8 @@ def _deletion_editor(settings: Settings, *, autosave: bool = False) -> None:
     #1, exception 2). Only the stack scope is user-configurable."""
     cfg = settings.config.deletion
     ui.label(
-        "The bulk toolbar's Delete and the photo page's “Delete photo” move the "
-        "files into the app's trash on this computer (see Settings → Recently deleted) and "
-        "remove them from the library. When stacking is on, choose whether a delete "
-        "takes only the shown photo or the whole stack."
+        "When deleting a photo using sortandpost.photos, it uses an internal trash can and only "
+        "deletes the top photo of the stack by default."
     ).classes("text-xs sp-faint max-w-xl")
 
     scope = (
@@ -3947,9 +3948,9 @@ def _trash_panel(settings: Settings, engine: Engine) -> None:
     Windows) -- after which only the OS Trash's own Put Back can recover them."""
     client = ui.context.client
     ui.label(
-        f"Deleted photos wait here, on this computer only, until you move them to the "
-        f"system Trash. Put back returns the files to their original folders with their "
-        f"ratings and tags. Folder: {settings.paths.local / 'trash'}"
+        f"Deleted photos are put in sortandpost.photos trash. You can move them to your system's "
+        f"trash can or put them back to where they were in the library. Folder: "
+        f"{settings.paths.local / 'trash'}"
     ).classes("text-xs sp-faint max-w-xl")
     box = ui.column().classes("w-full gap-2")
 
@@ -4005,8 +4006,8 @@ def _trash_panel(settings: Settings, engine: Engine) -> None:
         with ui.dialog() as dialog, ui.card().classes("gap-2"):
             ui.label("Move everything here to the system Trash?").classes("font-medium")
             ui.label(
-                "The app can no longer put these photos back afterwards — use the "
-                "system Trash's own Put Back instead. Nothing is permanently deleted."
+                "After the photos are moved to the system trash, you can restore them from there. "
+                "They will follow your system's trash/recycle bin setting"
             ).classes("text-xs sp-faint max-w-sm")
             with ui.row().classes("w-full justify-end gap-2"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -4066,12 +4067,6 @@ def _app_data_editor(settings: Settings) -> None:
             "APP_DATA=... on the command line) — change it there."
         ).classes("text-xs text-amber-600 dark:text-amber-400 max-w-xl")
         return
-    if not paths.is_split:
-        ui.label(
-            "This setup keeps this computer's private files inside the data folder "
-            "(local/). If that folder is synced, pick its sync/ folder below to move "
-            "them onto this computer only — you'll confirm your photo folders once."
-        ).classes("text-xs sp-faint max-w-xl")
 
     def _use(ins: FolderInspection) -> None:
         assert ins.sync_dir is not None
@@ -4113,10 +4108,9 @@ def _clip_toggle_editor(settings: Settings, *, autosave: bool = False) -> None:
     welcome wizard (nothing downloaded yet, so no confirm)."""
     ccfg = settings.config.clip
     ui.label(
-        "Sort and search photos by what's in them — “dog on the beach” — and get "
-        "tag suggestions to approve. It runs entirely on this computer, but needs "
-        "a one-time ~600 MB model download and some CPU while indexing. Off, search "
-        "matches file names, tags and camera only."
+        "sortandpost.photos downloads a machine learning model that automatically categorizes "
+        "photos. i.e. sunset, dog on beach, portrait. This is a 600MB model that runs locally. "
+        "Your photos are never sent to the cloud or on anyone else's computer"
     ).classes("text-xs sp-faint max-w-xl")
     switch = ui.switch("Turn on AI search & tagging", value=ccfg.enabled)
 
@@ -4135,9 +4129,9 @@ def _clip_toggle_editor(settings: Settings, *, autosave: bool = False) -> None:
         with ui.dialog() as dialog, ui.card().classes("gap-2 max-w-md"):
             ui.label("Turn off AI search & tagging?").classes("font-medium")
             ui.label(
-                "No more CLIP embedding or tag suggestions, and the Review page goes "
-                "away. Your photos, ratings, approved tags and existing embeddings are "
-                "kept, so turning it back on later costs nothing but the model download."
+                "This setting turns off AI categorization of your photos and will disable the "
+                "review page. Your photos, tags, ratings, and anything you've approved to be "
+                "added to tags is preserved."
             ).classes("text-xs sp-muted")
             forget = ui.checkbox(
                 "Also delete the downloaded model files from this computer", value=True
@@ -4235,7 +4229,9 @@ def _clip_model_editor(settings: Settings) -> None:
 
     with ui.row().classes("gap-2"):
         ui.button("Check if downloaded", on_click=_check).props("flat dense")
-        ui.button("Download / verify CLIP model", on_click=_download).props("color=primary")
+        ui.button(
+            "Download / verify AI Search and Tagging Local Model (CLIP)", on_click=_download
+        ).props("color=primary")
 
 
 async def _browse_folder(target: ui.input) -> None:
@@ -4672,9 +4668,8 @@ def _exclude_editor(settings: Settings, engine: Engine, *, autosave: bool = Fals
     client = ui.context.client  # a real rescan outlasts the page; see _save
 
     ui.label(
-        "Folder names skipped while scanning — case-insensitive, matched at any "
-        "depth. Photos already indexed from an excluded folder drop out on the "
-        "next scan; removing an entry brings them back."
+        'Specify any subfolders you want to skip scanning. i.e. "RAWs" "PSDs" "Instagram" or any '
+        "other things you don't want clogging up your library"
     ).classes("text-xs sp-faint max-w-xl")
 
     chips = ui.row().classes("items-center gap-2 flex-wrap min-h-8")
@@ -4734,10 +4729,10 @@ def _online_only_editor(settings: Settings, engine: Engine, cloud_n: int) -> Non
     client = ui.context.client  # a real hydrate+rescan outlasts the page; see _download_now
 
     ui.label(
-        "Cloud sync tools (OneDrive, Google Drive, Dropbox, iCloud) can leave "
-        "placeholder stubs whose real bytes download only when opened. “Skip” "
-        "records them without downloading; “Download” hydrates every one the "
-        "scanner meets. Either way you can pull the recorded ones now."
+        "Your cloud sync tool (i.e. Google Drive, OneDrive, iCloud Drive) often only downloads "
+        "files you open. If you want sortandpost.photos to download every file in your library "
+        "automatically, turn this on, but if you'd rather only have what's already downloaded "
+        "indexed, choose that option instead."
     ).classes("text-xs sp-faint max-w-xl")
 
     mode = ui.toggle(
@@ -5819,26 +5814,30 @@ def _welcome_shell() -> Iterator[None]:
 def _welcome_intro(joined: bool = False) -> None:
     with ui.column().classes("gap-1 pt-4"):
         ui.label(
-            "Welcome back — let's add this computer" if joined else "Welcome to sortandpost"
+            "Welcome back to sortandpost.photos! Let's add this computer"
+            if joined
+            else "Welcome to sortandpost.photos"
         ).classes("sp-display text-3xl font-semibold")
         ui.label(
-            "Your library, ratings and tags are already here. Just tell sortandpost "
-            "where your photos are on this computer."
+            "Your database has been imported. Select where your photos are synced on this "
+            "computer (i.e. a Google Drive, OneDrive, Dropbox folder)"
             if joined
-            else "Rate, tag and search your photos — privately, on your own computers. "
-            "A few quick choices and you're done; nothing is scanned until you finish."
+            else "sortandpost.photos helps photographers take their photo library from 'living on "
+            "my hard drive' to organized and posted for people to see. sortandpost.photos is "
+            "built with privacy by design. Everything is run locally on your computer. None "
+            "of your data is visible to sortandpost.photos ever. "
         ).classes("sp-muted max-w-2xl")
 
 
 def _shared_folder_intro() -> None:
     ui.label(
-        "Pick a folder in the cloud drive you already use (Synology Drive, OneDrive, "
-        "Dropbox, Google Drive, iCloud Drive, …) so your ratings, tags and search index "
-        "follow you to your other computers — or any folder if you only use this one."
+        "Choose where to store your database. We suggest using a folder that is synced so that "
+        "you have a backup and it syncs between your computers (i.e. a Google Drive, OneDrive, "
+        "Dropbox folder)"
     ).classes("text-sm sp-muted max-w-2xl")
     ui.label(
-        "Already use sortandpost on another computer? Pick the same folder here and "
-        "everything carries over. Your photos stay exactly where they are."
+        "If you already use sortandpost, choose the same folder where your database is already "
+        "stored"
     ).classes("text-sm sp-muted max-w-2xl")
 
 
@@ -5921,20 +5920,23 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
 
         def _library_next() -> None:
             if not settings.library_roots:
-                ui.notify("add at least one photo folder", type="warning")
+                ui.notify(
+                    "Choose a folder or multiple folders where your photos are stored",
+                    type="warning",
+                )
                 return
             if not any(Path(r.container).is_dir() for r in settings.library_roots):
                 ui.notify(
-                    "none of these folders can be found right now — they'll be "
-                    "scanned once they're available",
+                    "None of those folders can be accessed. They will be scanned when "
+                    "sortandpost.photos can access them.",
                     type="warning",
                 )
             stepper.next()
 
         def _read_only_note() -> None:
             ui.label(
-                f"{State.lock_holder or 'Another computer'} is using this library right "
-                "now, so shared settings can't change. Adjust them later in Settings."
+                f"{State.lock_holder or 'Another computer'} has the database locked. Close "
+                f"sortandpost.photos on that computer and try again."
             ).classes("text-sm text-amber-600")
 
         with _welcome_shell():
@@ -5948,8 +5950,9 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
 
                 with ui.step("library", title="Photo folders", icon="photo_library"):
                     ui.label(
-                        "Folders sortandpost scans for photos. Nothing in them is moved "
-                        "or renamed. Different computers can use different folders."
+                        "sortandpost.photos scans for photos. The folders are not moved or "
+                        "renamed. Different computers can have different folder locations as long "
+                        "as the same photos are synced to them"
                     ).classes("text-sm sp-muted max-w-2xl")
                     _library_roots_editor(
                         settings,
@@ -6036,16 +6039,16 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
             with summary:
                 if joined:
                     ui.label(
-                        "Shared settings come from your library — change any of them later "
-                        "in Settings."
+                        "sortandpost.photos is importing settings from your library. You can "
+                        "adjust them later in the Settings page"
                     ).classes("sp-muted pb-1")
                 with ui.grid(columns="auto 1fr").classes("gap-x-6 gap-y-1"):
                     for key, value in rows:
                         ui.label(key).classes("sp-faint")
                         ui.label(value).classes("break-all")
                 ui.label(
-                    "Scanning starts right away and runs in the background — you can "
-                    "browse while it works."
+                    "sortandpost.photos is scanning your library in the background. Feel free to "
+                    "click around while it works"
                 ).classes("sp-muted pt-2")
 
         stepper.on_value_change(lambda e: _render_summary() if e.value == "finish" else None)
@@ -6072,9 +6075,7 @@ def _welcome_folder_step(settings: Settings, joined: bool) -> None:
     if joined:
         ui.label(inspect_folder(str(paths.sync)).message).classes("text-sm max-w-2xl")
     else:
-        ui.label(
-            "A new library — its database, thumbnails and search index are kept here."
-        ).classes("text-sm max-w-2xl")
+        ui.label("Your database and other app data are stored here").classes("text-sm max-w-2xl")
     if paths.is_split:
         ui.label(f"This computer's private working files: {paths.local}").classes(
             "text-xs sp-faint break-all"
@@ -6176,7 +6177,7 @@ def run_setup(env: Env) -> None:
         _header(_WELCOME_URL, minimal=True)
         with _welcome_shell():
             _welcome_intro()
-            with _settings_card("Where should your library live?", "folder_shared", wide=True):
+            with _settings_card("Where should your database live?", "folder_shared", wide=True):
                 _shared_folder_intro()
 
                 def _use(ins: FolderInspection) -> None:
