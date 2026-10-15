@@ -55,12 +55,12 @@ photos.example.com {          # or: nas.local { tls internal ... }
 - [x] Dependency audit: `uv audit` is in the quality gate (no CI yet). Clean on 2026-10-14.
 - [x] Runs as a non-root user (P6a): `docker-entrypoint.sh` re-owns only `/data/local`, then
       drops to `PUID:PGID` (default 1000) with `setpriv`. `/library` stays the only photo mount.
-- [x] Helper agent hardening (Security.md **M2**, P6c): `/open` only runs the default app or
-      the one saved in Settings → Open with (read from `<local>/ui_prefs.json`); `/listdir`
-      is limited to library folders, home and the drive / app locations; `/health` no longer
-      lists folders. `--local-dir` / `--sync-dir` for the split compose mounts. Start at login:
-      `packaging/helper/` (launchd installer, Windows `.bat`). Settings → File-manager helper
-      shows status and the command (Docker only).
+- [x] ~~Helper agent hardening (P6c)~~ — **shelved 2026-10-15**: the host file-manager helper
+      (`tools/sortandpost_helper.py`, `packaging/helper/`) was removed for the first release as
+      too much setup. Under Docker the photo page's copy button copies each file's **network
+      path** instead (a per-folder `network` path in Settings → Library: `\\nas\photo` /
+      `smb://nas/photo`, spelled for the viewer's OS). The helper is in git history before
+      that commit if it comes back.
 - [x] Healthcheck (P6a): `GET /healthz` → `ok`, in the image and in compose.
 
 ## Validated (P6a, 2026-10-14, Docker Desktop on macOS arm64)
@@ -81,8 +81,9 @@ The NAS runs the container 24/7: it indexes new photos, runs CLIP and publishes 
 database to the shared folder. Laptops and desktops run the desktop app on the same shared
 folder (through Synology Drive) and borrow editing with **Take over editing** (P6d); when
 they quit, the NAS takes it back. Browse the NAS's own web UI from a phone or another computer
-only with a password and HTTPS ([HTTPS](#https)). There's no Reveal in Finder there (the helper
-needs Docker and the browser on one computer); Copy path works.
+only with a password and HTTPS ([HTTPS](#https)). There's no Reveal in Finder under Docker;
+set each library folder's network path in Settings → Library and the copy button hands
+your other computers a path they can open (`\\nas\photo\…` / `smb://nas/photo/…`).
 
 Set `PUID` / `PGID` to the owner of the photo and shared folders (`id <user>` over SSH),
 `DEVICE_NAME` to a stable name, and leave `LOCAL_DIR` unset (a Docker volume) or point it at

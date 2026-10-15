@@ -128,13 +128,6 @@ class Paths:
         """Per-machine UI preferences (theme, ...). Never synced."""
         return self.local / "ui_prefs.json"
 
-    @property
-    def helper_file(self) -> Path:
-        """Written by the optional host file-manager helper agent
-        (``tools/sortandpost_helper.py``): ``{port, token, ...}``. The web app
-        reads it to know whether/how to reach the helper. Never synced."""
-        return self.local / "helper.json"
-
     def provider_file(self, provider: str) -> Path:
         """Non-secret per-posting-provider state (``robopost.json``,
         ``postiz.json``): channel list + rate-limit log. API keys are NEVER

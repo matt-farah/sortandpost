@@ -122,7 +122,9 @@ def _is_empty(d: Path) -> bool:
         return False
 
 
-def inspect_folder(raw: str, *, local_root: Path | None = None) -> FolderInspection:
+def inspect_folder(
+    raw: str, *, local_root: Path | None = None, this_device: str | None = None
+) -> FolderInspection:
     """What happens if the user picks *raw* as the shared folder.
 
     * a sync tree itself (``config.yaml`` / ``sortandpost.db``) -> existing
@@ -150,7 +152,7 @@ def inspect_folder(raw: str, *, local_root: Path | None = None) -> FolderInspect
 
     for candidate in (chosen, chosen / "sync", chosen / NEW_LIBRARY_SUBDIR):
         if candidate.is_dir() and _is_sync_tree(candidate):
-            return _existing(raw, candidate)
+            return _existing(raw, candidate, this_device)
 
     if not chosen.exists() or _is_empty(chosen):
         return FolderInspection(
@@ -176,9 +178,9 @@ def _within(p: Path, root: Path) -> bool:
     return True
 
 
-def _existing(raw: str, sync_dir: Path) -> FolderInspection:
+def _existing(raw: str, sync_dir: Path, this_device: str | None = None) -> FolderInspection:
     photos = _count_photos(sync_dir / "sortandpost.db")
-    last_host = _lock_host(sync_dir / ".sortandpost.lock")
+    last_host = _lock_host(sync_dir / ".sortandpost.lock", this_device)
     devices = sorted(
         d.name.rsplit("-", 1)[0]
         for d in (sync_dir / "devices").glob("*")
@@ -217,12 +219,16 @@ def _count_photos(db: Path) -> int | None:
     return int(row[0]) if row else None
 
 
-def _lock_host(lock: Path) -> str | None:
+def _lock_host(lock: Path, this_device: str | None = None) -> str | None:
+    """The machine named in the lock, unless it's *this_device* (the wizard runs
+    with the library open, so this machine already holds the lock)."""
     try:
         data = json.loads(lock.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    host = data.get("hostname") if isinstance(data, dict) else None
+    if not isinstance(data, dict) or (this_device and data.get("device_id") == this_device):
+        return None
+    host = data.get("hostname")
     return host if isinstance(host, str) and host else None
 
 

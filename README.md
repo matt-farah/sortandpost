@@ -93,10 +93,12 @@ rating writes and the shared folder will fail with "permission denied". Docker D
 on a Mac or PC works with the default. `docker ps` shows the container as `healthy` once
 the web UI answers.
 
-**Reveal in Finder / Explorer under Docker Desktop** needs a small helper running on the
-same computer: see **Settings → File-manager helper** and
-[packaging/helper/README.md](packaging/helper/README.md). Docker.md covers the always-on NAS
-setup and bind-mount speed.
+**Opening photos under Docker.** A container can't open Finder or File Explorer, so the
+photo page's copy button copies the file's path instead. Give each library folder its
+**network path** in **Settings → Library** (e.g. `\\nas\photo` or `smb://nas.local/photo`)
+and it copies a path your other computers can open: `\\nas\photo\…` on Windows (paste in
+Explorer's address bar), `smb://nas/photo/…` on a Mac (Finder → Go → Connect to Server).
+Docker.md covers the always-on NAS setup and bind-mount speed.
 
 **Editing from a desktop app while Docker runs.** Only one computer edits at a time, and
 Docker usually holds editing. In the desktop app, click **Take over editing** in the top

@@ -20,7 +20,6 @@ import logging
 import os
 import re
 import secrets
-import shlex
 import subprocess
 import sys
 import threading
@@ -143,7 +142,6 @@ from sortandpost.db.tags import (
 )
 from sortandpost.desktop import control as desktop_control
 from sortandpost.grouping import PhotoGroup, parse_folder_sort
-from sortandpost.helper import HelperInfo, read_helper_info
 from sortandpost.indexer import scan_clip_once, scan_once
 from sortandpost.indexer.hydrate import hydrate_online_only
 from sortandpost.indexer.progress import PROGRESS, ProgressSnapshot
@@ -154,6 +152,9 @@ from sortandpost.library_roots import (
     clean_path,
     compose_volume_line,
     container_roots,
+    format_network_path,
+    network_parts,
+    parse_network_path,
     running_in_docker,
     save_roots,
     to_host_path,
@@ -735,7 +736,6 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
                     ui.icon(icon)
                     ui.label(name)
         with ui.row().classes("items-center gap-2 no-wrap"):
-            _inject_helper()
             achievements_ui.header_chip()
             _edit_lock_controls()
             if State.login_enabled:
@@ -868,22 +868,6 @@ def _notify_read_only_edit(e: Exception) -> None:
         return
     with suppress(RuntimeError):  # no page context (a background thread)
         ui.notify(f"Not saved: {State.lock_holder} is editing this library now", type="warning")
-
-
-def _current_helper() -> HelperInfo | None:
-    return read_helper_info(State.settings.paths) if State.settings is not None else None
-
-
-def _inject_helper() -> None:
-    """Hand the browser the running helper agent's ``{port, token}`` (if any) so
-    the Reveal / Open / Browse buttons can ``fetch`` it directly. The agent is on
-    the host; the server never talks to it."""
-    hi = _current_helper()
-    if hi is None:
-        ui.run_javascript("window.__spHelper = null;")
-        return
-    ui.run_javascript(f"window.__spHelper = {json.dumps({'port': hi.port, 'token': hi.token})};")
-    ui.label("🖥").classes("text-sm").tooltip("file-manager helper connected")
 
 
 def _status_bar() -> None:
@@ -1570,8 +1554,7 @@ def build_ui(settings: Settings) -> None:
         async def _do_bulk_reveal_or_open(open_mode: bool, app: str | None = None) -> None:
             """Reveal every selected photo in the host file manager, or open it
             in *app* (or the OS default app when ``app`` is ``None``) -- via
-            the native openers, or the host helper agent under Docker. Works
-            read-only: it doesn't touch the DB."""
+            the native openers. Works read-only: it doesn't touch the DB."""
             hashes = list(sel.ordered())
             if not hashes:
                 return
@@ -1584,16 +1567,8 @@ def build_ui(settings: Settings) -> None:
             if not host_paths:
                 ui.notify("No present copies to open on this machine.", type="warning")
                 return
-            helper = _current_helper()
-            endpoint = "open" if open_mode else "reveal"
             app_for = app if open_mode else None
-            if helper is not None:
-                res = await ui.run_javascript(
-                    _helper_action_js_multi(endpoint, host_paths, app_for), timeout=8.0
-                )
-                if not (res or {}).get("ok"):
-                    ui.notify((res or {}).get("error") or "helper error", type="warning")
-            elif reveal_supported():
+            if reveal_supported():
                 path_objs = [Path(p) for p in host_paths]
                 if not open_mode:
                     reveal_multiple_in_file_manager(path_objs)
@@ -1608,6 +1583,16 @@ def build_ui(settings: Settings) -> None:
                 ui.notify(
                     f"{missing} photo(s) have no present copy on this machine.", type="warning"
                 )
+
+        async def _bulk_copy_paths() -> None:
+            """Docker: copy the selected photos' paths, one per line -- network
+            paths where Settings has one for the folder (see :func:`_copy_paths`)."""
+            hashes = list(sel.ordered())
+            resolved = await nicegui_run.io_bound(resolve_sources, engine, hashes)
+            if not resolved:
+                ui.notify("No present copies of these photos.", type="warning")
+                return
+            await _copy_paths([p for p in resolved.values() if p], settings.library_roots)
 
         async def _bulk_reveal_or_open(open_mode: bool, app: str | None = None) -> None:
             count = len(sel.selected)
@@ -1665,10 +1650,15 @@ def build_ui(settings: Settings) -> None:
                 else:
                     ui.label("read-only").classes("text-xs text-amber-300")
                 ui.separator().props("vertical dark")
-                ui.button(icon="folder_open", on_click=lambda: _bulk_reveal_or_open(False)).props(
-                    "flat dense round"
-                ).tooltip("reveal in file manager")
-                _open_with_button(lambda app: _bulk_reveal_or_open(True, app))
+                if running_in_docker():
+                    ui.button(icon="content_copy", on_click=_bulk_copy_paths).props(
+                        "flat dense round"
+                    ).tooltip("copy file paths")
+                else:
+                    ui.button(
+                        icon="folder_open", on_click=lambda: _bulk_reveal_or_open(False)
+                    ).props("flat dense round").tooltip("reveal in file manager")
+                    _open_with_button(lambda app: _bulk_reveal_or_open(True, app))
                 _collection_add_button(
                     settings, lambda: list(sel.selected), label=None, on_added=sel.clear
                 )
@@ -2053,8 +2043,7 @@ def build_ui(settings: Settings) -> None:
                             "text-xs font-medium text-amber-600"
                         )
                         ui.label(missing.REASON_HINTS[missing_reason]).classes("text-xs sp-muted")
-                native_reveal = reveal_supported()
-                helper_info = _current_helper()
+                native_reveal = reveal_supported() and not running_in_docker()
                 for pp in paths:
                     elsewhere = path_scope is not None and not path_scope.judged(pp.path)
                     if elsewhere:
@@ -2068,7 +2057,6 @@ def build_ui(settings: Settings) -> None:
                         present=pp.present and not elsewhere,
                         note=note,
                         roots=settings.library_roots,
-                        helper=helper_info,
                         native_reveal=native_reveal,
                     )
 
@@ -3258,11 +3246,9 @@ def build_ui(settings: Settings) -> None:
                 with _settings_section("appearance"):
                     with _settings_card("Appearance", "palette", wide=True):
                         _theme_editor(settings, dark)
-                    with _settings_card("Open with", "open_in_new"):
-                        _open_with_app_editor(settings)
-                    if running_in_docker():
-                        with _settings_card("File-manager helper", "terminal", wide=True):
-                            _helper_panel(settings)
+                    if not running_in_docker():  # a container can't open apps on your computer
+                        with _settings_card("Open with", "open_in_new"):
+                            _open_with_app_editor(settings)
 
                 with (
                     _settings_section("profile"),
@@ -4562,31 +4548,16 @@ def _clip_model_editor(settings: Settings) -> None:
 
 async def _browse_folder(target: ui.input) -> None:
     """Folder picker that fills ``target`` from a real directory listing on this
-    computer instead of a typed path. Under Docker it goes through the host
-    file-manager helper agent (:mod:`sortandpost.helper`) straight from the
-    browser via ``window.__spHelper`` -- the server never talks to it; on a
-    native run it lists this process's own filesystem (:func:`_list_local`),
-    starting from home, the cloud-sync drives and mounted volumes. Callers
-    should only offer "Browse…" when :func:`_app_browse_available`."""
-    helper = _current_helper()
+    computer instead of a typed path: this (native) process lists its own
+    filesystem (:func:`_list_local`), starting from home, the cloud-sync drives
+    and mounted volumes. Callers should only offer "Browse…" when
+    :func:`_app_browse_available` (never under Docker -- the container can't see
+    the host)."""
 
     async def _list(path: str | None) -> dict[str, Any]:
-        if helper is not None:
-            js = (
-                "(async () => { const h = window.__spHelper; if (!h) return {entries: []};"
-                " const u = new URL('http://127.0.0.1:' + h.port + '/listdir');"
-                f" const p = {json.dumps(path)}; if (p) u.searchParams.set('path', p);"
-                " const r = await fetch(u, {headers: {'X-SP-Token': h.token}});"
-                " return await r.json(); })()"
-            )
-            try:
-                data = await ui.run_javascript(js, timeout=6.0)
-            except Exception:  # helper stopped mid-browse
-                data = None
-        else:
-            data = await nicegui_run.io_bound(
-                _list_local, Path(path) if path else None, include_files=False, folders=True
-            )
+        data = await nicegui_run.io_bound(
+            _list_local, Path(path) if path else None, include_files=False, folders=True
+        )
         return data if isinstance(data, dict) else {"entries": [], "parent": None}
 
     with (
@@ -4639,11 +4610,7 @@ def _list_local(
 ) -> dict[str, object]:
     """Directories (and, when *include_files*, files) under *path* on *this
     process's own* filesystem. Only meaningful on a native run -- a
-    container can't see the host, which is what the helper agent's
-    ``/listdir`` is for. Deliberately duplicates
-    ``tools/sortandpost_helper.py``'s ``list_dir``: that script must stay
-    stdlib-only and importable without the ``sortandpost`` package
-    installed, so it can't import this module either."""
+    container can't see the host."""
     if path is None and folders:
         # picking a folder (library / shared data): home, the cloud-sync
         # drives, and mounted volumes / drives
@@ -4723,40 +4690,22 @@ def _start_label(p: Path) -> str:
 
 
 def _app_browse_available() -> bool:
-    """Can :func:`_browse_app` show a real listing? Either the host helper
-    agent is connected (Docker), or this process itself runs natively on the
-    user's machine and can list its own filesystem directly."""
-    return _current_helper() is not None or not running_in_docker()
+    """Can :func:`_browse_app` / :func:`_browse_folder` show a real listing?
+    Only when this process runs natively on the user's machine."""
+    return not running_in_docker()
 
 
 async def _browse_app(target: ui.input) -> None:
     """Picker for the "Open with" app: like :func:`_browse_folder` but also
     lists files (an app is often a single file -- an ``.exe`` on Windows, an
     executable or ``.desktop`` on Linux) and treats a macOS ``.app`` bundle as
-    a selectable leaf rather than a folder to open. Goes through the host
-    helper agent's ``/listdir`` under Docker, same as :func:`_browse_folder`;
-    otherwise lists this (native) process's own filesystem directly -- no
-    external helper needed on a native run."""
-    helper = _current_helper()
+    a selectable leaf rather than a folder to open. Lists this (native)
+    process's own filesystem, like :func:`_browse_folder`."""
 
     async def _list(path: str | None) -> dict[str, Any]:
-        if helper is not None:
-            js = (
-                "(async () => { const h = window.__spHelper; if (!h) return {entries: []};"
-                " const u = new URL('http://127.0.0.1:' + h.port + '/listdir');"
-                f" const p = {json.dumps(path)}; if (p) u.searchParams.set('path', p);"
-                " u.searchParams.set('files', '1');"
-                " const r = await fetch(u, {headers: {'X-SP-Token': h.token}});"
-                " return await r.json(); })()"
-            )
-            try:
-                data = await ui.run_javascript(js, timeout=6.0)
-            except Exception:  # helper stopped mid-browse
-                data = None
-        else:
-            data = await nicegui_run.io_bound(
-                _list_local, Path(path) if path else None, include_files=True
-            )
+        data = await nicegui_run.io_bound(
+            _list_local, Path(path) if path else None, include_files=True
+        )
         return data if isinstance(data, dict) else {"entries": [], "parent": None}
 
     with (
@@ -4813,11 +4762,11 @@ def _library_roots_editor(
 
     A container cannot see the host filesystem or change its own bind-mounts, so
     "add a folder" here just records the entry and shows the ``docker-compose.yml``
-    line to add; the folder goes live after ``docker compose up -d``. When the
-    host helper agent is running, "Add folder" also gets a real native browser.
+    line to add; the folder goes live after ``docker compose up -d``. Each
+    folder can also carry its **network path** (how other computers reach it),
+    which the photo page's copy button uses.
     """
     roots: list[LibraryRoot] = list(settings.library_roots)
-    helper = read_helper_info(settings.paths)
     writable = State.write_mode == WriteMode.writable
     in_docker = running_in_docker()
     client = ui.context.client  # a real rescan outlasts the page; see _save_rescan
@@ -4881,9 +4830,38 @@ def _library_roots_editor(
                         sub = r.host if r.host == r.container else f"{r.host}  →  {r.container}"
                         if r.label or sub != r.host:
                             ui.label(sub).classes("truncate text-xs sp-faint")
+                        if in_docker:
+                            ui.label(
+                                f"network: {r.network}" if r.network else "no network path"
+                            ).classes("truncate text-xs sp-faint")
+                    if in_docker:
+                        ui.button(
+                            icon="edit", on_click=lambda _=None, x=r: _network_dialog(x)
+                        ).props("flat dense round size=sm").tooltip("set the network path")
                     ui.button(icon="close", on_click=lambda _=None, c=r.container: _drop(c)).props(
                         "flat dense round size=sm"
                     ).tooltip("remove")
+
+    def _network_dialog(root: LibraryRoot) -> None:
+        with ui.dialog() as dialog, ui.card().classes("w-[36rem] max-w-full gap-2"):
+            ui.label("Network path").classes("font-bold")
+            ui.label(root.label or root.host).classes("font-mono text-xs break-all sp-muted")
+            net_in = _network_input(root.network)
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                def _save() -> None:
+                    value = clean_path(net_in.value or "")
+                    if value and parse_network_path(value) is None:
+                        ui.notify(_NETWORK_HINT, type="warning")
+                        return
+                    root.network = value
+                    _persist()
+                    _render()
+                    dialog.close()
+
+                ui.button("Save", on_click=_save).props("color=primary")
+        dialog.open()
 
     def _next_mount_point() -> str:
         used = {r.container for r in roots}
@@ -4901,7 +4879,7 @@ def _library_roots_editor(
                 host_in = (
                     ui.input("Folder on this computer (host path)").props("dense").classes("flex-1")
                 )
-                if helper is not None or not in_docker:
+                if not in_docker:
                     ui.button(
                         "Browse…", icon="folder_open", on_click=lambda: _browse_folder(host_in)
                     ).props("flat dense")
@@ -4916,6 +4894,8 @@ def _library_roots_editor(
             )
             cont_in.set_visibility(in_docker)  # native: the folder is scanned directly
             label_in = ui.input("Label (optional)").props("dense").classes("w-full")
+            net_in = _network_input("")
+            net_in.set_visibility(in_docker)
             snippet = ui.code("", language="yaml").classes("w-full text-xs")
             snippet.set_visibility(in_docker)
 
@@ -4925,7 +4905,10 @@ def _library_roots_editor(
                     return None
                 cont = clean_path(cont_in.value or "") if in_docker else ""
                 return LibraryRoot(
-                    container=cont or host, host=host, label=(label_in.value or "").strip()
+                    container=cont or host,
+                    host=host,
+                    label=(label_in.value or "").strip(),
+                    network=clean_path(net_in.value or "") if in_docker else "",
                 )
 
             def _refresh() -> None:
@@ -4951,6 +4934,9 @@ def _library_roots_editor(
                     if r is None:
                         ui.notify("enter the folder path", type="warning")
                         return
+                    if r.network and parse_network_path(r.network) is None:
+                        ui.notify(_NETWORK_HINT, type="warning")
+                        return
                     roots[:] = [x for x in roots if x.container != r.container]
                     roots.append(r)
                     _persist()
@@ -4969,8 +4955,6 @@ def _library_roots_editor(
 
     with ui.row().classes("items-center gap-2"):
         ui.button("Add folder", icon="add", on_click=_add_dialog).props("flat dense")
-        if helper is not None:
-            ui.label("🖥 helper connected — Browse enabled").classes("text-xs text-emerald-600")
 
     if writable and rescan:
 
@@ -4984,6 +4968,21 @@ def _library_roots_editor(
         ui.button("Save & rescan", on_click=_save_rescan).props("color=primary")
 
     _render()
+
+
+_NETWORK_HINT = "Use a network share, e.g. \\\\nas\\photo\\Film or smb://nas/photo/Film"
+
+
+def _network_input(value: str) -> ui.input:
+    """The "network path" field for a library folder (Docker): how other
+    computers open the folder, so Copy path can hand them something that works."""
+    net_in = ui.input("Network path (optional)", value=value).props("dense").classes("w-full")
+    ui.label(
+        "How your other computers reach this folder, e.g.  \\\\nas\\photo\\Film  ·  "
+        "smb://nas.local/photo/Film. Copy path then copies each photo's network path "
+        "(Windows or Mac spelling, whichever computer clicks)."
+    ).classes("text-xs sp-faint").bind_visibility_from(net_in, "visible")
+    return net_in
 
 
 def _exclude_editor(settings: Settings, engine: Engine, *, autosave: bool = False) -> None:
@@ -5596,98 +5595,72 @@ def _photo_grid(min_px: int = 220) -> ui.grid:
     )
 
 
-def _helper_panel(settings: Settings) -> None:
-    """Settings -> File-manager helper (Docker only): is the host agent
-    (``tools/sortandpost_helper.py``) running, and the commands to start it, with
-    this container's real host folders filled in (compose passes them as
-    ``SORTANDPOST_HOST_LOCAL_DIR`` / ``SORTANDPOST_HOST_SYNC_DIR``)."""
-    ui.label(
-        "Docker can't open Finder or File Explorer on your computer. A small helper that runs "
-        "on the same computer as Docker Desktop does it, and lets Settings browse your folders. "
-        "On a NAS there's no screen to open, so use the Copy path buttons instead."
-    ).classes("text-xs sp-faint max-w-2xl")
-    status = ui.label().classes("text-sm")
+# Copy from the browser. navigator.clipboard only exists on a secure origin
+# (https or localhost); a NAS reached as http://nas:8080 isn't one, so fall back
+# to a hidden <textarea> + execCommand. The OS picks the spelling of a network
+# path: \\\\server\\share for Windows, smb://server/share for everyone else.
+_COPY_JS = """(async (win, other) => {
+  const p = (navigator.userAgentData && navigator.userAgentData.platform)
+    || navigator.platform || navigator.userAgent || "";
+  const text = /win/i.test(p) ? win : other;
+  try { await navigator.clipboard.writeText(text); return {ok: true, text}; } catch (e) {}
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.setAttribute("readonly", "");
+  ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) {}
+  ta.remove();
+  return {ok, text};
+})"""
 
-    def _refresh() -> None:
-        hi = read_helper_info(settings.paths)
-        if hi is not None:
-            status.set_text(f"🖥 Running (port {hi.port}). Reveal, Open and Browse use it.")
-            status.classes(replace="text-sm text-emerald-600")
-        else:
-            status.set_text("Not running. Reveal, Open and Browse are off; Copy path still works.")
-            status.classes(replace="text-sm text-amber-600")
 
-    _refresh()
-    ui.timer(5.0, _refresh)
-
-    host_local = os.environ.get("SORTANDPOST_HOST_LOCAL_DIR", "").strip()
-    host_sync = os.environ.get("SORTANDPOST_HOST_SYNC_DIR", "").strip()
-    if not host_local or not host_sync:
-        ui.label(
-            "This container's own data is in a Docker volume the helper can't reach. In .env, "
-            "set LOCAL_DIR to a folder on this computer (never inside a synced folder), then run "
-            "docker compose up -d."
-        ).classes("text-xs text-amber-600 max-w-2xl")
+async def _copy_text(windows: str, other: str | None = None, *, what: str = "path") -> None:
+    """Copy *windows* on a Windows browser, *other* (default: the same) on any
+    other; if the browser refuses, show the text to copy by hand."""
+    try:
+        res = await ui.run_javascript(
+            f"{_COPY_JS}({json.dumps(windows)}, {json.dumps(other or windows)})", timeout=5.0
+        )
+    except TimeoutError:
+        res = None
+    if isinstance(res, dict) and res.get("ok"):
+        ui.notify(f"{what} copied")
         return
-    folders = f"--local-dir {shlex.quote(host_local)} --sync-dir {shlex.quote(host_sync)}"
-    commands = [
-        ("Run it now", f"python3 tools/sortandpost_helper.py {folders}"),
-        ("Start it at login (macOS)", f"packaging/helper/install-macos.sh {folders}"),
-    ]
-    ui.label(
-        "Run these in the sortandpost folder (the one with docker-compose.yml). On Windows, "
-        "use packaging/helper/sortandpost-helper.bat (see packaging/helper/README.md)."
-    ).classes("text-xs sp-faint max-w-2xl")
-    for label, cmd in commands:
-        with ui.row().classes("items-center gap-2 no-wrap w-full"):
-            ui.label(label).classes("text-xs sp-muted w-44 shrink-0")
-            ui.label(cmd).classes("font-mono text-xs break-all flex-1")
-            ui.button(icon="content_copy", on_click=lambda c=cmd: _copy_path(c)).props(
-                "flat dense round size=xs"
-            ).tooltip("Copy")
+    text = res.get("text") if isinstance(res, dict) else None
+    with ui.dialog() as dlg, ui.card().classes("w-[40rem] max-w-full gap-2"):
+        ui.label(f"Copy the {what}").classes("font-semibold")
+        ui.label("Your browser didn't allow copying here -- select it and copy.").classes(
+            "text-xs sp-muted"
+        )
+        ui.textarea(value=text or other or windows).props("readonly autogrow").classes(
+            "w-full font-mono text-xs"
+        )
+        ui.button("Close", on_click=dlg.close).props("flat")
+    dlg.open()
 
 
-def _copy_path(path: str) -> None:
-    ui.clipboard.write(path)
-    ui.notify("path copied")
+def _network_spellings(paths: list[str], roots: list[LibraryRoot]) -> tuple[str, str]:
+    """(Windows, other) text for *paths* (container paths), one per line: each
+    file's network path where its folder has one (Settings -> Library), else
+    its path on the computer running the app."""
+    win: list[str] = []
+    other: list[str] = []
+    for p in paths:
+        parts = network_parts(p, roots)
+        if parts is None:
+            host = to_host_path(p, roots)
+            win.append(host)
+            other.append(host)
+        else:
+            win.append(format_network_path(parts, "windows"))
+            other.append(format_network_path(parts, "smb"))
+    return "\n".join(win), "\n".join(other)
 
 
-def _helper_action_js(endpoint: str, host_path: str, app: str | None = None) -> str:
-    """Client-side ``fetch`` of the host helper agent, returning ``{ok, error}``
-    so the Python handler can ``ui.notify`` the outcome. ``app`` (``/open``
-    only) picks a specific app instead of the OS default -- see
-    ``sortandpost.prefs.get_open_with_app``."""
-    body: dict[str, object] = {"path": host_path}
-    if app:
-        body["app"] = app
-    return (
-        "(async () => { const h = window.__spHelper;"
-        " if (!h) return {ok: false, error: 'helper not running'};"
-        f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
-        "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
-        f"   body: JSON.stringify({json.dumps(body)})}});"
-        "   const j = await r.json().catch(() => ({}));"
-        "   return {ok: r.ok, error: j.error}; }"
-        " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
-    )
-
-
-def _helper_action_js_multi(endpoint: str, host_paths: list[str], app: str | None = None) -> str:
-    """Same as :func:`_helper_action_js` but for the bulk ``{paths: [...]}}``
-    form of ``/reveal`` and ``/open``."""
-    body: dict[str, object] = {"paths": host_paths}
-    if app:
-        body["app"] = app
-    return (
-        "(async () => { const h = window.__spHelper;"
-        " if (!h) return {ok: false, error: 'helper not running'};"
-        f" try {{ const r = await fetch('http://127.0.0.1:' + h.port + '/{endpoint}',"
-        "   {method: 'POST', headers: {'X-SP-Token': h.token, 'Content-Type': 'application/json'},"
-        f"   body: JSON.stringify({json.dumps(body)})}});"
-        "   const j = await r.json().catch(() => ({}));"
-        "   return {ok: r.ok, error: j.error}; }"
-        " catch (e) { return {ok: false, error: 'helper not reachable'}; } })()"
-    )
+async def _copy_paths(paths: list[str], roots: list[LibraryRoot]) -> None:
+    win, other = _network_spellings(paths, roots)
+    await _copy_text(win, other, what="path" if len(paths) == 1 else f"{len(paths)} paths")
 
 
 def _app_label(app: str) -> str:
@@ -5713,44 +5686,41 @@ def _path_row(
     present: bool,
     note: str = "",
     roots: list[LibraryRoot],
-    helper: HelperInfo | None,
     native_reveal: bool,
 ) -> None:
     """One row in the photo page's Paths list. Shows the **host** path (translated
-    from the stored container path). Reveal / Open go through the host helper
-    agent under Docker, or the local openers on a native run; otherwise the Copy
-    button is the way in (paste into Finder's Go to Folder / Explorer's bar).
+    from the stored container path). Reveal / Open use the local openers on a
+    native run; under Docker the Copy button is the way in: it copies the file's
+    network path when its folder has one (Settings -> Library), spelled for the
+    viewer's OS, else the host path.
     *note* says why the file isn't usable here (a ``MissingReason``, or that
     the copy is on another computer); Reveal / Open are offered only when
     *present*."""
     host_path = to_host_path(path, roots)
+    net = network_parts(path, roots)
     with ui.row().classes("items-center gap-1"):
         with ui.column().classes("min-w-0 gap-0"):
             elsewhere = note == "another computer"
             ui.label(host_path + (f"  ({note})" if note else "")).classes(
                 "break-all text-xs " + ("sp-muted" if present or elsewhere else "text-red-500")
             )
-            if host_path != path:
+            if net is not None:
+                ui.label(f"network: {format_network_path(net, 'smb')}").classes(
+                    "break-all text-[10px] sp-faint"
+                )
+            elif host_path != path:
                 ui.label(f"container: {path}").classes("break-all text-[10px] sp-faint")
-        ui.button(icon="content_copy", on_click=lambda: _copy_path(host_path)).props(
+        ui.button(icon="content_copy", on_click=lambda: _copy_paths([path], roots)).props(
             "flat dense round size=xs"
-        ).tooltip("Copy path (paste into Finder's Go to Folder / Explorer's address bar)")
+        ).tooltip(
+            "Copy network path (paste into Finder's Go → Connect to Server / Explorer's "
+            "address bar)"
+            if net is not None
+            else "Copy path (paste into Finder's Go to Folder / Explorer's address bar)"
+        )
         if not present:
             return
-        if helper is not None:
-
-            async def _act(endpoint: str, app: str | None = None) -> None:
-                res = await ui.run_javascript(
-                    _helper_action_js(endpoint, host_path, app), timeout=6.0
-                )
-                if not (res or {}).get("ok"):
-                    ui.notify((res or {}).get("error") or "helper error", type="warning")
-
-            ui.button(icon="folder_open", on_click=lambda: _act("reveal")).props(
-                "flat dense round size=xs"
-            ).tooltip("Reveal in file manager")
-            _open_with_button(lambda app: _act("open", app), size="xs")
-        elif native_reveal:
+        if native_reveal:
             ui.button(
                 icon="folder_open", on_click=lambda: reveal_in_file_manager(Path(path))
             ).props("flat dense round size=xs").tooltip("Reveal in file manager")
@@ -6481,7 +6451,8 @@ def _welcome_folder_step(settings: Settings, joined: bool) -> None:
         ui.icon("folder_shared").classes("text-xl text-primary")
         ui.label(str(paths.sync)).classes("font-mono text-sm break-all")
     if joined:
-        ui.label(inspect_folder(str(paths.sync)).message).classes("text-sm max-w-2xl")
+        ins = inspect_folder(str(paths.sync), this_device=settings.device_id)
+        ui.label(ins.message).classes("text-sm max-w-2xl")
     else:
         ui.label("Your database and other app data are stored here").classes("text-sm max-w-2xl")
     if paths.is_split:
@@ -6598,10 +6569,12 @@ def run(settings: Settings) -> None:
     # A random per-machine secret in local/ signs the login and NiceGUI's storage
     # cookie -- not the device id, which is visible in sync/ (Security.md L1).
     secret = load_or_create_secret(settings.paths.local)
-    _install_server_guard(secret, settings.env.port)
     build_ui(settings)
     _install_desktop_control(settings)
     _install_healthz()
+    # Last: Starlette runs the most recently added middleware first, so the guard
+    # wraps everything build_ui added (the onboarding redirect included).
+    _install_server_guard(secret, settings.env.port)
     ui.run(
         host=settings.env.host,
         port=settings.env.port,

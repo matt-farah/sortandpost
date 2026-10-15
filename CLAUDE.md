@@ -239,7 +239,6 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
     sortandpost.db (+ -wal/-shm/-journal while running)   # the working copy the app runs against
     device.json                # {"device_id": "<random>", "hostname": "..."}  created on first run
     publish_state.json         # last published DB generation counter + hash
-    helper.json                # {port, token, ...} — written by the optional host file-manager agent
     <provider>.json            # robopost.json / postiz.json: channel list + rate-limit log — NO secrets (keys: OS keychain)
     post_exports/<post_id>/    # temporary clean JPEGs for an upload; removed after the send
     models/                    # downloaded CLIP weights
@@ -268,12 +267,16 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
 ### Library folders are per-device
 
 `sync/devices/<slug(hostname)>-<device_id[:8]>/library.json` holds this machine's
-library folders as `{"roots": [{container, host, label}, …]}`:
+library folders as `{"roots": [{container, host, label, network?}, …]}`:
 
 - `container` — the path the **scanner** walks (a Docker bind-mount target,
   usually `/library`; on a native run just the real folder).
-- `host` — the real path on *this* computer, used for display, "copy path", and
-  the file-manager helper. Same as `container` when running natively.
+- `host` — the real path on *this* computer, used for display and "copy path".
+  Same as `container` when running natively. A new Docker container registers
+  `/library` with `host` = compose's `SORTANDPOST_HOST_LIBRARY_DIR` (= `PHOTO_LIBRARY`),
+  never the shared `config.yaml` seed (that's another machine's paths).
+- `network` — optional (Docker; Settings → Library): how other computers reach the
+  folder, `\\nas\photo` or `smb://nas/photo`.
 
 It rides in `sync/` so the sync tool backs it up, but a device only ever writes
 its **own** subfolder, so two devices never collide (unlike `config.yaml`). The
@@ -282,24 +285,17 @@ adopts the existing folder. `config.yaml`'s `library_roots` key is now only a
 one-time seed for this file on first boot after upgrading. Edit roots in the
 Settings page. See `sortandpost.library_roots`.
 
-### File-manager helper (optional)
+### Opening files under Docker: copy the network path
 
-Under Docker the server is a Linux container with no host GUI, so "Reveal in
-Finder / File Explorer" and the native folder browser need a small agent run on
-the **host**, outside Docker (Docker Desktop only — useless on a NAS):
-`python3 tools/sortandpost_helper.py --local-dir <LOCAL_DIR> --sync-dir <SYNC_DIR>`
-(or `--app-data <folder>` for a single-folder tree). It listens on `127.0.0.1`, writes
-`<local>/helper.json` (`{port, token}`, seen by the container through the `/data/local`
-mount, so `LOCAL_DIR` must be a host folder), and the browser calls it directly.
-Token-gated (`/health` excepted, and it lists nothing), CORS-restricted to localhost
-origins, `/reveal` + `/open` confined to registered `host` roots, `/open` runs only the OS
-default or the Open-with app it reads itself from `<local>/ui_prefs.json` (a request can't
-name a program — Security.md M2), `/listdir` confined to roots + home + drive / app
-folders. Start at login: `packaging/helper/` (macOS launchd installer, Windows `.bat`).
-Settings → File-manager helper (Docker only, `app._helper_panel`) shows status and the
-command with compose's `SORTANDPOST_HOST_LOCAL_DIR` / `_SYNC_DIR` filled in. Everything
-degrades gracefully to a "copy host path" button when the agent isn't running.
-See `sortandpost.helper` (server-side reader) + `tools/sortandpost_helper.py`.
+A container has no host GUI, so under Docker there is no Reveal / Open / folder
+Browse. The photo page's copy button (and the bulk toolbar's) copies each file's
+**network path** when its library folder has one (`library_roots.network_parts` /
+`format_network_path`): the browser picks the spelling — `\\server\share\…` on
+Windows (Explorer's address bar), `smb://server/share/…` elsewhere (Finder → Connect to
+Server). Without one it copies the host path. Copying works over plain-http LAN too
+(`app._COPY_JS`: `navigator.clipboard`, else a `<textarea>` + `execCommand`, else a
+dialog to copy by hand). The host file-manager helper agent (V3 P6c) was **shelved
+2026-10-15** as too much setup for a first release — it's in git history before that.
 
 `config.yaml` (created from a template on first boot):
 

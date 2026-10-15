@@ -13,7 +13,10 @@ from sortandpost.library_roots import (
     compose_volume_line,
     container_roots,
     device_dir,
+    format_network_path,
     load_roots,
+    network_parts,
+    parse_network_path,
     save_roots,
     to_host_path,
 )
@@ -163,3 +166,51 @@ def test_load_cleans_quoted_paths(paths: Paths) -> None:
         json.dumps({"roots": rows}), encoding="utf-8"
     )
     assert load_roots(paths, DEV, HOST)[0].host == "/Users/matt/Matt Portfolio"
+
+
+# --- network paths (Docker copy) --------------------------------------------
+
+
+def test_network_path_round_trips_and_is_optional(paths: Paths) -> None:
+    save_roots(
+        paths,
+        DEV,
+        HOST,
+        [
+            LibraryRoot("/library", "/volume1/photo", network="\\\\nas\\photo"),
+            LibraryRoot("/x", "/x"),
+        ],
+    )
+    raw = json.loads((device_dir(paths, DEV, HOST) / "library.json").read_text())
+    assert "network" not in raw["roots"][1]  # unset -> not written
+    got = load_roots(paths, DEV, HOST)
+    assert got[0].network == "\\\\nas\\photo" and got[1].network == ""
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [
+        ("\\\\nas\\photo\\Film", ("nas", "photo", "Film")),
+        ("//nas/photo/", ("nas", "photo")),
+        ("smb://me@nas.local/photo/My%20Film", ("nas.local", "photo", "My Film")),
+        ('"smb://nas:445/photo"', ("nas:445", "photo")),
+        ("\\\\nas", None),  # no share
+        ("/volume1/photo", None),  # a local path, not a share
+        ("smb://nas/photo/../etc", None),
+    ],
+)
+def test_parse_network_path(raw: str, want: tuple[str, ...] | None) -> None:
+    assert parse_network_path(raw) == want
+
+
+def test_network_path_of_a_photo_in_both_spellings() -> None:
+    roots = [
+        LibraryRoot("/library", "/volume1/photo", network="smb://nas/photo"),
+        LibraryRoot("/library/1", "/volume1/scans"),  # no network path
+    ]
+    parts = network_parts("/library/Film 2024/a b.jpg", roots)
+    assert parts == ("nas", "photo", "Film 2024", "a b.jpg")
+    assert format_network_path(parts, "windows") == "\\\\nas\\photo\\Film 2024\\a b.jpg"
+    assert format_network_path(parts, "smb") == "smb://nas/photo/Film%202024/a%20b.jpg"
+    assert network_parts("/library/1/scan.tif", roots) is None  # longest prefix, unset
+    assert network_parts("/elsewhere/a.jpg", roots) is None
