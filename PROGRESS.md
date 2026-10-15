@@ -1,11 +1,14 @@
 # sortandpost — build progress & resume notes
 
 _Last updated: 2026-10-14 (V3 P6d editing checkout)._
-_Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
+_Working branch: `main`. V3 above the cut line + P6d merged; PRs up to #63 merged._
 
-> **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
+> **▶️ Next:** **V3 P6a — Docker validate + harden** (Sonnet; row in `V3Plan.md`, notes in
+> `Docker.md`). Includes: under Docker, "Download & index" can't hydrate online-only library
+> photos (they read as I/O errors through the bind mount), so point it at "Always keep on this
+> device" instead (Docker.md → "Cloud folders and Docker Desktop"). Then P6b login (Opus).
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
-> decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
+> decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
 
 ## 🔁 2026-10-14 — V3 P6d: editing checkout, Docker ↔ desktop (branch `v3-p6d-editing-checkout`)
 
