@@ -105,10 +105,18 @@ def _run_continuous(settings: Settings, *, watch: bool) -> int:
 
     loop_cfg = IndexerLoopConfig.from_settings(settings)
     loop_cfg.watch = watch
+
+    def _is_writable() -> bool:
+        # Asked between files, so a handover (another computer pressed "Take
+        # over editing") has nothing in flight to stop first.
+        if manager.maybe_hand_over():
+            print(f"handed editing to {manager.handed_to}; waiting", file=sys.stderr)
+        return manager.refresh() is WriteMode.writable
+
     try:
         run_indexer(
             settings,
-            is_writable=lambda: manager.refresh() is WriteMode.writable,
+            is_writable=_is_writable,
             stop=stop,
             loop_config=loop_cfg,
         )

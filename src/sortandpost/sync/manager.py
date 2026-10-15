@@ -9,7 +9,22 @@ Lifecycle:
   thread that heartbeats the lock and publishes when the DB is dirty & idle.
 * :meth:`refresh` — re-check the lock; a read-only instance promotes itself once
   the holder's lock is free or stale.
-* :meth:`stop` — final publish, release the lock, join the thread.
+* :meth:`stop` — final publish, release the lock (rewritten as a handoff to
+  anyone, so the next writer waits for this publish to sync), join the thread.
+
+Editing checkout (an always-on writer such as a Docker server would otherwise
+keep everyone else read-only forever; :mod:`sortandpost.sync.handoff`):
+
+* requester — :meth:`request_edit` writes its own request file; :meth:`refresh`
+  keeps it fresh, notices a "Keep editing" answer, and takes the lock once it is
+  granted to us *and* our ``sync/sortandpost.db`` has caught up to the grant's
+  generation.
+* holder — :meth:`incoming_request` reports the oldest live request and the
+  seconds left of its grace period; :meth:`deny` answers "Keep editing";
+  :meth:`maybe_hand_over` publishes and rewrites the lock as a grant once the
+  grace is over (the caller stops its indexer first).
+* a read-only machine doesn't reclaim a free lock while another machine's
+  request is pending, so the requester gets it.
 
 Every timestamp goes through an injected clock so the whole thing is testable
 without real time.
@@ -18,13 +33,16 @@ without real time.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import logging
 import socket
 import threading
+from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Concatenate
 
 from sqlalchemy.engine import Engine
 from sqlmodel import Session
@@ -33,10 +51,20 @@ from sortandpost.config import Settings
 from sortandpost.db import make_engine
 from sortandpost.db.meta import bump_generation
 from sortandpost.sync.clock import Clock, isoformat, utcnow
+from sortandpost.sync.handoff import (
+    EditRequest,
+    clear_request,
+    new_request,
+    read_requests,
+    write_request,
+)
 from sortandpost.sync.lock import (
     LockInfo,
-    clear_lock,
-    held_by_other,
+    LockStatus,
+    handoff_lock,
+    is_stale,
+    lock_status,
+    machine_name,
     new_lock,
     read_lock,
     write_lock,
@@ -66,6 +94,20 @@ class WriteMode(StrEnum):
     read_only = "read-only"
 
 
+def _locked[**P, R](
+    fn: Callable[Concatenate[SyncManager, P], R],
+) -> Callable[Concatenate[SyncManager, P], R]:
+    """Serialize a public method: the lock watch, the heartbeat thread and UI
+    clicks all call in, and a handover must not interleave with a publish."""
+
+    def wrapper(self: SyncManager, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        with self._mutex:
+            return fn(self, *args, **kwargs)
+
+    functools.update_wrapper(wrapper, fn)
+    return wrapper
+
+
 class SyncManager:
     def __init__(
         self,
@@ -89,15 +131,30 @@ class SyncManager:
         self.last_merge: MergeSummary | None = None
 
         self._stop = threading.Event()
+        self._mutex = threading.RLock()
         self._thread: threading.Thread | None = None
         self._publishes_since_snapshot = 0
         self._publish_count = 0
         self._last_publish_hash: str | None = None
         self._last_publish_at: datetime | None = None
 
+        # editing checkout -- requester side
+        self.my_request: EditRequest | None = None
+        self._request_beat_at: datetime | None = None
+        self.denied_by: str | None = None  # the holder answered "Keep editing"
+        # (our sync/ DB generation, the handoff's) while a handoff to us waits
+        # for the sync tool to deliver the database
+        self.waiting_for: tuple[int, int] | None = None
+        # holder side
+        self._seen_requests: dict[tuple[str, str], datetime] = {}
+        self._yielding = False
+        self.handed_to: str | None = None  # who we last handed editing to
+        self.lost_lock_to: str | None = None  # another machine's lock replaced ours
+
     # ------------------------------------------------------------------ #
     # public lifecycle
     # ------------------------------------------------------------------ #
+    @_locked
     def start(self, *, background: bool = True) -> WriteMode:
         self.paths.ensure_dirs()
         mode = self._acquire()
@@ -112,10 +169,13 @@ class SyncManager:
         log.info("sync started in %s mode (lock held by %s)", mode, self._holder_name())
         return mode
 
+    @_locked
     def refresh(self) -> WriteMode:
-        """Re-check the lock; promote read-only -> writable when it frees up."""
+        """Re-check the lock; promote read-only -> writable when it frees up
+        (or is handed to us and our copy of the published DB has caught up)."""
         if self.mode is WriteMode.writable:
             return self.mode
+        self._beat_request()
         if self._acquire() is WriteMode.writable:
             self.last_merge = self._merge_conflicts()
             self._reconcile_generation()
@@ -125,10 +185,138 @@ class SyncManager:
             self._pull_if_newer()
         return self.mode
 
+    @property
+    def writes_open(self) -> bool:
+        """May user edits be written right now? False while read-only and
+        while handing over (between "stop the indexer" and the grant)."""
+        return self.mode is WriteMode.writable and not self._yielding
+
+    # ------------------------------------------------------------------ #
+    # editing checkout -- requester side
+    # ------------------------------------------------------------------ #
+    @_locked
+    def request_edit(self) -> None:
+        """Ask the current writer to hand editing over ("Take over editing")."""
+        if self.mode is WriteMode.writable:
+            return
+        now = self._clock()
+        self.my_request = new_request(device_id=self.device_id, hostname=self.hostname, now=now)
+        write_request(self.paths.locks_dir, self.my_request)
+        self._request_beat_at = now
+        self.denied_by = None
+
+    @_locked
+    def cancel_request(self) -> None:
+        if self.my_request is not None:
+            clear_request(self.paths.locks_dir, self.device_id)
+        self.my_request = None
+        self._request_beat_at = None
+        self.waiting_for = None
+
+    def _beat_request(self) -> None:
+        req = self.my_request
+        if req is None:
+            return
+        now = self._clock()
+        last = self._request_beat_at
+        if last is not None and (now - last).total_seconds() < self.cfg.lock_heartbeat_sec:
+            return
+        self.my_request = dataclasses.replace(req, heartbeat_at=isoformat(now))
+        write_request(self.paths.locks_dir, self.my_request)
+        self._request_beat_at = now
+
+    def _other_requests(self, now: datetime) -> list[EditRequest]:
+        """Live requests from other machines, oldest first."""
+        return [
+            r
+            for r in read_requests(self.paths.locks_dir)
+            if r.device_id != self.device_id and r.is_fresh(now, self.cfg.lock_stale_after_sec)
+        ]
+
+    # ------------------------------------------------------------------ #
+    # editing checkout -- holder side
+    # ------------------------------------------------------------------ #
+    @_locked
+    def incoming_request(self) -> tuple[EditRequest, float] | None:
+        """The oldest live request we haven't refused, and the seconds left of
+        its grace period (counted on our clock from when we first saw it)."""
+        if self.mode is not WriteMode.writable:
+            return None
+        now = self._clock()
+        lock = self.lock_holder
+        for req in self._other_requests(now):
+            if (
+                lock is not None
+                and lock.denied_device == req.device_id
+                and lock.denied_request_at == req.requested_at
+            ):
+                continue
+            seen = self._seen_requests.setdefault((req.device_id, req.requested_at), now)
+            left = self.cfg.handoff_grace_sec - (now - seen).total_seconds()
+            return req, max(0.0, left)
+        return None
+
+    @_locked
+    def deny(self, req: EditRequest) -> None:
+        """ "Keep editing": tell *req*'s machine, through our lock, that we said no."""
+        if self.mode is not WriteMode.writable or self.lock_holder is None:
+            return
+        lock = dataclasses.replace(
+            self.lock_holder,
+            denied_device=req.device_id,
+            denied_request_at=req.requested_at,
+        )
+        write_lock(self.paths.lock_file, lock)
+        self.lock_holder = lock
+
+    @_locked
+    def maybe_hand_over(self, prepare: Callable[[], None] | None = None) -> bool:
+        """Hand editing over if a request's grace period is over. *prepare*
+        runs first (writes are already closed): the app stops its indexer
+        there. Returns whether we handed over."""
+        got = self.incoming_request()
+        if got is None or got[1] > 0:
+            return False
+        req = got[0]
+        self._yielding = True
+        try:
+            if prepare is not None:
+                prepare()
+            self._yield_to(req)
+        finally:
+            self._yielding = False
+        return True
+
+    def _yield_to(self, req: EditRequest) -> None:
+        if self.mode is not WriteMode.writable or self.lock_holder is None:
+            return
+        self.publish(force=True)
+        now = self._clock()
+        generation = read_generation(self.paths.working_db)
+        grant = handoff_lock(
+            self.lock_holder, to=req.device_id, hostname=req.name, generation=generation, now=now
+        )
+        write_lock(self.paths.lock_file, grant)
+        self.lock_holder = grant
+        self.mode = WriteMode.read_only
+        self.handed_to = req.name
+        self._seen_requests.clear()
+        log.info("handed editing to %s at db_generation %d", req.name, generation)
+
+    @_locked
     def heartbeat(self) -> None:
         if self.mode is not WriteMode.writable or self.lock_holder is None:
             return
         now = self._clock()
+        current = read_lock(self.paths.lock_file)
+        if (
+            current is not None
+            and current.device_id != self.device_id
+            and not current.is_handoff
+            and not is_stale(current, now=now, stale_after_sec=self.cfg.lock_stale_after_sec)
+        ):
+            self._lose_lock(current)
+            return
         refreshed = dataclasses.replace(
             self.lock_holder,
             heartbeat_at=isoformat(now),
@@ -137,6 +325,7 @@ class SyncManager:
         write_lock(self.paths.lock_file, refreshed)
         self.lock_holder = refreshed
 
+    @_locked
     def publish(self, *, force: bool = False) -> bool:
         """Publish the working DB to ``sync/`` if it is dirty and idle.
 
@@ -200,12 +389,15 @@ class SyncManager:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
-        if self.mode is WriteMode.writable:
-            try:
-                self.publish(force=True)
-            finally:
-                clear_lock(self.paths.lock_file, device_id=self.device_id)
-        self.mode = WriteMode.read_only
+        with self._mutex:
+            if self.mode is WriteMode.writable:
+                try:
+                    self.publish(force=True)
+                finally:
+                    self._release()
+            if self.my_request is not None:
+                self.cancel_request()
+            self.mode = WriteMode.read_only
         if self._external_engine is None and self._engine is not None:
             self._engine.dispose()
             self._engine = None
@@ -216,12 +408,21 @@ class SyncManager:
     def _acquire(self) -> WriteMode:
         now = self._clock()
         info = read_lock(self.paths.lock_file)
-        if held_by_other(
+        self._note_denial(info)
+        status = lock_status(
             info,
             device_id=self.device_id,
             now=now,
             stale_after_sec=self.cfg.lock_stale_after_sec,
-        ):
+            published_generation=read_generation(self.paths.published_db),
+        )
+        self.waiting_for = None
+        if status is LockStatus.waiting and info is not None:
+            self.waiting_for = (
+                read_generation(self.paths.published_db),
+                info.handoff_generation,
+            )
+        if status is not LockStatus.free or self._defer_to_requester(info, now):
             self.lock_holder = info
             self.mode = WriteMode.read_only
             return self.mode
@@ -234,7 +435,66 @@ class SyncManager:
         write_lock(self.paths.lock_file, lock)
         self.lock_holder = lock
         self.mode = WriteMode.writable
+        if self.my_request is not None:
+            self.cancel_request()
+        self.handed_to = None
+        self.lost_lock_to = None
+        self._seen_requests.clear()
         return self.mode
+
+    def _note_denial(self, info: LockInfo | None) -> None:
+        req = self.my_request
+        if (
+            req is not None
+            and info is not None
+            and info.denied_device == self.device_id
+            and info.denied_request_at == req.requested_at
+        ):
+            self.denied_by = machine_name(info.hostname, info.device_id)
+            self.cancel_request()
+
+    def _defer_to_requester(self, info: LockInfo | None, now: datetime) -> bool:
+        """Leave a free lock alone while another machine is asking for it --
+        unless it was handed to us, or we're asking too."""
+        if self.my_request is not None:
+            return False
+        if info is not None and info.is_handoff and info.handoff_to == self.device_id:
+            return False
+        if info is not None and info.device_id == self.device_id and not info.is_handoff:
+            return False  # our own lock (we restarted)
+        return bool(self._other_requests(now))
+
+    def _release(self) -> None:
+        """Rewrite our lock as a handoff to anyone at the final generation."""
+        info = read_lock(self.paths.lock_file)
+        if info is None or info.device_id != self.device_id or self.lock_holder is None:
+            return
+        released = handoff_lock(
+            self.lock_holder,
+            to="",
+            hostname="",
+            generation=read_generation(self.paths.working_db),
+            now=self._clock(),
+        )
+        write_lock(self.paths.lock_file, released)
+        self.lock_holder = released
+
+    def _lose_lock(self, winner: LockInfo) -> None:
+        """Another machine's live lock replaced ours (both took a free lock
+        before the sync tool showed each the other's). Step down, and leave
+        our working DB in ``sync/`` as a conflict copy so the next promotion's
+        merge folds our unpublished edits in."""
+        name = machine_name(winner.hostname, winner.device_id)
+        log.warning("write lock lost to %s; stepping down to read-only", name)
+        stamp = self._clock().strftime("%Y%m%d-%H%M%S")
+        copy = self.paths.sync / f"sortandpost ({self.hostname} lost lock {stamp}).db"
+        try:
+            atomic_publish(self.paths.working_db, copy, device_id=self.device_id)
+        except OSError:
+            log.exception("could not save the working DB as a conflict copy")
+        self.lock_holder = winner
+        self.mode = WriteMode.read_only
+        self.lost_lock_to = name
 
     def _merge_conflicts(self) -> MergeSummary | None:
         copies = find_conflict_copies(self.paths.sync)
@@ -385,8 +645,15 @@ class SyncManager:
         )
 
     def _holder_name(self) -> str:
-        if self.lock_holder is None:
+        lock = self.lock_holder
+        if lock is None:
             return "nobody"
-        if self.lock_holder.device_id == self.device_id:
+        if lock.is_handoff:
+            if lock.handoff_to == "":
+                return "nobody"
+            if lock.handoff_to == self.device_id:
+                return f"this machine ({self.hostname})"
+            return machine_name(lock.handoff_hostname, lock.handoff_to or "")
+        if lock.device_id == self.device_id:
             return f"this machine ({self.hostname})"
-        return self.lock_holder.hostname or self.lock_holder.device_id
+        return machine_name(lock.hostname, lock.device_id)

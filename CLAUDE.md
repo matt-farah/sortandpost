@@ -250,7 +250,8 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
     relocated.json             # this local/ was moved out of a sync tool's folder (sortandpost.relocate)
   sync/                        # user points OneDrive / Drive / Synology / Dropbox HERE
     sortandpost.db             # published snapshot of the DB — the cross-machine source of truth
-    .sortandpost.lock          # {device_id, hostname, pid, acquired_at, heartbeat_at, db_generation}
+    .sortandpost.lock          # {device_id, hostname, pid, acquired_at, heartbeat_at, db_generation, handoff_*, denied_*}
+    locks/request-<device_id[:8]>.json                    # "Take over editing" requests, one per asking device
     config.yaml
     devices/<slug(hostname)>-<device_id[:8]>/library.json # PER-DEVICE library folders (see below)
     devices/<…>/achievements.json                         # PER-DEVICE achievement unlocks (union = truth)
@@ -381,6 +382,38 @@ never rebuilds. Third-party sync tools corrupt SQLite files that are written in 
   tag editors, and CLIP approve/reject are disabled with a persistent banner naming the machine
   that holds the lock. The app re-checks the lock periodically and promotes itself to writable
   once the lock is free or stale.
+
+### Editing checkout (V3 P6d; `sync.handoff`, `SyncManager`, `app._edit_lock_controls`)
+
+An always-on writer (a Docker server) would keep every other machine read-only forever, so
+editing can be **handed over**, through `sync/` files only (no network link between instances):
+
+1. **Request** — the header's **Take over editing** writes `sync/locks/request-<id8>.json`
+   (`{device_id, hostname, requested_at, heartbeat_at}`; re-stamped while waiting, ignored once
+   stale). Requesters never write the lock file: only its holder does.
+2. **Grace** — the holder's lock watch (every 3 s) shows "<machine> wants to edit · handing
+   over in Ns" + **Keep editing** (`sync.handoff_grace_sec`, 30). Keep editing writes
+   `denied_device` / `denied_request_at` into the holder's lock; the requester shows "kept
+   editing". Unattended, it hands over when the grace ends.
+3. **Yield** (`maybe_hand_over`) — writes close (`writes_open` → False), the indexer is stopped
+   and joined (`app._stop_indexer`), a forced publish, then the lock is rewritten as a **grant**:
+   `handoff_to=<device>`, `handoff_generation=<published gen>` (not heartbeated).
+4. **Take** — the requester promotes only when its `sync/sortandpost.db` has
+   `db_generation >= handoff_generation` (the sync tool may deliver the lock before the DB),
+   or once the grant is stale (`lock_status` → `waiting` until then; header shows "waiting
+   for the library to sync"). A tab reloads when its machine gains or loses editing.
+5. **Return** — `stop()` no longer deletes the lock: it writes a **release** (`handoff_to=""`)
+   carrying the final generation, so the next writer waits for that publish too. A read-only
+   machine that isn't asking leaves a free lock alone while another machine's request is live.
+6. **Races** — `heartbeat()` reads the lock first; another device's live lock means we lost a
+   simultaneous take: step down and save the working DB as a `sortandpost (<host> lost lock
+   <ts>).db` conflict copy for the next promotion's merge.
+
+The **write guard** (`sync.changelog.set_write_guard`, installed by the web app) makes
+`record_change`, `delete_photos` and `put_back_batch` raise `ReadOnlyError` (a "Not saved"
+toast) when this machine isn't the writer, so an edit racing a handover never lands in a working
+DB the next pull overwrites. CLIs and tests leave it unset. The indexer CLI hands over between
+files. Mixed versions: an older app reads a release as a live lock until it goes stale (5 min).
 
 ### Conflict-copy merge
 
@@ -818,9 +851,22 @@ How they're applied:
 - One service `app` in `docker-compose.yml`. Base `python:3.12-slim` + `exiftool`, `libraw`,
   build deps.
 - Mounts: `${PHOTO_LIBRARY}:/library:rw` (rw is required for EXIF writeback; only the metadata
-  engine ever writes there), `${APP_DATA}:/data:rw`. Multiple libraries ⇒ more mounts
-  (`/library/0`, `/library/1`, …) plus `library_roots` in config.
-- Port `${PORT:-8080}:8080`.
+  engine ever writes there); the shared folder `${SYNC_DIR}:/data/sync:rw`; and the container's
+  own `local/` on a separate mount, `${LOCAL_DIR:-sortandpost-local}:/data/local` (a named
+  volume by default) — never inside a synced folder. Multiple libraries ⇒ more mounts
+  (`/library/0`, `/library/1`, …) registered in Settings.
+- `hostname: ${DEVICE_NAME:-sortandpost-docker}` — the name other machines see in "read-only ·
+  <name>" (a container's default hostname is a random id).
+- Port `${BIND:-127.0.0.1}:${PORT:-8080}:8080` — localhost only until the P6b login exists.
+- Two shapes, same compose: **Synology** (Container Manager; `SYNC_DIR` is the NAS's own
+  shared folder, desktop apps reach it through Synology Drive) and **Docker Desktop on a
+  Mac / PC** (`SYNC_DIR` inside Google Drive / OneDrive, kept "available offline"). Desktop apps
+  borrow editing with the checkout above; Docker reclaims it when they quit.
+- **Online-only files can't be read through Docker Desktop's bind mount** (an I/O error; it
+  never makes the sync client download them). In setup B the shared folder must stay fully
+  downloaded. Under Docker, `sync.online_only.find_online_only` checks `sync/` at startup and
+  every 5 min (`app._start_online_only_watch`) and shows a banner + Settings row naming the
+  host folder (`SORTANDPOST_HOST_SYNC_DIR`, set by compose).
 - CLIP weights: mount `/data/local/models` as the cache so the image stays small and the model
   is swappable. (Baking weights into the image is an allowed alternative — document whichever is
   chosen.)

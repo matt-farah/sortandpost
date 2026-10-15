@@ -1,11 +1,35 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-14 (V3 P10 rebuild AI index)._
+_Last updated: 2026-10-14 (V3 P6d editing checkout)._
 _Working branch: `main`. All V2 phases merged (P7 → V3); PRs up to #47 merged._
 
 > **▶️ Next:** plan **V3** (`V3.md`). Pre-V3 cleanup is done (#48, #49, Keychain fix + 2.0.0).
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md) and don't block V3. Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🔁 2026-10-14 — V3 P6d: editing checkout, Docker ↔ desktop (branch `v3-p6d-editing-checkout`)
+
+- **Problem:** an always-on Docker writer renews the lock forever, so every desktop app stayed
+  read-only. **Fix:** request → grace → grant → take, through `sync/` files only
+  (`sync/handoff.py`, `SyncManager.request_edit / incoming_request / deny / maybe_hand_over`).
+  The header has **Take over editing** / **Keep editing** / **Cancel** / **Ask again** buttons
+  (`app._edit_lock_controls`); a tab reloads when its machine gains or loses editing.
+- **Lock changes** (`sync/lock.py`): `handoff_to` / `handoff_generation` (grant, or release
+  `""` on quit, which no longer deletes the lock), `denied_*`; `lock_status()` makes a
+  taker wait until its synced DB reaches the handoff generation (or the handoff goes
+  stale). `heartbeat()` steps down when another live lock replaced ours and leaves a
+  conflict copy for the merge. A free lock is left for a machine that's asking.
+- **Write guard** (`changelog.set_write_guard`): `record_change` / delete / put back raise
+  `ReadOnlyError` ("Not saved" toast) once this machine isn't the writer. Indexer stops between
+  files on handover (`app._stop_indexer`); the indexer CLI hands over too.
+- **Docker:** compose mounts `SYNC_DIR` → `/data/sync` and `local/` on its own volume
+  (`LOCAL_DIR`), `hostname: DEVICE_NAME`, port bound to `127.0.0.1` (`BIND`).
+  `sync/online_only.py` + banner: under Docker, online-only files in `sync/` (they read as
+  I/O errors in the container — tested with OneDrive Free Up Space).
+- **Tested live:** Docker ↔ native Mac on a shared folder and on OneDrive. Handover is about 33 s, a
+  rating carries across, quitting returns the lock to Docker in about 2 s, EXIF writeback through
+  the bind mount works. Tests: `test_sync_handoff.py` (12), `test_sync_online_only.py` (3).
+- **Next:** P6a Docker validate + harden (incl. "Download & index" under Docker), P6b login.
 
 ## 🔎 2026-10-14 — V3 P10: Rebuild AI index button (branch `v3-p10-rebuild-ai-index`)
 

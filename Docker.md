@@ -19,9 +19,9 @@ but it has no login and listens on the whole network. See [Security.md](Security
   - login rate limiting / lockout (Security.md **L3**);
   - gating NiceGUI's pages, the static `/thumbs` mount, the trash-thumbnail route
     and the socket.io connection, not just page routes.
-- [ ] **Bind to localhost by default.** Compose: `127.0.0.1:${PORT}:8080`; opening
-      it to the network should be an explicit `.env` choice, documented alongside the
-      login. The source-run default `HOST=0.0.0.0` likewise.
+- [x] **Bind to localhost by default.** Compose: `${BIND:-127.0.0.1}:${PORT}:8080`
+      (P6d); opening it to the network is `BIND=0.0.0.0` in `.env`. Still to do: the
+      source-run default `HOST=0.0.0.0`, and documenting `BIND` alongside the login.
 - [ ] **Host / Origin checks** (Security.md **M1**): a `Host` header allowlist and
       an origin check on the websocket, configurable for a NAS hostname.
 - [ ] **HTTPS story** for access over the network: a reverse proxy (Caddy / Traefik)
@@ -38,6 +38,65 @@ but it has no login and listens on the whole network. See [Security.md](Security
       Reveal / Open, so ship it fixed: it ignores the request's `app`, and `/listdir`
       is limited.
 - [ ] A compose healthcheck (curl is already in the image for this).
+
+## Deployment shapes
+
+- **Synology NAS**: Docker (Container Manager) on the NAS; `sync/` and the photos are native
+  NAS folders; desktop apps reach them through Synology Drive.
+- **Mac / PC host**: Docker Desktop on an always-on computer; `sync/` lives in Google Drive or
+  OneDrive; other machines reach it through that sync tool. Keep `sync/` and the library
+  **always downloaded** (OneDrive: Always keep on this device; Google Drive: Mirror files).
+
+### Cloud folders and Docker Desktop (tested 2026-10-14, OneDrive on macOS)
+
+- Bind-mounting a `~/Library/CloudStorage/OneDrive*` folder works with no extra Docker
+  setup (virtiofs). Files the container writes are uploaded by OneDrive as usual.
+- **An online-only file can't be read from inside the container.** After Free Up Space, a
+  read fails with `Input/output error` (`st_blocks` 0); the read does not make OneDrive
+  download it. The Mac app's own read does download it, and Docker can read it after that.
+- So under Docker, `sortandpost.sync.online_only` checks `sync/` at startup and every 5
+  minutes, and shows a banner on `/` + a Settings row naming the host folder
+  (`SORTANDPOST_HOST_SYNC_DIR`) and the setting to change.
+- Still open (P6a): the library's own online-only photos. "Download & index" can't hydrate
+  them inside Docker either, so under Docker it should point at the same setting.
+- Not tested: Google Drive, Windows (WSL2 mounts), and whether the placeholder heuristic
+  sees online-only files there.
+
+In both, `local/` must never sit in a sync folder, so compose mounts the halves separately
+(`Paths(app_data=/data)` already resolves `/data/local` + `/data/sync`):
+
+```yaml
+volumes:
+  - "${PHOTO_LIBRARY}:/library:rw"
+  - "${SYNC_DIR}:/data/sync:rw"          # the shared folder
+  - "sortandpost-local:/data/local"      # working DB, device.json, trash — never synced
+hostname: "${DEVICE_NAME:-sortandpost-server}"   # stable name in banners + devices/ folder
+```
+
+## Editing checkout
+
+An always-on Docker instance renews the write lock forever, so every desktop app would stay
+read-only. V3 P6d adds a checkout through `sync/` files only (no network link between the
+instances, no new auth), usable in either direction:
+
+1. **Request** — the borrower writes `sync/locks/request-<device_id[:8]>.json`
+   (`{device_id, hostname, requested_at}`, expires after `sync.handoff_request_ttl_sec`, 600).
+   Only the holder ever writes the lock file; requesters write only their own file.
+2. **Grace** — the holder's heartbeat tick sees it and shows "<requester> wants to edit —
+   handing over in 30 s [Keep editing]" (`sync.handoff_grace_sec`). Keep editing = deny.
+   An unattended holder (Docker) hands over when the grace ends.
+3. **Yield** — UI goes read-only first, the indexer stops between files and is joined, a forced
+   publish, then the lock is rewritten as a **grant** (`handoff_to`, `handoff_generation`) and
+   still heartbeated.
+4. **Take** — the borrower promotes only once its own `sync/sortandpost.db` has
+   `db_generation >= handoff_generation` (the sync tool may deliver the lock before the DB),
+   then runs the normal promotion (merge, reconcile, verify, indexer) and deletes its request.
+5. **Return** — quit releases as today; a read-only instance reclaims a free lock unless
+   another device's request is pending. Docker reclaims early with the same **Take over
+   editing** button.
+6. **Safety nets** — a stale grant / lock is taken over as today; a slow sync that lets both
+   write is settled by the conflict-copy merge; after acquiring, read the lock back one
+   heartbeat later and step down if another device won.
 
 ## Open questions
 

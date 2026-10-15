@@ -121,6 +121,9 @@ class SyncConfig(BaseModel):
     publish_interval_sec: int = 60
     lock_heartbeat_sec: int = 20
     lock_stale_after_sec: int = 300
+    # Editing checkout: how long the writer's screen shows "<machine> wants to
+    # edit" (with Keep editing) before it hands over by itself.
+    handoff_grace_sec: int = 30
     snapshot_every_publishes: int = 20
     # Also snapshot when the newest one is older than this (0 = off), so a quiet
     # library still gets a fresh backup in sync/snapshots/ every day it changes.

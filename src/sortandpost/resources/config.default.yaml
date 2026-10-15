@@ -15,6 +15,7 @@ sync:
   publish_interval_sec: 60        # publish the working DB to sync/ when dirty and idle
   lock_heartbeat_sec: 20
   lock_stale_after_sec: 300       # a lock older than this may be taken over
+  handoff_grace_sec: 30           # "<machine> wants to edit": seconds before handing over by itself
   snapshot_every_publishes: 20
   snapshot_every_hours: 24        # also back up at least daily while the DB changes (0 = off)
   snapshot_keep: 10

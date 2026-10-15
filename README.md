@@ -10,7 +10,7 @@ Dropbox) — pick the same folder on another computer and it works there with no
 
 > [!WARNING]
 > **Only run sortandpost on a network you trust.** There is no login yet. Run from source
-> or in Docker, the web UI listens on every network interface (`0.0.0.0`), so anyone on
+> (or in Docker with `BIND=0.0.0.0`), the web UI listens on every network interface, so anyone on
 > the same network can browse your photos, delete them (moved to the app's trash), change
 > settings, and send robopost posts. The macOS / Windows desktop app only listens on this
 > computer. To keep a source run local, start it with `HOST=127.0.0.1`. A login screen is
@@ -71,10 +71,27 @@ CPU-only in the container and bind-mount scans are slower on macOS/Windows — u
 the native path for a desktop.
 
 ```bash
-cp .env.example .env          # set PHOTO_LIBRARY, APP_DATA, PORT
-docker compose up --build     # http://localhost:8080
+cp .env.example .env          # set PHOTO_LIBRARY, SYNC_DIR, DEVICE_NAME, PORT
+docker compose up --build     # http://localhost:8080 (this computer only; BIND=0.0.0.0 opens it up)
 docker compose run --rm indexer --once
 ```
+
+`SYNC_DIR` is the shared library folder, the same one your desktop apps pick. The
+container's own working files go in a Docker volume (or `LOCAL_DIR`), never in the
+synced folder. Two common setups:
+
+- **Synology NAS**: run it in Container Manager with `SYNC_DIR` set to the shared
+  folder on the NAS. Your computers reach the same folder through Synology Drive.
+- **An always-on Mac or PC**: run Docker Desktop with `SYNC_DIR` inside Google Drive or
+  OneDrive. Set that folder to **Always keep on this device** (OneDrive) or **Mirror
+  files** (Google Drive). Docker can't download online-only files, so the app shows a
+  warning if it finds any.
+
+**Editing from a desktop app while Docker runs.** Only one computer edits at a time, and
+Docker usually holds editing. In the desktop app, click **Take over editing** in the top
+bar. Docker hands over in about 30 seconds, unless someone using Docker clicks **Keep
+editing**. When you quit the desktop app, Docker takes editing back. Docker's own page
+has the same button.
 
 ## Development
 

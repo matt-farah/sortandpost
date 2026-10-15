@@ -173,6 +173,12 @@ class Paths:
         return self.sync / ".sortandpost.lock"
 
     @property
+    def locks_dir(self) -> Path:
+        """Edit requests for the editing checkout, one file per requesting
+        device (:mod:`sortandpost.sync.handoff`)."""
+        return self.sync / "locks"
+
+    @property
     def config_file(self) -> Path:
         return self.sync / "config.yaml"
 

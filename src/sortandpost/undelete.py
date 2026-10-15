@@ -32,6 +32,7 @@ from sortandpost.db.deletion import lift_tombstone, restore_photo_state
 from sortandpost.indexer.pipeline import PipelineConfig, index_file
 from sortandpost.indexer.scan import _INDEX_LOCK
 from sortandpost.metadata import ExiftoolClient
+from sortandpost.sync.changelog import ensure_writable
 from sortandpost.sync.clock import utcnow
 from sortandpost.trash import TrashedItem, find_batch, put_back
 
@@ -66,6 +67,7 @@ def put_back_batch(
 ) -> UndeleteResult:
     """Put back *batch_id* (or just *only_hashes* from it). Blocking -- call it
     off the event loop."""
+    ensure_writable()  # before any file moves
     result = UndeleteResult()
     batch = find_batch(settings.paths.local, batch_id)
     if batch is None:
