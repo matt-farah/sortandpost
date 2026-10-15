@@ -863,7 +863,21 @@ How they're applied:
   (`/library/0`, `/library/1`, …) registered in Settings.
 - `hostname: ${DEVICE_NAME:-sortandpost-docker}` — the name other machines see in "read-only ·
   <name>" (a container's default hostname is a random id).
-- Port `${BIND:-127.0.0.1}:${PORT:-8080}:8080` — localhost only until the P6b login exists.
+- Port `${BIND:-127.0.0.1}:${PORT:-8080}:8080` — localhost only by default; `BIND=0.0.0.0`
+  needs a password (below), or other hosts are refused.
+- **Server-mode guard** (V3 P6b, `sortandpost.auth.ServerGuard`, installed by
+  `app._install_server_guard` for every run, desktop included): one pure-ASGI middleware, so
+  it covers static mounts and socket.io too, not only page routes.
+  - **Host allowlist** (always): without a password only loopback names (`localhost`,
+    `127.0.0.1`, `[::1]`, `*.localhost`) + `SORTANDPOST_ALLOWED_HOSTS`. **Origin check**
+    (always): websocket / socket.io / non-GET requests must be same-origin.
+  - **Login** only when `SORTANDPOST_PASSWORD` / `SORTANDPOST_PASSWORD_FILE` is set (file
+    wins; unreadable file = refuse to start). scrypt hash in memory only. Cookie
+    `sp_session_<port>`, HMAC with `local/session_secret` (also NiceGUI's `storage_secret`
+    — never the device id) + the password hash. `/login` is plain HTML; open paths:
+    `/login`, `/healthz`, `/_desktop/*` (own token). Rate limit 5 / 5 min per address.
+  - `HOST` defaults to `127.0.0.1` (the image sets `0.0.0.0` in the container). Any new
+    route is gated automatically; a new *open* route must be added to `auth._OPEN_PATHS`.
 - Two shapes, same compose: **Synology** (Container Manager; `SYNC_DIR` is the NAS's own
   shared folder, desktop apps reach it through Synology Drive) and **Docker Desktop on a
   Mac / PC** (`SYNC_DIR` inside Google Drive / OneDrive, kept "available offline"). Desktop apps

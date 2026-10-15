@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -48,6 +49,17 @@ from sortandpost.achievements import (
     MODE_LABELS,
     load_profile,
     profile_file,
+)
+from sortandpost.auth import (
+    LOGIN_PATH,
+    LOGOUT_PATH,
+    GuardConfig,
+    PasswordConfigError,
+    ServerGuard,
+    Sessions,
+    load_allowed_hosts,
+    load_or_create_secret,
+    load_password,
 )
 from sortandpost.clip.model import (
     ClipModel,
@@ -220,7 +232,9 @@ from sortandpost.themes import (
     SEASON_ICONS,
     SEASON_LABELS,
     SEASONS,
+    TOKENS,
     SeasonChoice,
+    SeasonTokens,
     body_class,
     first_paint_css,
     resolve_season,
@@ -595,6 +609,7 @@ class State:
     onboarding_pending: bool = False
     theme: Theme = "system"  # per-machine UI theme (local/ui_prefs.json)
     season: SeasonChoice = "auto"  # per-machine seasonal palette (sortandpost.themes)
+    login_enabled: bool = False  # a password is set (sortandpost.auth): show Sign out
     # (trash batch id, photos deleted, time.monotonic()) of the most recent
     # delete on this machine -- drives the status bar's "Undo delete" button.
     last_delete: tuple[str, int, float] | None = None
@@ -722,8 +737,21 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
             _inject_helper()
             achievements_ui.header_chip()
             _edit_lock_controls()
+            if State.login_enabled:
+                ui.button(icon="logout", on_click=_sign_out).props(
+                    "flat dense round size=sm"
+                ).tooltip("Sign out")
     _status_bar()
     return dark
+
+
+def _sign_out() -> None:
+    """POST /logout (sortandpost.auth revokes the session and clears the cookie),
+    then show the login page."""
+    ui.run_javascript(
+        f"fetch({json.dumps(LOGOUT_PATH)}, {{method: 'POST', credentials: 'same-origin'}})"
+        f".finally(() => {{ window.location.href = {json.dumps(LOGIN_PATH)}; }});"
+    )
 
 
 def _edit_lock_controls() -> None:
@@ -6478,7 +6506,44 @@ def _install_healthz() -> None:
         return PlainTextResponse("ok")
 
 
+def _login_page_tokens() -> tuple[SeasonTokens, SeasonTokens]:
+    """(light, dark) tokens for the login page: this machine's season, and its
+    Light / Dark choice (System leaves the pick to the browser)."""
+    season = resolve_season(State.season)
+    light, dark = TOKENS[(season, False)], TOKENS[(season, True)]
+    forced = _THEME_TO_DARK[State.theme]
+    if forced is None:
+        return light, dark
+    return (dark, dark) if forced else (light, light)
+
+
+def _install_server_guard(secret: str, port: int) -> None:
+    """Host / Origin checks always, plus the login when a password is set
+    (sortandpost.auth). A pure ASGI middleware, so it also covers the static
+    mounts and the socket.io connection, not only the page routes."""
+    try:
+        password = load_password()
+    except PasswordConfigError as exc:
+        log.error("%s", exc)
+        raise SystemExit(2) from exc
+    State.login_enabled = password is not None
+    config = GuardConfig(
+        password=password,
+        sessions=Sessions(secret, password) if password is not None else None,
+        allowed_hosts=load_allowed_hosts(),
+        cookie_name=f"sp_session_{port}",  # cookies ignore the port; two servers mustn't clash
+        page_tokens=_login_page_tokens,
+    )
+    nicegui_app.add_middleware(ServerGuard, config=config)
+    if password is not None:
+        log.info("login required (a password is set)")
+
+
 def run(settings: Settings) -> None:
+    # A random per-machine secret in local/ signs the login and NiceGUI's storage
+    # cookie -- not the device id, which is visible in sync/ (Security.md L1).
+    secret = load_or_create_secret(settings.paths.local)
+    _install_server_guard(secret, settings.env.port)
     build_ui(settings)
     _install_desktop_control(settings)
     _install_healthz()
@@ -6488,7 +6553,7 @@ def run(settings: Settings) -> None:
         title="sortandpost",
         reload=False,
         show=False,
-        storage_secret=settings.device_id,
+        storage_secret=secret,
         tailwind=False,  # prebuilt instead -- see _TAILWIND_URL
     )
     _reexec_if_requested()
@@ -6499,6 +6564,9 @@ def run_setup(env: Env) -> None:
     (:meth:`Env.resolve_paths` is ``None``). Serves only the first welcome step
     -- pick the shared folder -- with no DB, no lock and no indexer, then
     restarts itself on the chosen folder (sortandpost.onboarding)."""
+    # No local/ folder yet: a throwaway secret (a login here lasts until the restart).
+    setup_secret = secrets.token_hex(32)
+    _install_server_guard(setup_secret, env.port)
     _add_tailwind_css()
     ui.add_css(_THEME_CSS, shared=True)
     ui.add_css(theme_css(), shared=True)
@@ -6531,7 +6599,7 @@ def run_setup(env: Env) -> None:
         title="sortandpost — welcome",
         reload=False,
         show=False,
-        storage_secret="sortandpost-setup",
+        storage_secret=setup_secret,
         tailwind=False,
     )
     _reexec_if_requested()

@@ -6,26 +6,45 @@ but it has no login and listens on the whole network. See [Security.md](Security
 
 ## Must-have
 
-- [ ] **Login screen** (Security.md **H1**). Any device that can reach the port
-      currently has full control: browse, delete, rate/tag (writes into files),
-      robopost posts, settings. Decide:
-  - single local password vs. per-user accounts (accounts tie into H3,
-    multi-user);
-  - where the password hash lives: per machine in `local/`, never synced and never
-    plaintext. Under Docker, likely an env var / secret file, like
-    `ROBOPOST_API_KEY` (see the `secrets_store` rules);
-  - session cookie signed with a random secret from `local/`, **not** the device
-    id (Security.md **L1**);
-  - login rate limiting / lockout (Security.md **L3**);
-  - gating NiceGUI's pages, the static `/thumbs` mount, the trash-thumbnail route
-    and the socket.io connection, not just page routes.
+- [x] **Login screen** (Security.md **H1**, V3 P6b, `sortandpost.auth`): one shared
+      password from `SORTANDPOST_PASSWORD` or `SORTANDPOST_PASSWORD_FILE` (a Docker secret;
+      the file wins, and an unreadable file stops the app rather than starting it open).
+      Kept only as a scrypt hash in memory. A signed cookie (`sp_session_<port>`, HttpOnly,
+      SameSite=Lax, Secure behind HTTPS, 30 days) with a random secret in
+      `local/session_secret` (**L1**). Changing the password signs every browser out; Sign out
+      (header) revokes that session. 5 wrong passwords per address in 5 minutes → wait
+      (**L3**). One pure-ASGI middleware gates pages, `/thumbs`, `/trash-thumb`, uploads and
+      socket.io (polling + websocket); only `/login`, `/healthz` and the tray's token-gated
+      `/_desktop/*` stay open. The login page is plain HTML (no socket needed).
 - [x] **Bind to localhost by default.** Compose: `${BIND:-127.0.0.1}:${PORT}:8080`
-      (P6d); opening it to the network is `BIND=0.0.0.0` in `.env`. Still to do: the
-      source-run default `HOST=0.0.0.0`, and documenting `BIND` alongside the login.
-- [ ] **Host / Origin checks** (Security.md **M1**): a `Host` header allowlist and
-      an origin check on the websocket, configurable for a NAS hostname.
-- [ ] **HTTPS story** for access over the network: a reverse proxy (Caddy / Traefik)
-      example, or document that a password over plain HTTP on a network is sniffable.
+      (P6d); the source-run default is now `HOST=127.0.0.1` too (P6b). The image sets
+      `HOST=0.0.0.0` inside the container.
+- [x] **Host / Origin checks** (Security.md **M1**, P6b): without a password only
+      `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` and `SORTANDPOST_ALLOWED_HOSTS` are
+      served; with one, any Host reaches the login page. A websocket, socket.io request or
+      non-GET request from another Origin is refused.
+- [x] **HTTPS story**: see [HTTPS](#https) below. Plain HTTP on a network lets anyone on it
+      read the password and the session cookie.
+
+## HTTPS
+
+Over a network, put a reverse proxy in front and keep the app's own port on localhost.
+Caddy gets and renews a certificate by itself for a public name; on a LAN, `tls internal`
+uses its own local CA (install Caddy's root certificate on your devices once).
+
+```caddyfile
+photos.example.com {          # or: nas.local { tls internal ... }
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+- Keep `BIND=127.0.0.1` when Caddy runs on the same host (or put both in one compose
+  network and proxy to `app:8080`).
+- Caddy passes the `Host` header and websockets through unchanged, which the Origin check
+  needs. With another proxy, make sure it forwards `Host` and `Upgrade` / `Connection`.
+- It sets `X-Forwarded-Proto: https`, so the session cookie is marked `Secure`.
+- A Synology's built-in reverse proxy (Control Panel → Login Portal → Advanced) works too;
+  add the websocket custom headers there.
 
 ## Should-have
 
@@ -114,6 +133,7 @@ instances, no new auth), usable in either direction:
 
 ## Open questions
 
-- Is the Docker deployment single-user (one password) or the start of multi-user?
+- ~~Single-user or multi-user?~~ One shared password (V3 P6b). Accounts would tie into
+  Security.md H3 (the shared folder is fully trusted) and are a V4+ question.
 - Should the robopost composer be available on a network-exposed server at all,
-  or only when logged in as an "owner"?
+  or only when logged in as an "owner"? (Today: anyone with the password.)

@@ -3,8 +3,8 @@ services:
     build: .
     image: sortandpost:local
     ports:
-      # Localhost only: there's no login yet (Docker.md). Set BIND=0.0.0.0 to reach
-      # it from other devices on a network you trust.
+      # Localhost only by default. To reach it from other devices set BIND=0.0.0.0
+      # AND a password (SORTANDPOST_PASSWORD[_FILE]); without one, other hosts are refused.
       - "${BIND:-127.0.0.1}:${PORT:-8080}:8080"
     environment:
       APP_DATA: /data
@@ -16,6 +16,12 @@ services:
       # and SYNC_DIR on a Linux / Synology host; Docker Desktop is fine with 1000.
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
+      # Login (sortandpost.auth). Prefer the file form with a Docker secret:
+      #   secrets: [sortandpost_password]  (below) +
+      #   SORTANDPOST_PASSWORD_FILE: /run/secrets/sortandpost_password
+      SORTANDPOST_PASSWORD: ${SORTANDPOST_PASSWORD:-}
+      SORTANDPOST_PASSWORD_FILE: ${SORTANDPOST_PASSWORD_FILE:-}
+      SORTANDPOST_ALLOWED_HOSTS: ${SORTANDPOST_ALLOWED_HOSTS:-}
     volumes:
       # Photo library: read-write so the metadata engine can write EXIF/XMP.
       # Nothing else in the app writes under this path.
@@ -64,3 +70,10 @@ services:
 
 volumes:
   sortandpost-local:
+
+# A password file kept outside the repo (chmod 600). To use it, uncomment this block,
+# add `secrets: [sortandpost_password]` to the app service, and set
+# SORTANDPOST_PASSWORD_FILE=/run/secrets/sortandpost_password in .env.
+# secrets:
+#   sortandpost_password:
+#     file: ./sortandpost_password.txt

@@ -52,7 +52,10 @@ class Env(BaseSettings):
     # both sources into it).
     app_data: Path | None = Field(default=None, alias="APP_DATA")
     port: int = Field(default=8080, alias="PORT")
-    host: str = Field(default="0.0.0.0", alias="HOST")
+    # Loopback by default (Security.md H1): a source run is only reachable from this
+    # computer. The Docker image sets HOST=0.0.0.0 inside the container (compose still
+    # publishes it on 127.0.0.1); other devices need a login -- see sortandpost.auth.
+    host: str = Field(default="127.0.0.1", alias="HOST")
     clip_model_override: str | None = Field(default=None, alias="CLIP_MODEL")
 
     def resolve_paths(self) -> Paths | None:
@@ -113,7 +116,7 @@ class NoAppDataFolder(RuntimeError):
 # Synced config tree (config.yaml)
 # --------------------------------------------------------------------------- #
 class ServerConfig(BaseModel):
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8080
 
 

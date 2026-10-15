@@ -12,13 +12,13 @@ release) · **accepted** (a known, deliberate trade-off for now).
 |----|----------|---------|--------|
 | C1 | Critical | Tag name with a line break → exiftool argument injection (move files, run code) | **fixed** |
 | H2 | High | Delete / tombstone sweep moves any DB-listed path, unchecked | **fixed** |
-| H1 | High | Web UI on `0.0.0.0` with no login (source + Docker runs) | **planned** — [Docker.md](Docker.md); README warns |
+| H1 | High | Web UI on `0.0.0.0` with no login (source + Docker runs) | **fixed** (V3 P6b) |
 | H3 | High | The shared sync folder is fully trusted | **accepted** — single-user by design |
-| M1 | Medium | DNS rebinding / cross-site websocket to the local server | deferred |
+| M1 | Medium | DNS rebinding / cross-site websocket to the local server | **fixed** (V3 P6b) |
 | M2 | Medium | Helper `/open` runs any program named in the request | deferred |
-| L1 | Low | NiceGUI `storage_secret` is the device id, which is visible in `sync/` | deferred |
-| L2 | Low | Docker build unpinned; no dependency audit in the quality gate | **planned** — [Docker.md](Docker.md) |
-| L3 | Low | No rate limiting | deferred (moot until H1) |
+| L1 | Low | NiceGUI `storage_secret` is the device id, which is visible in `sync/` | **fixed** (V3 P6b) |
+| L2 | Low | Docker build unpinned; no dependency audit in the quality gate | **fixed** (V3 P6a) |
+| L3 | Low | No rate limiting | **fixed** (V3 P6b, login attempts) |
 
 ---
 
@@ -75,7 +75,7 @@ and left where it is. The delete itself (DB purge, tombstone, `unindex`)
 still happens. Tests: `test_deletion.py` (outside root, symlink escape, replaced
 file, touched-but-same-pixels file, another machine's path in the tombstone sweep).
 
-## H1 — no login, listens on all interfaces · planned
+## H1 — no login, listens on all interfaces · fixed
 
 `HOST` defaults to `0.0.0.0` on source and Docker runs, and compose publishes the
 port on every network interface of the computer. Anyone on the network can browse and delete photos, rate or tag
@@ -83,8 +83,13 @@ port on every network interface of the computer. Anyone on the network can brows
 **Open with** to any program and click Open (`reveal.open_with_app` runs it on the
 host). The packaged desktop app binds `127.0.0.1` and is not affected.
 
-Accepted for now. The README says to run only on trusted networks. A login
-screen comes with the Docker release ([Docker.md](Docker.md)).
+**Fixed in V3 P6b** (`sortandpost.auth`): `HOST` now defaults to `127.0.0.1` (the Docker
+image sets `0.0.0.0` inside the container, and compose publishes on `127.0.0.1` unless
+`BIND` says otherwise). Setting `SORTANDPOST_PASSWORD` / `SORTANDPOST_PASSWORD_FILE` turns
+on a shared-password login (scrypt hash in memory only) that one pure-ASGI middleware applies
+to every route: pages, `/thumbs`, `/trash-thumb`, uploads and the socket.io connection
+(HTTP polling and websocket). Without a password, a non-loopback `Host` is refused (M1),
+so a source run reachable on the network still can't be used from another device.
 
 ## H3 — the shared sync folder is fully trusted · accepted
 
@@ -95,13 +100,17 @@ move files outside the library folders. It can still change ratings and tags,
 tombstone photos (files go to the recoverable app trash), and widen the helper's
 allowed folders (M2). **Revisit if multi-user / shared libraries become a feature.**
 
-## M1 — DNS rebinding / cross-site websocket · deferred
+## M1 — DNS rebinding / cross-site websocket · fixed
 
 NiceGUI's socket.io server allows any origin (`cors_allowed_origins='*'`) and the
 app doesn't check the `Host` header, so a malicious site that rebinds its domain to
 `127.0.0.1` gets full control of the UI, even for the desktop app. Fix: a `Host` header
 allowlist (`localhost`, `127.0.0.1`, `*.localhost`) and an origin check on the
 websocket.
+
+**Fixed in V3 P6b**: `sortandpost.auth.ServerGuard` refuses a non-loopback `Host` unless a
+password is set or the name is in `SORTANDPOST_ALLOWED_HOSTS`, and refuses any websocket,
+socket.io request or non-GET request whose `Origin` isn't the same host:port.
 
 ## M2 — helper `/open` runs any program · deferred
 
@@ -111,23 +120,32 @@ websocket.
 lists any folder on the computer. Fix: the helper reads the configured open-with app
 itself (or an allowlist) and ignores the request's `app`; consider limiting `/listdir`.
 
-## L1 — `storage_secret` is the device id · deferred
+## L1 — `storage_secret` is the device id · fixed
 
 `ui.run(storage_secret=settings.device_id)`, and the full device id appears in
 `sync/` (lock file, `changes.device_id`). Nothing relies on `app.storage.user` for
 access control today. Use a random per-machine secret in `local/` before anything does.
 
-## L2 — dependency hygiene · planned (Docker)
+**Fixed in V3 P6b**: a random 32-byte secret in `local/session_secret` (0600) signs both
+NiceGUI's storage cookie and the login session cookie.
+
+## L2 — dependency hygiene · fixed
 
 The Docker image uses `uv:latest`, the `python:3.12-slim` tag, and
 `uv pip install .` without `uv.lock`, unlike the locked desktop builds. Pillow,
 pillow-heif, LibRaw and exiftool all parse untrusted image files, so keep them current.
 Add `uv audit` / `pip-audit` to the quality gate.
 
-## L3 — no rate limiting · deferred
+**Fixed in V3 P6a**: base images pinned by digest, the image installs from `uv.lock`, and
+`uv audit` is part of the quality gate.
+
+## L3 — no rate limiting · fixed
 
 Not meaningful for a local single-user app until H1's login exists. Then
 rate-limit login attempts. The robopost send already has an in-flight guard.
+
+**Fixed in V3 P6b**: at most 5 wrong passwords per client address in 5 minutes, then HTTP
+429 until the oldest one ages out. Each check costs a scrypt hash (~50 ms).
 
 ## Checked and fine
 

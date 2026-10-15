@@ -9,12 +9,12 @@ Dropbox) — pick the same folder on another computer and it works there with no
 **Architecture and design decisions live in [CLAUDE.md](CLAUDE.md). Read it first.**
 
 > [!WARNING]
-> **Only run sortandpost on a network you trust.** There is no login yet. Run from source
-> (or in Docker with `BIND=0.0.0.0`), the web UI listens on every network interface, so anyone on
-> the same network can browse your photos, delete them (moved to the app's trash), change
-> settings, and send robopost posts. The macOS / Windows desktop app only listens on this
-> computer. To keep a source run local, start it with `HOST=127.0.0.1`. A login screen is
-> planned for the Docker release ([Docker.md](Docker.md)). See [Security.md](Security.md).
+> **Opening sortandpost to other devices needs a password.** By default it only answers on
+> this computer (`HOST=127.0.0.1`; Docker publishes on `127.0.0.1`). To use it from a phone
+> or another computer, set `SORTANDPOST_PASSWORD` (or `SORTANDPOST_PASSWORD_FILE`) and, for
+> Docker, `BIND=0.0.0.0`. On a network, plain HTTP lets others on that network read the
+> password: put it behind HTTPS (see [Docker.md](Docker.md#https)). The macOS / Windows
+> desktop app only listens on this computer. See [Security.md](Security.md).
 
 ## macOS app (easiest)
 
