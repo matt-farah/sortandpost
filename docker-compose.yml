@@ -12,6 +12,10 @@ services:
       CLIP_MODEL: ${CLIP_MODEL:-}
       # Shown in messages instead of /data/sync (e.g. "keep <folder> downloaded").
       SORTANDPOST_HOST_SYNC_DIR: ${SYNC_DIR}
+      # The app runs as this user / group (not root). Use the owner of PHOTO_LIBRARY
+      # and SYNC_DIR on a Linux / Synology host; Docker Desktop is fine with 1000.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
     volumes:
       # Photo library: read-write so the metadata engine can write EXIF/XMP.
       # Nothing else in the app writes under this path.
@@ -29,6 +33,13 @@ services:
     # The name other computers see ("read-only · <name>", "Take over editing").
     hostname: "${DEVICE_NAME:-sortandpost-docker}"
     restart: unless-stopped
+    # Same check as the image's HEALTHCHECK, spelled out so it's easy to tune.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
     # File-manager "Reveal in Finder/Explorer" needs a small host agent that runs
     # OUTSIDE Docker (the container has no host GUI). See tools/sortandpost_helper.py:
     #   python3 tools/sortandpost_helper.py --app-data <a host folder holding local/>
@@ -42,12 +53,14 @@ services:
     profiles: ["tools"]
     environment:
       APP_DATA: /data
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
     volumes:
       - "${PHOTO_LIBRARY:?set PHOTO_LIBRARY in .env}:/library:rw"
       - "${SYNC_DIR:?set SYNC_DIR in .env}:/data/sync:rw"
       - "${LOCAL_DIR:-sortandpost-local}:/data/local:rw"
     hostname: "${DEVICE_NAME:-sortandpost-docker}"
-    entrypoint: ["python", "-m", "sortandpost.indexer"]
+    entrypoint: ["docker-entrypoint.sh", "python", "-m", "sortandpost.indexer"]
 
 volumes:
   sortandpost-local:

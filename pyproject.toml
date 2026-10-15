@@ -22,6 +22,9 @@ dependencies = [
     "numpy>=1.26",
     "open-clip-torch>=2.24",
     "torch>=2.2",
+    # Listed directly (open-clip needs it anyway) so tool.uv.sources below can
+    # point its Linux wheel at the CPU index too: torch and torchvision must match.
+    "torchvision",
     "watchdog>=4.0",
     "zstandard>=0.22",
     "Send2Trash>=1.8",
@@ -50,6 +53,18 @@ dev = [
     "types-PyYAML",
     "playwright>=1.45",  # headless UI tests (they skip without it) + browser checks
 ]
+
+# Linux (the Docker image) installs CPU-only torch from PyTorch's index: PyPI's
+# Linux torch is the CUDA build (~2 GB more). macOS and Windows keep PyPI's wheels,
+# which are already CPU / MPS. Lets the Dockerfile install from uv.lock.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]

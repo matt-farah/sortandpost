@@ -29,15 +29,27 @@ but it has no login and listens on the whole network. See [Security.md](Security
 
 ## Should-have
 
-- [ ] **Pinned, locked builds** (Security.md **L2**): pin `python:3.12-slim` and the
-      `uv` image by digest; install from `uv.lock` (`uv sync --locked`) like the
-      desktop builds.
-- [ ] Dependency audit (`uv audit` / `pip-audit`) in the quality gate and CI.
-- [ ] Run as a non-root user in the container; keep `/library` the only rw photo mount.
+- [x] **Pinned, locked builds** (Security.md **L2**, P6a): `python:3.13-slim` and `uv` are
+      pinned by digest; the image installs from `uv.lock` (`uv sync --locked`) in a
+      deps-only layer. Linux torch / torchvision come from PyTorch's CPU index
+      (`[tool.uv.sources]`), so the lock carries the CPU build; macOS / Windows are unchanged.
+- [x] Dependency audit: `uv audit` is in the quality gate (no CI yet). Clean on 2026-10-14.
+- [x] Runs as a non-root user (P6a): `docker-entrypoint.sh` re-owns only `/data/local`, then
+      drops to `PUID:PGID` (default 1000) with `setpriv`. `/library` stays the only photo mount.
 - [ ] Helper agent hardening (Security.md **M2**) — the helper is the Docker path's
       Reveal / Open, so ship it fixed: it ignores the request's `app`, and `/listdir`
       is limited.
-- [ ] A compose healthcheck (curl is already in the image for this).
+- [x] Healthcheck (P6a): `GET /healthz` → `ok`, in the image and in compose.
+
+## Validated (P6a, 2026-10-14, Docker Desktop on macOS arm64)
+
+First full `docker compose up --build` on scratch folders: the image builds (1.9 GB, torch
+`2.14.1+cpu`), turns `healthy`, the wizard runs, 39 photos index, CLIP downloads into
+`/data/local/models` and embeds on CPU, a rating lands in the host file's `XMP:Rating`
+through the bind mount (as uid 1000), delete → managed trash → put back works, a watchdog
+event through the mount triggers a scoped pass, and a sparse stub reads as online-only
+(`st_blocks` 0) with the Docker banner. Not tested yet: a Synology (PUID/PGID), Windows /
+WSL2 mounts.
 
 ## Deployment shapes
 
@@ -57,8 +69,10 @@ but it has no login and listens on the whole network. See [Security.md](Security
 - So under Docker, `sortandpost.sync.online_only` checks `sync/` at startup and every 5
   minutes, and shows a banner on `/` + a Settings row naming the host folder
   (`SORTANDPOST_HOST_SYNC_DIR`) and the setting to change.
-- Still open (P6a): the library's own online-only photos. "Download & index" can't hydrate
-  them inside Docker either, so under Docker it should point at the same setting.
+- The library's own online-only photos (P6a): under Docker the scan always records stubs
+  (`online_only: download` is ignored there, since the read would only fail), and the `/`
+  banner + Settings row explain "Always keep on this device" instead of offering
+  "Download & index".
 - Not tested: Google Drive, Windows (WSL2 mounts), and whether the placeholder heuristic
   sees online-only files there.
 

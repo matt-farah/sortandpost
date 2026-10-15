@@ -83,7 +83,7 @@ which was never tried on Windows.
 
 ## Per-phase workflow (unchanged)
 1. Plan in Opus (plan mode), then `/model <assigned>` to implement.
-2. Quality gate: `ruff check .`, `ruff format .`, `mypy src`, `pytest`, alembic autogenerate-empty.
+2. Quality gate: `ruff check .`, `ruff format .`, `mypy src`, `pytest`, alembic autogenerate-empty, `uv audit`.
 3. Boot for a hands-on test (`APP_DATA=<repo>/browser_test_data PORT=8080 HF_HUB_OFFLINE=1 .venv/bin/python -m sortandpost`;
    use :8081 if prod is on :8080) and tell the user what to click.
 4. After sign-off: update PROGRESS.md + V3.md + this file, commit, PR.

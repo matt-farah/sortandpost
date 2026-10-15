@@ -11,3 +11,11 @@ models/
 .env
 *.md
 !README.md
+# Local build outputs and test data (GBs; never part of the image)
+browser_test_data/
+build/
+dist/
+scratch/
+tests/
+Achievements/
+copy/

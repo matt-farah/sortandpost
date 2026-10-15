@@ -57,7 +57,7 @@ from sortandpost.indexer.pipeline import (
 from sortandpost.indexer.progress import PROGRESS
 from sortandpost.indexer.scanner import collapse_scope, iter_image_files, iter_scoped_files
 from sortandpost.indexer.workers import DecodedFile, DecodeJob, decode_file, decode_local
-from sortandpost.library_roots import container_roots
+from sortandpost.library_roots import container_roots, running_in_docker
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.paths import Paths
 
@@ -187,7 +187,9 @@ def _scan_once_locked(
         thumbnail_format=tcfg.format,
         thumbnail_quality=tcfg.quality,
         thumbnail_path=paths.thumbnail_file,
-        online_only_mode=settings.config.indexer.online_only,
+        # A container can't make the host's sync client download a stub (the read
+        # is an I/O error), so "download" would only turn stubs into errors.
+        online_only_mode="skip" if running_in_docker() else settings.config.indexer.online_only,
         stacking=settings.config.stacking,
     )
     n_workers = settings.config.worker_count() if workers is None else max(1, workers)

@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
@@ -1331,7 +1331,13 @@ def build_ui(settings: Settings) -> None:
             cloud_banner = ui.row().classes(_WARN_BANNER)
             with cloud_banner:
                 _n_txt = "1 photo is" if cloud_n == 1 else f"{cloud_n} photos are"
-                ui.label(f"⛅ {_n_txt} online-only and weren't downloaded.").classes("flex-1")
+                if running_in_docker():
+                    ui.label(
+                        f"⛅ {_n_txt} online-only. Docker can't download "
+                        f"{'it' if cloud_n == 1 else 'them'}: {_DOCKER_KEEP_HINT}"
+                    ).classes("flex-1")
+                else:
+                    ui.label(f"⛅ {_n_txt} online-only and weren't downloaded.").classes("flex-1")
 
                 async def _download_cloud() -> None:
                     ui.notify("downloading online-only files…")
@@ -1339,7 +1345,7 @@ def build_ui(settings: Settings) -> None:
                     ui.notify(result)
                     ui.navigate.reload()
 
-                if writable:
+                if writable and not running_in_docker():
                     ui.button(
                         "Download & index", icon="cloud_download", on_click=_download_cloud
                     ).props("flat dense size=sm color=amber-9")
@@ -5010,12 +5016,31 @@ def _exclude_editor(settings: Settings, engine: Engine, *, autosave: bool = Fals
     render()
 
 
+# Under Docker the container can't trigger the host's sync client: reading a stub
+# through the bind mount is an I/O error (Docker.md -> Cloud folders).
+_DOCKER_KEEP_HINT = (
+    'on the host computer, set the photo folder to "Always keep on this device" '
+    '(OneDrive) or "Mirror files" / "Available offline" (Google Drive, Dropbox), '
+    "and they'll be indexed on the next scan."
+)
+
+
 def _online_only_editor(settings: Settings, engine: Engine, cloud_n: int) -> None:
     """`/settings` editor for cloud "online-only" placeholder files. Toggles
     ``indexer.online_only`` (``skip`` / ``download``) in ``config.yaml`` and
     offers a one-shot "Download & index" for the files already recorded."""
     icfg = settings.config.indexer
     client = ui.context.client  # a real hydrate+rescan outlasts the page; see _download_now
+
+    if running_in_docker():
+        ui.label(
+            "sortandpost.photos runs in Docker here, so it can't make your cloud sync tool "
+            f"download online-only files. To index them, {_DOCKER_KEEP_HINT}"
+        ).classes("text-xs sp-faint max-w-xl")
+        ui.label(
+            f"{cloud_n} file(s) currently recorded as online-only." if cloud_n else "None recorded."
+        ).classes("text-xs sp-faint")
+        return
 
     ui.label(
         "Your cloud sync tool (i.e. Google Drive, OneDrive, iCloud Drive) often only downloads "
@@ -6444,9 +6469,19 @@ def _install_desktop_control(settings: Settings | None) -> None:
     )
 
 
+def _install_healthz() -> None:
+    """``GET /healthz`` -> ``ok``: the Docker healthcheck. Says only that the web
+    server answers; no data, so it stays open when a login is required."""
+
+    @nicegui_app.get("/healthz", include_in_schema=False)
+    def _healthz() -> PlainTextResponse:
+        return PlainTextResponse("ok")
+
+
 def run(settings: Settings) -> None:
     build_ui(settings)
     _install_desktop_control(settings)
+    _install_healthz()
     ui.run(
         host=settings.env.host,
         port=settings.env.port,
@@ -6489,6 +6524,7 @@ def run_setup(env: Env) -> None:
                 _shared_folder_picker("", on_use=_use, button="Continue")
 
     _install_desktop_control(None)
+    _install_healthz()
     ui.run(
         host=env.host,
         port=env.port,

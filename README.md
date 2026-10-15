@@ -85,7 +85,13 @@ synced folder. Two common setups:
 - **An always-on Mac or PC**: run Docker Desktop with `SYNC_DIR` inside Google Drive or
   OneDrive. Set that folder to **Always keep on this device** (OneDrive) or **Mirror
   files** (Google Drive). Docker can't download online-only files, so the app shows a
-  warning if it finds any.
+  warning if it finds any (in the shared folder or among your photos).
+
+The container runs as user `1000:1000`, not root. On a Linux host or a Synology, set
+`PUID` / `PGID` in `.env` to the owner of your photo and shared folders (`id <user>`), or
+rating writes and the shared folder will fail with "permission denied". Docker Desktop
+on a Mac or PC works with the default. `docker ps` shows the container as `healthy` once
+the web UI answers.
 
 **Editing from a desktop app while Docker runs.** Only one computer edits at a time, and
 Docker usually holds editing. In the desktop app, click **Take over editing** in the top

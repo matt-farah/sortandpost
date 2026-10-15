@@ -69,7 +69,7 @@ updated as decisions are made or changed.
 | Concern            | Choice |
 |--------------------|--------|
 | Language / runtime | Python 3.12–3.13 (`.python-version` pins **3.13**: dev venv + desktop builds) |
-| Package manager    | `uv` + `pyproject.toml` + committed **`uv.lock`** (desktop builds sync `--locked`; Docker still `uv pip install .`) |
+| Package manager    | `uv` + `pyproject.toml` + committed **`uv.lock`** (desktop builds and Docker sync `--locked`; Linux torch from PyTorch's CPU index via `[tool.uv.sources]`) |
 | Web UI             | NiceGUI (browser mode, not native), served by its bundled uvicorn |
 | CSS                | Tailwind **prebuilt** (`tools/tailwind/build.sh` → `resources/tailwind.css`, run after changing classes); NiceGUI runs `tailwind=False` — its in-browser compiler froze the infinite-scroll grid |
 | DB                 | SQLite via SQLModel/SQLAlchemy, migrations via Alembic |
@@ -142,7 +142,7 @@ applies — the native indexer and the container app must not both write.)
 Automated tests + a headless smoke are necessary but not sufficient. After building a feature:
 
 1. Run the quality gate (ruff, ruff format, mypy on the gated paths, pytest, alembic
-   autogenerate-empty).
+   autogenerate-empty, `uv audit`).
 2. **Boot the app so the user can click through it themselves** — native run against the
    `browser_test_data` app-data tree on `http://localhost:8080`:
 
@@ -848,8 +848,14 @@ How they're applied:
 
 ## Docker
 
-- One service `app` in `docker-compose.yml`. Base `python:3.12-slim` + `exiftool`, `libraw`,
-  build deps.
+- One service `app` in `docker-compose.yml`. Base `python:3.13-slim` + `uv`, both pinned by
+  digest, + `exiftool`, `libraw`, `curl`. Installs from `uv.lock` (a deps-only layer first, then
+  the app). Runs as **non-root**: `packaging/docker/docker-entrypoint.sh` re-owns only
+  `/data/local`, then drops to `PUID:PGID` (default 1000; on a Synology, the shared folders'
+  owner). `GET /healthz` backs the image + compose healthcheck (`app._install_healthz`).
+- Under Docker the scan always **skips** online-only stubs (`running_in_docker()` overrides
+  `indexer.online_only: download`), and "Download & index" is replaced by an "Always keep on
+  this device" hint — reading a stub through a Docker Desktop bind mount is an I/O error.
 - Mounts: `${PHOTO_LIBRARY}:/library:rw` (rw is required for EXIF writeback; only the metadata
   engine ever writes there); the shared folder `${SYNC_DIR}:/data/sync:rw`; and the container's
   own `local/` on a separate mount, `${LOCAL_DIR:-sortandpost-local}:/data/local` (a named
