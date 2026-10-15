@@ -30,6 +30,8 @@ jobs:
   test:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    env:
+      UV_PYTHON: ${{ matrix.python }}  # every uv call, not just sync (.python-version says 3.13)
     strategy:
       fail-fast: false
       matrix:
@@ -48,7 +50,7 @@ jobs:
       - name: Install exiftool (macOS)
         if: runner.os == 'macOS'
         run: brew install exiftool
-      - run: uv sync --locked --extra dev --python ${{ matrix.python }}
+      - run: uv sync --locked --extra dev
       - name: Install Chromium for the headless UI test
         run: uv run playwright install --with-deps chromium
       - run: uv run pytest
