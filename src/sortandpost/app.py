@@ -19,6 +19,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import shlex
 import subprocess
 import sys
 import threading
@@ -34,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
@@ -48,6 +50,17 @@ from sortandpost.achievements import (
     MODE_LABELS,
     load_profile,
     profile_file,
+)
+from sortandpost.auth import (
+    LOGIN_PATH,
+    LOGOUT_PATH,
+    GuardConfig,
+    PasswordConfigError,
+    ServerGuard,
+    Sessions,
+    load_allowed_hosts,
+    load_or_create_secret,
+    load_password,
 )
 from sortandpost.clip.model import (
     ClipModel,
@@ -220,7 +233,9 @@ from sortandpost.themes import (
     SEASON_ICONS,
     SEASON_LABELS,
     SEASONS,
+    TOKENS,
     SeasonChoice,
+    SeasonTokens,
     body_class,
     first_paint_css,
     resolve_season,
@@ -595,6 +610,7 @@ class State:
     onboarding_pending: bool = False
     theme: Theme = "system"  # per-machine UI theme (local/ui_prefs.json)
     season: SeasonChoice = "auto"  # per-machine seasonal palette (sortandpost.themes)
+    login_enabled: bool = False  # a password is set (sortandpost.auth): show Sign out
     # (trash batch id, photos deleted, time.monotonic()) of the most recent
     # delete on this machine -- drives the status bar's "Undo delete" button.
     last_delete: tuple[str, int, float] | None = None
@@ -722,8 +738,21 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
             _inject_helper()
             achievements_ui.header_chip()
             _edit_lock_controls()
+            if State.login_enabled:
+                ui.button(icon="logout", on_click=_sign_out).props(
+                    "flat dense round size=sm"
+                ).tooltip("Sign out")
     _status_bar()
     return dark
+
+
+def _sign_out() -> None:
+    """POST /logout (sortandpost.auth revokes the session and clears the cookie),
+    then show the login page."""
+    ui.run_javascript(
+        f"fetch({json.dumps(LOGOUT_PATH)}, {{method: 'POST', credentials: 'same-origin'}})"
+        f".finally(() => {{ window.location.href = {json.dumps(LOGIN_PATH)}; }});"
+    )
 
 
 def _edit_lock_controls() -> None:
@@ -1331,7 +1360,13 @@ def build_ui(settings: Settings) -> None:
             cloud_banner = ui.row().classes(_WARN_BANNER)
             with cloud_banner:
                 _n_txt = "1 photo is" if cloud_n == 1 else f"{cloud_n} photos are"
-                ui.label(f"⛅ {_n_txt} online-only and weren't downloaded.").classes("flex-1")
+                if running_in_docker():
+                    ui.label(
+                        f"⛅ {_n_txt} online-only. Docker can't download "
+                        f"{'it' if cloud_n == 1 else 'them'}: {_DOCKER_KEEP_HINT}"
+                    ).classes("flex-1")
+                else:
+                    ui.label(f"⛅ {_n_txt} online-only and weren't downloaded.").classes("flex-1")
 
                 async def _download_cloud() -> None:
                     ui.notify("downloading online-only files…")
@@ -1339,7 +1374,7 @@ def build_ui(settings: Settings) -> None:
                     ui.notify(result)
                     ui.navigate.reload()
 
-                if writable:
+                if writable and not running_in_docker():
                     ui.button(
                         "Download & index", icon="cloud_download", on_click=_download_cloud
                     ).props("flat dense size=sm color=amber-9")
@@ -3225,6 +3260,9 @@ def build_ui(settings: Settings) -> None:
                         _theme_editor(settings, dark)
                     with _settings_card("Open with", "open_in_new"):
                         _open_with_app_editor(settings)
+                    if running_in_docker():
+                        with _settings_card("File-manager helper", "terminal", wide=True):
+                            _helper_panel(settings)
 
                 with (
                     _settings_section("profile"),
@@ -5010,12 +5048,31 @@ def _exclude_editor(settings: Settings, engine: Engine, *, autosave: bool = Fals
     render()
 
 
+# Under Docker the container can't trigger the host's sync client: reading a stub
+# through the bind mount is an I/O error (Docker.md -> Cloud folders).
+_DOCKER_KEEP_HINT = (
+    'on the host computer, set the photo folder to "Always keep on this device" '
+    '(OneDrive) or "Mirror files" / "Available offline" (Google Drive, Dropbox), '
+    "and they'll be indexed on the next scan."
+)
+
+
 def _online_only_editor(settings: Settings, engine: Engine, cloud_n: int) -> None:
     """`/settings` editor for cloud "online-only" placeholder files. Toggles
     ``indexer.online_only`` (``skip`` / ``download``) in ``config.yaml`` and
     offers a one-shot "Download & index" for the files already recorded."""
     icfg = settings.config.indexer
     client = ui.context.client  # a real hydrate+rescan outlasts the page; see _download_now
+
+    if running_in_docker():
+        ui.label(
+            "sortandpost.photos runs in Docker here, so it can't make your cloud sync tool "
+            f"download online-only files. To index them, {_DOCKER_KEEP_HINT}"
+        ).classes("text-xs sp-faint max-w-xl")
+        ui.label(
+            f"{cloud_n} file(s) currently recorded as online-only." if cloud_n else "None recorded."
+        ).classes("text-xs sp-faint")
+        return
 
     ui.label(
         "Your cloud sync tool (i.e. Google Drive, OneDrive, iCloud Drive) often only downloads "
@@ -5537,6 +5594,57 @@ def _photo_grid(min_px: int = 220) -> ui.grid:
         .classes("w-full gap-2 p-2")
         .style(f"grid-template-columns: repeat(auto-fill, minmax({min_px}px, 1fr))")
     )
+
+
+def _helper_panel(settings: Settings) -> None:
+    """Settings -> File-manager helper (Docker only): is the host agent
+    (``tools/sortandpost_helper.py``) running, and the commands to start it, with
+    this container's real host folders filled in (compose passes them as
+    ``SORTANDPOST_HOST_LOCAL_DIR`` / ``SORTANDPOST_HOST_SYNC_DIR``)."""
+    ui.label(
+        "Docker can't open Finder or File Explorer on your computer. A small helper that runs "
+        "on the same computer as Docker Desktop does it, and lets Settings browse your folders. "
+        "On a NAS there's no screen to open, so use the Copy path buttons instead."
+    ).classes("text-xs sp-faint max-w-2xl")
+    status = ui.label().classes("text-sm")
+
+    def _refresh() -> None:
+        hi = read_helper_info(settings.paths)
+        if hi is not None:
+            status.set_text(f"🖥 Running (port {hi.port}). Reveal, Open and Browse use it.")
+            status.classes(replace="text-sm text-emerald-600")
+        else:
+            status.set_text("Not running. Reveal, Open and Browse are off; Copy path still works.")
+            status.classes(replace="text-sm text-amber-600")
+
+    _refresh()
+    ui.timer(5.0, _refresh)
+
+    host_local = os.environ.get("SORTANDPOST_HOST_LOCAL_DIR", "").strip()
+    host_sync = os.environ.get("SORTANDPOST_HOST_SYNC_DIR", "").strip()
+    if not host_local or not host_sync:
+        ui.label(
+            "This container's own data is in a Docker volume the helper can't reach. In .env, "
+            "set LOCAL_DIR to a folder on this computer (never inside a synced folder), then run "
+            "docker compose up -d."
+        ).classes("text-xs text-amber-600 max-w-2xl")
+        return
+    folders = f"--local-dir {shlex.quote(host_local)} --sync-dir {shlex.quote(host_sync)}"
+    commands = [
+        ("Run it now", f"python3 tools/sortandpost_helper.py {folders}"),
+        ("Start it at login (macOS)", f"packaging/helper/install-macos.sh {folders}"),
+    ]
+    ui.label(
+        "Run these in the sortandpost folder (the one with docker-compose.yml). On Windows, "
+        "use packaging/helper/sortandpost-helper.bat (see packaging/helper/README.md)."
+    ).classes("text-xs sp-faint max-w-2xl")
+    for label, cmd in commands:
+        with ui.row().classes("items-center gap-2 no-wrap w-full"):
+            ui.label(label).classes("text-xs sp-muted w-44 shrink-0")
+            ui.label(cmd).classes("font-mono text-xs break-all flex-1")
+            ui.button(icon="content_copy", on_click=lambda c=cmd: _copy_path(c)).props(
+                "flat dense round size=xs"
+            ).tooltip("Copy")
 
 
 def _copy_path(path: str) -> None:
@@ -6444,16 +6552,63 @@ def _install_desktop_control(settings: Settings | None) -> None:
     )
 
 
+def _install_healthz() -> None:
+    """``GET /healthz`` -> ``ok``: the Docker healthcheck. Says only that the web
+    server answers; no data, so it stays open when a login is required."""
+
+    @nicegui_app.get("/healthz", include_in_schema=False)
+    def _healthz() -> PlainTextResponse:
+        return PlainTextResponse("ok")
+
+
+def _login_page_tokens() -> tuple[SeasonTokens, SeasonTokens]:
+    """(light, dark) tokens for the login page: this machine's season, and its
+    Light / Dark choice (System leaves the pick to the browser)."""
+    season = resolve_season(State.season)
+    light, dark = TOKENS[(season, False)], TOKENS[(season, True)]
+    forced = _THEME_TO_DARK[State.theme]
+    if forced is None:
+        return light, dark
+    return (dark, dark) if forced else (light, light)
+
+
+def _install_server_guard(secret: str, port: int) -> None:
+    """Host / Origin checks always, plus the login when a password is set
+    (sortandpost.auth). A pure ASGI middleware, so it also covers the static
+    mounts and the socket.io connection, not only the page routes."""
+    try:
+        password = load_password()
+    except PasswordConfigError as exc:
+        log.error("%s", exc)
+        raise SystemExit(2) from exc
+    State.login_enabled = password is not None
+    config = GuardConfig(
+        password=password,
+        sessions=Sessions(secret, password) if password is not None else None,
+        allowed_hosts=load_allowed_hosts(),
+        cookie_name=f"sp_session_{port}",  # cookies ignore the port; two servers mustn't clash
+        page_tokens=_login_page_tokens,
+    )
+    nicegui_app.add_middleware(ServerGuard, config=config)
+    if password is not None:
+        log.info("login required (a password is set)")
+
+
 def run(settings: Settings) -> None:
+    # A random per-machine secret in local/ signs the login and NiceGUI's storage
+    # cookie -- not the device id, which is visible in sync/ (Security.md L1).
+    secret = load_or_create_secret(settings.paths.local)
+    _install_server_guard(secret, settings.env.port)
     build_ui(settings)
     _install_desktop_control(settings)
+    _install_healthz()
     ui.run(
         host=settings.env.host,
         port=settings.env.port,
         title="sortandpost",
         reload=False,
         show=False,
-        storage_secret=settings.device_id,
+        storage_secret=secret,
         tailwind=False,  # prebuilt instead -- see _TAILWIND_URL
     )
     _reexec_if_requested()
@@ -6464,6 +6619,9 @@ def run_setup(env: Env) -> None:
     (:meth:`Env.resolve_paths` is ``None``). Serves only the first welcome step
     -- pick the shared folder -- with no DB, no lock and no indexer, then
     restarts itself on the chosen folder (sortandpost.onboarding)."""
+    # No local/ folder yet: a throwaway secret (a login here lasts until the restart).
+    setup_secret = secrets.token_hex(32)
+    _install_server_guard(setup_secret, env.port)
     _add_tailwind_css()
     ui.add_css(_THEME_CSS, shared=True)
     ui.add_css(theme_css(), shared=True)
@@ -6489,13 +6647,14 @@ def run_setup(env: Env) -> None:
                 _shared_folder_picker("", on_use=_use, button="Continue")
 
     _install_desktop_control(None)
+    _install_healthz()
     ui.run(
         host=env.host,
         port=env.port,
         title="sortandpost — welcome",
         reload=False,
         show=False,
-        storage_secret="sortandpost-setup",
+        storage_secret=setup_secret,
         tailwind=False,
     )
     _reexec_if_requested()

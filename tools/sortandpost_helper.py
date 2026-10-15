@@ -2,19 +2,28 @@
 """sortandpost file-manager helper -- run this on the HOST, outside Docker.
 
 The sortandpost web app runs in a container and can't open Finder / Explorer or
-browse the host filesystem. This ~200-line stdlib-only agent does both. Start it
-at login pointing at the same app-data folder Docker mounts:
+browse the host filesystem. This small stdlib-only agent does both. Start it at
+login (``packaging/helper/`` has a launchd agent and a Windows script), pointing at
+the same host folders docker-compose mounts:
 
-    python3 tools/sortandpost_helper.py --app-data /Users/you/sortandpost-data
+    python3 tools/sortandpost_helper.py --local-dir <LOCAL_DIR> --sync-dir <SYNC_DIR>
+    python3 tools/sortandpost_helper.py --app-data <folder>   # one folder holding local/ + sync/
 
-It listens on 127.0.0.1 and writes ``<app-data>/local/helper.json`` with a port
-and a random token; the container reads that file through its ``/data`` mount and
-hands them to the browser, which calls this agent directly.
+Runs on Python 3.9+ (the ``python3`` that ships with macOS is 3.9), so keep it free of
+``match`` and other newer syntax -- a test checks.
 
-Security: 127.0.0.1 only; every request needs the ``X-SP-Token`` header; CORS is
-granted only to ``localhost`` / ``*.localhost`` / ``127.0.0.1`` origins; ``/reveal`` and ``/open``
-act only on paths inside a folder you've registered in the app; subprocesses are
-argv arrays, never a shell.
+It listens on 127.0.0.1 and writes ``<local>/helper.json`` with a port and a random
+token; the container reads that file through its ``/data/local`` mount and hands
+them to the browser, which calls this agent directly.
+
+Security (Security.md M2): 127.0.0.1 only; every request but ``/health`` needs the
+``X-SP-Token`` header; CORS is granted only to ``localhost`` / ``*.localhost`` /
+``127.0.0.1`` origins; ``/reveal`` and ``/open`` act only on paths inside a folder
+you've registered in the app; ``/open`` only ever runs the OS default or the app
+saved in Settings -> Open with (read from ``<local>/ui_prefs.json``, never taken
+from the request); ``/listdir`` only lists under the registered folders, your home
+folder and the usual places for drives and apps; subprocesses are argv arrays,
+never a shell.
 """
 
 from __future__ import annotations
@@ -35,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-HELPER_VERSION = "1"
+HELPER_VERSION = "2"
 _HEARTBEAT_SEC = 60
 _MAX_MULTI_PATHS = 100
 
@@ -52,16 +61,32 @@ def _platform() -> str:
 # state shared with the request handler
 # --------------------------------------------------------------------------- #
 class Config:
-    def __init__(self, app_data: Path, token: str) -> None:
-        self.app_data = app_data
+    def __init__(self, local_dir: Path, sync_dir: Path, token: str) -> None:
+        self.local_dir = local_dir
+        self.sync_dir = sync_dir
         self.token = token
+
+    @classmethod
+    def for_app_data(cls, app_data: Path, token: str) -> Config:
+        return cls(app_data / "local", app_data / "sync", token)
+
+    def open_with_app(self) -> str | None:
+        """The app saved in Settings -> Open with (``local/ui_prefs.json``,
+        ``sortandpost.prefs.get_open_with_app``). ``/open`` never runs anything
+        else: the request only says whether to use it."""
+        try:
+            prefs = json.loads((self.local_dir / "ui_prefs.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        value = prefs.get("open_with_app") if isinstance(prefs, dict) else None
+        return value.strip() if isinstance(value, str) and value.strip() else None
 
     def allowed_roots(self) -> list[Path]:
         """The ``host`` folders registered in the app
         (``sync/devices/*/library.json``). ``/reveal`` + ``/open`` are confined
         to these."""
         out: list[Path] = []
-        pattern = str(self.app_data / "sync" / "devices" / "*" / "library.json")
+        pattern = str(self.sync_dir / "devices" / "*" / "library.json")
         for f in glob.glob(pattern):
             try:
                 data = json.loads(Path(f).read_text(encoding="utf-8"))
@@ -109,24 +134,24 @@ def _explorer_select(path: Path) -> str:
 
 
 def reveal(path: Path) -> None:
-    match _platform():
-        case "darwin":
-            _spawn(["open", "-R", str(path)])
-        case "win":
-            _spawn(_explorer_select(path))
-        case _:
-            target = path.parent if path.parent.is_dir() else path
-            _spawn(["xdg-open", str(target)])
+    plat = _platform()
+    if plat == "darwin":
+        _spawn(["open", "-R", str(path)])
+    elif plat == "win":
+        _spawn(_explorer_select(path))
+    else:
+        target = path.parent if path.parent.is_dir() else path
+        _spawn(["xdg-open", str(target)])
 
 
 def open_default(path: Path) -> None:
-    match _platform():
-        case "darwin":
-            _spawn(["open", str(path)])
-        case "win":
-            os.startfile(str(path))  # type: ignore[attr-defined]  # win only
-        case _:
-            _spawn(["xdg-open", str(path)])
+    plat = _platform()
+    if plat == "darwin":
+        _spawn(["open", str(path)])
+    elif plat == "win":
+        os.startfile(str(path))  # type: ignore[attr-defined]  # win only
+    else:
+        _spawn(["xdg-open", str(path)])
 
 
 def open_with(path: Path, app: str) -> None:
@@ -150,47 +175,47 @@ def reveal_multiple(paths: list[Path]) -> None:
     if len(paths) == 1:
         reveal(paths[0])
         return
-    match _platform():
-        case "darwin":
-            items = ", ".join(_applescript_posix_literal(p) for p in paths)
+    plat = _platform()
+    if plat == "darwin":
+        items = ", ".join(_applescript_posix_literal(p) for p in paths)
+        _spawn(
+            [
+                "osascript",
+                "-e",
+                'tell application "Finder"',
+                "-e",
+                f"reveal {{{items}}}",
+                "-e",
+                "activate",
+                "-e",
+                "end tell",
+            ]
+        )
+    elif plat == "win":
+        for p in paths:
+            _spawn(_explorer_select(p))
+    else:
+        if which_dbus_send():
+            uris = ",".join(f'"file://{quote(str(p))}"' for p in paths)
             _spawn(
                 [
-                    "osascript",
-                    "-e",
-                    'tell application "Finder"',
-                    "-e",
-                    f"reveal {{{items}}}",
-                    "-e",
-                    "activate",
-                    "-e",
-                    "end tell",
+                    "dbus-send",
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    f"array:string:{uris}",
+                    "string:",
                 ]
             )
-        case "win":
-            for p in paths:
-                _spawn(_explorer_select(p))
-        case _:
-            if which_dbus_send():
-                uris = ",".join(f'"file://{quote(str(p))}"' for p in paths)
-                _spawn(
-                    [
-                        "dbus-send",
-                        "--session",
-                        "--dest=org.freedesktop.FileManager1",
-                        "--type=method_call",
-                        "/org/freedesktop/FileManager1",
-                        "org.freedesktop.FileManager1.ShowItems",
-                        f"array:string:{uris}",
-                        "string:",
-                    ]
-                )
-                return
-            seen: set[Path] = set()
-            for p in paths:
-                folder = p.parent if p.parent.is_dir() else p
-                if folder not in seen:
-                    seen.add(folder)
-                    _spawn(["xdg-open", str(folder)])
+            return
+        seen: set[Path] = set()
+        for p in paths:
+            folder = p.parent if p.parent.is_dir() else p
+            if folder not in seen:
+                seen.add(folder)
+                _spawn(["xdg-open", str(folder)])
 
 
 def which_dbus_send() -> bool:
@@ -201,15 +226,15 @@ def open_multiple(paths: list[Path]) -> None:
     if len(paths) == 1:
         open_default(paths[0])
         return
-    match _platform():
-        case "darwin":
-            _spawn(["open", *(str(p) for p in paths)])
-        case "win":
-            for p in paths:
-                os.startfile(str(p))  # type: ignore[attr-defined]  # win only
-        case _:
-            for p in paths:
-                _spawn(["xdg-open", str(p)])
+    plat = _platform()
+    if plat == "darwin":
+        _spawn(["open", *(str(p) for p in paths)])
+    elif plat == "win":
+        for p in paths:
+            os.startfile(str(p))  # type: ignore[attr-defined]  # win only
+    else:
+        for p in paths:
+            _spawn(["xdg-open", str(p)])
 
 
 def open_multiple_with(paths: list[Path], app: str) -> None:
@@ -222,38 +247,46 @@ def open_multiple_with(paths: list[Path], app: str) -> None:
         _spawn([app, *(str(p) for p in paths)])
 
 
+def start_points(roots: list[Path]) -> list[Path]:
+    """Where ``/listdir`` may look (Security.md M2): the registered library
+    folders, the home folder, and the usual places for external drives and apps
+    -- (macOS) /Applications + /Volumes, (Windows) drive letters + Program Files,
+    (Linux) /media, /mnt, /run/media. Not the whole filesystem."""
+    starts: list[Path] = list(dict.fromkeys(roots))
+    candidates: list[Path] = [Path.home()]
+    if _platform() == "darwin":
+        candidates += [Path("/Applications"), Path("/Volumes")]
+    elif _platform() == "win":
+        candidates += [Path(f"{d}:\\") for d in "CDEFGHIJ"]
+        for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+            pf = os.environ.get(env_var)
+            if pf:
+                candidates.append(Path(pf))
+    else:
+        candidates += [Path("/media"), Path("/mnt"), Path("/run/media")]
+    for c in candidates:
+        with contextlib.suppress(OSError):
+            if c.is_dir():
+                starts.append(c.resolve())
+    return list(dict.fromkeys(starts))
+
+
 def list_dir(
     path: Path | None, roots: list[Path], *, include_files: bool = False
-) -> dict[str, object]:
+) -> dict[str, object] | None:
     """Sub-directories of *path* (and, when *include_files*, files too -- the
     "Open with" app picker needs an ``.exe`` / executable to be selectable,
-    not just folders). ``path=None`` returns the starting points: registered
-    roots + home + (macOS) /Applications + (Windows) Program Files/drive
-    letters + filesystem root."""
+    not just folders). ``path=None`` returns the :func:`start_points`. ``None``
+    when *path* is outside every start point."""
+    starts = start_points(roots)
     if path is None:
-        starts: list[Path] = list(dict.fromkeys(roots))
-        home = Path.home()
-        if home not in starts:
-            starts.append(home)
-        if _platform() == "darwin":
-            apps = Path("/Applications")
-            if apps.is_dir():
-                starts.append(apps)
-        elif _platform() == "win":
-            starts += [Path(f"{d}:\\") for d in "CDEFGH" if Path(f"{d}:\\").exists()]
-            for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
-                pf = os.environ.get(env_var)
-                if pf and Path(pf).is_dir():
-                    starts.append(Path(pf))
-        else:
-            starts.append(Path("/"))
         return {
             "path": None,
             "parent": None,
-            "entries": [
-                {"name": str(p), "path": str(p), "dir": True} for p in dict.fromkeys(starts)
-            ],
+            "entries": [{"name": str(p), "path": str(p), "dir": True} for p in starts],
         }
+    if not _under_allowed(path, starts):
+        return None
 
     entries: list[dict[str, object]] = []
     try:
@@ -270,7 +303,9 @@ def list_dir(
                 entries.append({"name": child.name, "path": str(child), "dir": False})
     except (OSError, PermissionError):
         entries = []
-    parent = str(path.parent) if path.parent != path else None
+    # No "up" out of the allowed places: the browser goes back to the start list.
+    up = path.parent
+    parent = str(up) if up != path and _under_allowed(up, starts) else None
     return {"path": str(path), "parent": parent, "entries": entries}
 
 
@@ -347,12 +382,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = urlparse(self.path)
-        if route.path == "/health":
-            roots = [str(r) for r in self.config.allowed_roots()]
-            self._send(
-                200,
-                {"ok": True, "version": HELPER_VERSION, "os": _platform(), "roots": roots},
-            )
+        if route.path == "/health":  # no token: says nothing about the computer
+            self._send(200, {"ok": True, "version": HELPER_VERSION, "os": _platform()})
             return
         if not self._authed():
             return
@@ -364,9 +395,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "bad path"})
                 return
             include_files = qs.get("files", ["0"])[0] == "1"
-            self._send(
-                200, list_dir(target, self.config.allowed_roots(), include_files=include_files)
-            )
+            listing = list_dir(target, self.config.allowed_roots(), include_files=include_files)
+            if listing is None:
+                self._send(403, {"error": "that folder can't be browsed from here"})
+                return
+            self._send(200, listing)
             return
         self._send(404, {"error": "not found"})
 
@@ -378,8 +411,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
             return
         body = self._body()
+        app: str | None = None
         raw_app = body.get("app")
-        app = raw_app if isinstance(raw_app, str) and raw_app.strip() else None
+        if route.path == "/open" and isinstance(raw_app, str) and raw_app.strip():
+            # The request may only ask for the app saved in Settings -> Open with;
+            # it can never name a program to run (Security.md M2).
+            app = self.config.open_with_app()
+            if app is None or app != raw_app.strip():
+                self._send(403, {"error": "only the app saved in Settings → Open with can be used"})
+                return
         raw_list = body.get("paths")
         if raw_list is not None:
             self._handle_multi(route.path, raw_list, app)
@@ -435,8 +475,8 @@ class Handler(BaseHTTPRequestHandler):
 # --------------------------------------------------------------------------- #
 # entry point
 # --------------------------------------------------------------------------- #
-def _write_helper_json(app_data: Path, port: int, token: str, stop: threading.Event) -> None:
-    path = app_data / "local" / "helper.json"
+def _write_helper_json(local_dir: Path, port: int, token: str, stop: threading.Event) -> None:
+    path = local_dir / "helper.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     started = time.time()
     while not stop.is_set():
@@ -462,19 +502,35 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--app-data",
-        required=True,
         type=Path,
-        help="host path of the folder Docker mounts at /data",
+        help="one host folder holding local/ and sync/ (a single-folder install)",
+    )
+    parser.add_argument(
+        "--local-dir", type=Path, help="host folder mounted at /data/local (LOCAL_DIR)"
+    )
+    parser.add_argument(
+        "--sync-dir", type=Path, help="host folder mounted at /data/sync (SYNC_DIR)"
     )
     parser.add_argument("--port", type=int, default=41847)
     args = parser.parse_args(argv)
 
-    app_data: Path = args.app_data.expanduser().resolve()
-    if not (app_data / "local").is_dir() and not (app_data / "sync").is_dir():
-        parser.error(f"{app_data} does not look like a sortandpost app-data folder")
+    if args.app_data is not None:
+        app_data: Path = args.app_data.expanduser().resolve()
+        local_dir, sync_dir = app_data / "local", app_data / "sync"
+        if not local_dir.is_dir() and not sync_dir.is_dir():
+            parser.error(f"{app_data} does not look like a sortandpost app-data folder")
+    elif args.local_dir is not None and args.sync_dir is not None:
+        local_dir = args.local_dir.expanduser().resolve()
+        sync_dir = args.sync_dir.expanduser().resolve()
+        if not local_dir.is_dir():
+            parser.error(f"--local-dir {local_dir} does not exist")
+        if not (sync_dir / "devices").is_dir() and not (sync_dir / "config.yaml").is_file():
+            parser.error(f"--sync-dir {sync_dir} does not look like a sortandpost shared folder")
+    else:
+        parser.error("give --app-data, or both --local-dir and --sync-dir")
 
     token = secrets.token_hex(24)
-    config = Config(app_data, token)
+    config = Config(local_dir, sync_dir, token)
     server = _Server(
         ("127.0.0.1", args.port),
         lambda *a: Handler(*a, config=config),
@@ -483,11 +539,15 @@ def main(argv: list[str] | None = None) -> int:
 
     stop = threading.Event()
     hb = threading.Thread(
-        target=_write_helper_json, args=(app_data, port, token, stop), daemon=True
+        target=_write_helper_json, args=(local_dir, port, token, stop), daemon=True
     )
     hb.start()
 
-    print(f"sortandpost-helper listening on http://127.0.0.1:{port}  (app-data: {app_data})")
+    print(
+        f"sortandpost-helper listening on http://127.0.0.1:{port}  "
+        f"(local: {local_dir}, shared: {sync_dir})",
+        flush=True,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

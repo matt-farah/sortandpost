@@ -1,14 +1,38 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-14 (V3 P6d editing checkout)._
-_Working branch: `main`. V3 above the cut line + P6d merged; PRs up to #63 merged._
+_Last updated: 2026-10-15 (V3 P6a–c Docker / server mode)._
+_Working branch: `main`. V3 through P6a–d merged._
 
-> **▶️ Next:** **V3 P6a — Docker validate + harden** (Sonnet; row in `V3Plan.md`, notes in
-> `Docker.md`). Includes: under Docker, "Download & index" can't hydrate online-only library
-> photos (they read as I/O errors through the bind mount), so point it at "Always keep on this
-> device" instead (Docker.md → "Cloud folders and Docker Desktop"). Then P6b login (Opus).
+> **▶️ Next:** V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
+> untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🐳 2026-10-15 — V3 P6a–c: Docker validate, server login, helper (branches `v3-p6a/b/c-…`)
+
+- **P6a Docker:** first real `docker compose up --build` end to end (CLIP on CPU, wizard,
+  39 photos indexed, EXIF rating through the bind mount, delete → trash → put back, a
+  watchdog scoped pass, an online-only stub detected). Image installs from `uv.lock`
+  (`[tool.uv.sources]`: Linux torch/torchvision from PyTorch's CPU index; mac/Windows pins
+  unchanged), deps-only layer, digest-pinned bases, non-root via
+  `packaging/docker/docker-entrypoint.sh` (`PUID`/`PGID`, re-owns only `/data/local`),
+  `GET /healthz` + healthcheck. Under Docker the scan always skips online-only stubs and the
+  banner says "Always keep on this device" (no Download & index). `uv audit` joins the gate.
+- **P6b login** (`sortandpost/auth.py`, `ServerGuard` pure-ASGI middleware, so static mounts and
+  socket.io are gated): `SORTANDPOST_PASSWORD` / `_FILE` → scrypt hash, HMAC session cookie
+  `sp_session_<port>` keyed by `local/session_secret` (also NiceGUI's `storage_secret`, L1),
+  5 failures / 5 min limit, header sign-out. Always on: Host allowlist (loopback +
+  `SORTANDPOST_ALLOWED_HOSTS`, else a password is required) and same-origin check for
+  websocket / non-GET. `HOST` default → `127.0.0.1`. Caddy HTTPS example in Docker.md.
+  Security.md H1, M1, L1, L2, L3 fixed. Tests: `test_auth.py` (17).
+- **P6c helper:** `/open` only runs the default app or the saved Open-with app (M2), `/listdir`
+  confined to roots + home + drive/app folders, `/health` lists nothing, runs on macOS's
+  python 3.9 (was a `match` syntax error). `packaging/helper/` (launchd installer, `.bat`),
+  Settings → File-manager helper card (Docker only). Docker.md: always-on NAS + bind-mount
+  performance sections. Tests: `test_helper.py` (24).
+- **Tested:** P6a in the container, P6b natively (login / logout / cross-origin 403 /
+  thumbs 401) and in Docker, P6c helper card + `/listdir` refusal in a browser.
+  **Not tested:** Synology `PUID`/`PGID`, Windows, a real Reveal click through the helper.
 
 ## 🔁 2026-10-14 — V3 P6d: editing checkout, Docker ↔ desktop (branch `v3-p6d-editing-checkout`)
 

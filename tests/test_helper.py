@@ -43,7 +43,7 @@ def app_data(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def server(app_data: Path) -> Iterator[str]:
-    config = agent.Config(app_data, TOKEN)
+    config = agent.Config.for_app_data(app_data, TOKEN)
     httpd = agent._Server(("127.0.0.1", 0), lambda *a: agent.Handler(*a, config=config))
     Thread(target=httpd.serve_forever, daemon=True).start()
     try:
@@ -73,11 +73,13 @@ def _req(
         return exc.code, json.loads(exc.read() or b"{}")
 
 
-def test_health_needs_no_token_and_lists_roots(server: str, app_data: Path) -> None:
+def test_health_needs_no_token_and_tells_nothing_about_the_computer(
+    server: str, app_data: Path
+) -> None:
     code, body = _req(server, "/health", token=None)
     assert code == 200
     assert body["ok"] is True and body["version"]
-    assert len(body["roots"]) == 1
+    assert "roots" not in body  # no folder names without the token (M2)
 
 
 def test_token_is_required(server: str) -> None:
@@ -142,9 +144,16 @@ def test_open_multi_runs_the_multi_opener(
     assert len(calls) == 1
 
 
+def _save_open_with(app_data: Path, app: str) -> None:
+    (app_data / "local" / "ui_prefs.json").write_text(
+        json.dumps({"theme": "dark", "open_with_app": app}), encoding="utf-8"
+    )
+
+
 def test_open_single_with_app_uses_the_app_opener(
     server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _save_open_with(app_data, "/Applications/Preview.app")
     calls: list[tuple[Path, str]] = []
     monkeypatch.setattr(agent, "open_with", lambda path, app: calls.append((path, app)))
     monkeypatch.setattr(agent, "open_default", lambda path: pytest.fail("must not use default"))
@@ -164,6 +173,7 @@ def test_open_single_with_app_uses_the_app_opener(
 def test_open_multi_with_app_uses_the_app_opener(
     server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _save_open_with(app_data, "/Applications/Preview.app")
     calls: list[tuple[list[Path], str]] = []
     monkeypatch.setattr(agent, "open_multiple_with", lambda paths, app: calls.append((paths, app)))
     monkeypatch.setattr(agent, "open_multiple", lambda paths: pytest.fail("must not use default"))
@@ -268,8 +278,69 @@ def test_listdir_permission_error_is_empty(server: str, monkeypatch: pytest.Monk
         raise PermissionError
 
     monkeypatch.setattr(Path, "iterdir", boom)
-    code, body = _req(server, f"/listdir?path={Path('/some/where').resolve()}")
+    code, body = _req(server, f"/listdir?path={Path.home()}")
     assert code == 200 and body["entries"] == []
+
+
+def test_open_never_runs_a_program_named_by_the_request(
+    server: str, app_data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security.md M2: the request can only ask for the saved Open-with app."""
+    monkeypatch.setattr(agent, "_spawn", lambda args: pytest.fail("must not spawn"))
+    monkeypatch.setattr(agent, "open_with", lambda path, app: pytest.fail("must not open"))
+    monkeypatch.setattr(agent, "open_multiple_with", lambda p, a: pytest.fail("must not open"))
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    # Nothing saved: any named app is refused.
+    for body in (
+        {"path": f"{lib}/a.jpg", "app": "/bin/sh"},
+        {"paths": [f"{lib}/a.jpg"], "app": "/bin/sh"},
+    ):
+        code, res = _req(server, "/open", method="POST", body=body)
+        assert code == 403 and "Open with" in res["error"]
+    # Something else saved: still refused.
+    _save_open_with(app_data, "/Applications/Preview.app")
+    code, _ = _req(server, "/open", method="POST", body={"path": f"{lib}/a.jpg", "app": "/bin/sh"})
+    assert code == 403
+
+
+def test_listdir_refuses_folders_outside_the_start_points(server: str, app_data: Path) -> None:
+    code, body = _req(server, f"/listdir?path={Path('/usr/bin').resolve()}")
+    assert code == 403
+    assert "entries" not in body
+
+
+def test_listdir_has_no_parent_above_a_start_point(server: str, app_data: Path) -> None:
+    lib = json.loads((app_data / "sync/devices/box-abc123/library.json").read_text())["roots"][0][
+        "host"
+    ]
+    code, body = _req(server, f"/listdir?path={lib}")
+    assert code == 200
+    assert body["parent"] is None or Path(body["parent"]).is_relative_to(Path.home())
+
+
+def test_helper_reads_split_local_and_sync_folders(tmp_path: Path) -> None:
+    local, sync = tmp_path / "local-vol", tmp_path / "share"
+    local.mkdir()
+    (sync / "devices" / "nas-1").mkdir(parents=True)
+    (sync / "devices" / "nas-1" / "library.json").write_text(
+        json.dumps({"roots": [{"container": "/library", "host": str(tmp_path)}]}),
+        encoding="utf-8",
+    )
+    (local / "ui_prefs.json").write_text(json.dumps({"open_with_app": "Preview"}), "utf-8")
+    cfg = agent.Config(local, sync, TOKEN)
+    assert cfg.allowed_roots() == [tmp_path.resolve()]
+    assert cfg.open_with_app() == "Preview"
+
+
+def test_helper_runs_on_the_macos_system_python() -> None:
+    """macOS ships python3 3.9; the helper is run with whatever python3 the host has."""
+    import ast
+
+    src = (Path(__file__).resolve().parents[1] / "tools" / "sortandpost_helper.py").read_text()
+    ast.parse(src, feature_version=(3, 9))
+    assert "match _platform()" not in src
 
 
 # --- server-side reader ------------------------------------------------------

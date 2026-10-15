@@ -6,40 +6,100 @@ but it has no login and listens on the whole network. See [Security.md](Security
 
 ## Must-have
 
-- [ ] **Login screen** (Security.md **H1**). Any device that can reach the port
-      currently has full control: browse, delete, rate/tag (writes into files),
-      robopost posts, settings. Decide:
-  - single local password vs. per-user accounts (accounts tie into H3,
-    multi-user);
-  - where the password hash lives: per machine in `local/`, never synced and never
-    plaintext. Under Docker, likely an env var / secret file, like
-    `ROBOPOST_API_KEY` (see the `secrets_store` rules);
-  - session cookie signed with a random secret from `local/`, **not** the device
-    id (Security.md **L1**);
-  - login rate limiting / lockout (Security.md **L3**);
-  - gating NiceGUI's pages, the static `/thumbs` mount, the trash-thumbnail route
-    and the socket.io connection, not just page routes.
+- [x] **Login screen** (Security.md **H1**, V3 P6b, `sortandpost.auth`): one shared
+      password from `SORTANDPOST_PASSWORD` or `SORTANDPOST_PASSWORD_FILE` (a Docker secret;
+      the file wins, and an unreadable file stops the app rather than starting it open).
+      Kept only as a scrypt hash in memory. A signed cookie (`sp_session_<port>`, HttpOnly,
+      SameSite=Lax, Secure behind HTTPS, 30 days) with a random secret in
+      `local/session_secret` (**L1**). Changing the password signs every browser out; Sign out
+      (header) revokes that session. 5 wrong passwords per address in 5 minutes → wait
+      (**L3**). One pure-ASGI middleware gates pages, `/thumbs`, `/trash-thumb`, uploads and
+      socket.io (polling + websocket); only `/login`, `/healthz` and the tray's token-gated
+      `/_desktop/*` stay open. The login page is plain HTML (no socket needed).
 - [x] **Bind to localhost by default.** Compose: `${BIND:-127.0.0.1}:${PORT}:8080`
-      (P6d); opening it to the network is `BIND=0.0.0.0` in `.env`. Still to do: the
-      source-run default `HOST=0.0.0.0`, and documenting `BIND` alongside the login.
-- [ ] **Host / Origin checks** (Security.md **M1**): a `Host` header allowlist and
-      an origin check on the websocket, configurable for a NAS hostname.
-- [ ] **HTTPS story** for access over the network: a reverse proxy (Caddy / Traefik)
-      example, or document that a password over plain HTTP on a network is sniffable.
+      (P6d); the source-run default is now `HOST=127.0.0.1` too (P6b). The image sets
+      `HOST=0.0.0.0` inside the container.
+- [x] **Host / Origin checks** (Security.md **M1**, P6b): without a password only
+      `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` and `SORTANDPOST_ALLOWED_HOSTS` are
+      served; with one, any Host reaches the login page. A websocket, socket.io request or
+      non-GET request from another Origin is refused.
+- [x] **HTTPS story**: see [HTTPS](#https) below. Plain HTTP on a network lets anyone on it
+      read the password and the session cookie.
+
+## HTTPS
+
+Over a network, put a reverse proxy in front and keep the app's own port on localhost.
+Caddy gets and renews a certificate by itself for a public name; on a LAN, `tls internal`
+uses its own local CA (install Caddy's root certificate on your devices once).
+
+```caddyfile
+photos.example.com {          # or: nas.local { tls internal ... }
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+- Keep `BIND=127.0.0.1` when Caddy runs on the same host (or put both in one compose
+  network and proxy to `app:8080`).
+- Caddy passes the `Host` header and websockets through unchanged, which the Origin check
+  needs. With another proxy, make sure it forwards `Host` and `Upgrade` / `Connection`.
+- It sets `X-Forwarded-Proto: https`, so the session cookie is marked `Secure`.
+- A Synology's built-in reverse proxy (Control Panel → Login Portal → Advanced) works too;
+  add the websocket custom headers there.
 
 ## Should-have
 
-- [ ] **Pinned, locked builds** (Security.md **L2**): pin `python:3.12-slim` and the
-      `uv` image by digest; install from `uv.lock` (`uv sync --locked`) like the
-      desktop builds.
-- [ ] Dependency audit (`uv audit` / `pip-audit`) in the quality gate and CI.
-- [ ] Run as a non-root user in the container; keep `/library` the only rw photo mount.
-- [ ] Helper agent hardening (Security.md **M2**) — the helper is the Docker path's
-      Reveal / Open, so ship it fixed: it ignores the request's `app`, and `/listdir`
-      is limited.
-- [ ] A compose healthcheck (curl is already in the image for this).
+- [x] **Pinned, locked builds** (Security.md **L2**, P6a): `python:3.13-slim` and `uv` are
+      pinned by digest; the image installs from `uv.lock` (`uv sync --locked`) in a
+      deps-only layer. Linux torch / torchvision come from PyTorch's CPU index
+      (`[tool.uv.sources]`), so the lock carries the CPU build; macOS / Windows are unchanged.
+- [x] Dependency audit: `uv audit` is in the quality gate (no CI yet). Clean on 2026-10-14.
+- [x] Runs as a non-root user (P6a): `docker-entrypoint.sh` re-owns only `/data/local`, then
+      drops to `PUID:PGID` (default 1000) with `setpriv`. `/library` stays the only photo mount.
+- [x] Helper agent hardening (Security.md **M2**, P6c): `/open` only runs the default app or
+      the one saved in Settings → Open with (read from `<local>/ui_prefs.json`); `/listdir`
+      is limited to library folders, home and the drive / app locations; `/health` no longer
+      lists folders. `--local-dir` / `--sync-dir` for the split compose mounts. Start at login:
+      `packaging/helper/` (launchd installer, Windows `.bat`). Settings → File-manager helper
+      shows status and the command (Docker only).
+- [x] Healthcheck (P6a): `GET /healthz` → `ok`, in the image and in compose.
+
+## Validated (P6a, 2026-10-14, Docker Desktop on macOS arm64)
+
+First full `docker compose up --build` on scratch folders: the image builds (1.9 GB, torch
+`2.14.1+cpu`), turns `healthy`, the wizard runs, 39 photos index, CLIP downloads into
+`/data/local/models` and embeds on CPU, a rating lands in the host file's `XMP:Rating`
+through the bind mount (as uid 1000), delete → managed trash → put back works, a watchdog
+event through the mount triggers a scoped pass, and a sparse stub reads as online-only
+(`st_blocks` 0) with the Docker banner. Not tested yet: a Synology (PUID/PGID), Windows /
+WSL2 mounts.
 
 ## Deployment shapes
+
+### Always-on NAS (Synology)
+
+The NAS runs the container 24/7: it indexes new photos, runs CLIP and publishes the
+database to the shared folder. Laptops and desktops run the desktop app on the same shared
+folder (through Synology Drive) and borrow editing with **Take over editing** (P6d); when
+they quit, the NAS takes it back. Browse the NAS's own web UI from a phone or another computer
+only with a password and HTTPS ([HTTPS](#https)). There's no Reveal in Finder there (the helper
+needs Docker and the browser on one computer); Copy path works.
+
+Set `PUID` / `PGID` to the owner of the photo and shared folders (`id <user>` over SSH),
+`DEVICE_NAME` to a stable name, and leave `LOCAL_DIR` unset (a Docker volume) or point it at
+a folder that isn't synced.
+
+### Bind-mount performance
+
+- **Linux / Synology**: bind mounts are native; scans run at disk speed.
+- **Docker Desktop (macOS / Windows)**: every file read crosses into the Linux VM
+  (virtiofs on macOS, the WSL2 9P share on Windows). A first scan and CLIP pass are slower
+  than a native run, and CLIP runs on the CPU only (no Apple GPU / MPS in Docker). For a
+  large first index, the native app is faster; Docker is for the steady state after that.
+- Thumbnails and the working DB live on Docker's side (`/data/local`, a volume by default),
+  so browsing doesn't touch the bind mounts much.
+- On Windows, keep the photos on an NTFS drive the WSL2 VM can reach; network drives
+  (SMB) work but are slow and don't deliver file-change events, so new photos wait for the
+  15-minute full scan.
 
 - **Synology NAS**: Docker (Container Manager) on the NAS; `sync/` and the photos are native
   NAS folders; desktop apps reach them through Synology Drive.
@@ -57,8 +117,10 @@ but it has no login and listens on the whole network. See [Security.md](Security
 - So under Docker, `sortandpost.sync.online_only` checks `sync/` at startup and every 5
   minutes, and shows a banner on `/` + a Settings row naming the host folder
   (`SORTANDPOST_HOST_SYNC_DIR`) and the setting to change.
-- Still open (P6a): the library's own online-only photos. "Download & index" can't hydrate
-  them inside Docker either, so under Docker it should point at the same setting.
+- The library's own online-only photos (P6a): under Docker the scan always records stubs
+  (`online_only: download` is ignored there, since the read would only fail), and the `/`
+  banner + Settings row explain "Always keep on this device" instead of offering
+  "Download & index".
 - Not tested: Google Drive, Windows (WSL2 mounts), and whether the placeholder heuristic
   sees online-only files there.
 
@@ -100,6 +162,7 @@ instances, no new auth), usable in either direction:
 
 ## Open questions
 
-- Is the Docker deployment single-user (one password) or the start of multi-user?
+- ~~Single-user or multi-user?~~ One shared password (V3 P6b). Accounts would tie into
+  Security.md H3 (the shared folder is fully trusted) and are a V4+ question.
 - Should the robopost composer be available on a network-exposed server at all,
-  or only when logged in as an "owner"?
+  or only when logged in as an "owner"? (Today: anyone with the password.)

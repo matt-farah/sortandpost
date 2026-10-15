@@ -297,6 +297,22 @@ def test_online_only_file_is_recorded_not_indexed(
         assert s.get(ScanState, str(lib / "stub.jpg")).online_only is False
 
 
+def test_docker_always_skips_online_only_files(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In a container, reading a stub is an I/O error that never downloads it, so
+    ``online_only: download`` falls back to recording the stub (Docker.md)."""
+    lib = _lib(settings)
+    _jpeg(lib / "stub.jpg")
+    settings.config.indexer.online_only = "download"
+    monkeypatch.setattr("sortandpost.indexer.workers.is_online_only", lambda _st: True)
+    monkeypatch.setattr("sortandpost.indexer.scan.running_in_docker", lambda: True)
+
+    stats = scan_once(settings)
+    assert stats.online_only == 1
+    assert stats.indexed == 0
+
+
 @pytest.mark.skipif(not _HAS_EXIFTOOL, reason="exiftool not on PATH")
 def test_embedded_metadata_lands_on_photo_row(settings: Settings) -> None:
     lib = _lib(settings)

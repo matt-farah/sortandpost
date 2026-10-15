@@ -3,8 +3,8 @@ services:
     build: .
     image: sortandpost:local
     ports:
-      # Localhost only: there's no login yet (Docker.md). Set BIND=0.0.0.0 to reach
-      # it from other devices on a network you trust.
+      # Localhost only by default. To reach it from other devices set BIND=0.0.0.0
+      # AND a password (SORTANDPOST_PASSWORD[_FILE]); without one, other hosts are refused.
       - "${BIND:-127.0.0.1}:${PORT:-8080}:8080"
     environment:
       APP_DATA: /data
@@ -12,6 +12,18 @@ services:
       CLIP_MODEL: ${CLIP_MODEL:-}
       # Shown in messages instead of /data/sync (e.g. "keep <folder> downloaded").
       SORTANDPOST_HOST_SYNC_DIR: ${SYNC_DIR}
+      # Settings -> File-manager helper fills these into its start command.
+      SORTANDPOST_HOST_LOCAL_DIR: ${LOCAL_DIR:-}
+      # The app runs as this user / group (not root). Use the owner of PHOTO_LIBRARY
+      # and SYNC_DIR on a Linux / Synology host; Docker Desktop is fine with 1000.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      # Login (sortandpost.auth). Prefer the file form with a Docker secret:
+      #   secrets: [sortandpost_password]  (below) +
+      #   SORTANDPOST_PASSWORD_FILE: /run/secrets/sortandpost_password
+      SORTANDPOST_PASSWORD: ${SORTANDPOST_PASSWORD:-}
+      SORTANDPOST_PASSWORD_FILE: ${SORTANDPOST_PASSWORD_FILE:-}
+      SORTANDPOST_ALLOWED_HOSTS: ${SORTANDPOST_ALLOWED_HOSTS:-}
     volumes:
       # Photo library: read-write so the metadata engine can write EXIF/XMP.
       # Nothing else in the app writes under this path.
@@ -29,10 +41,18 @@ services:
     # The name other computers see ("read-only · <name>", "Take over editing").
     hostname: "${DEVICE_NAME:-sortandpost-docker}"
     restart: unless-stopped
+    # Same check as the image's HEALTHCHECK, spelled out so it's easy to tune.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
     # File-manager "Reveal in Finder/Explorer" needs a small host agent that runs
-    # OUTSIDE Docker (the container has no host GUI). See tools/sortandpost_helper.py:
-    #   python3 tools/sortandpost_helper.py --app-data <a host folder holding local/>
-    # (it writes local/helper.json, so it needs LOCAL_DIR set to a host folder).
+    # OUTSIDE Docker (the container has no host GUI). Settings -> File-manager helper
+    # shows the exact command; it needs LOCAL_DIR set to a host folder:
+    #   python3 tools/sortandpost_helper.py --local-dir "$LOCAL_DIR" --sync-dir "$SYNC_DIR"
+    # To start it at login: packaging/helper/ (macOS launchd, Windows .bat).
 
   # One-shot indexer pass. Runs the same image with a different entrypoint.
   #   docker compose run --rm indexer --once
@@ -42,12 +62,21 @@ services:
     profiles: ["tools"]
     environment:
       APP_DATA: /data
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
     volumes:
       - "${PHOTO_LIBRARY:?set PHOTO_LIBRARY in .env}:/library:rw"
       - "${SYNC_DIR:?set SYNC_DIR in .env}:/data/sync:rw"
       - "${LOCAL_DIR:-sortandpost-local}:/data/local:rw"
     hostname: "${DEVICE_NAME:-sortandpost-docker}"
-    entrypoint: ["python", "-m", "sortandpost.indexer"]
+    entrypoint: ["docker-entrypoint.sh", "python", "-m", "sortandpost.indexer"]
 
 volumes:
   sortandpost-local:
+
+# A password file kept outside the repo (chmod 600). To use it, uncomment this block,
+# add `secrets: [sortandpost_password]` to the app service, and set
+# SORTANDPOST_PASSWORD_FILE=/run/secrets/sortandpost_password in .env.
+# secrets:
+#   sortandpost_password:
+#     file: ./sortandpost_password.txt

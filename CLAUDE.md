@@ -69,7 +69,7 @@ updated as decisions are made or changed.
 | Concern            | Choice |
 |--------------------|--------|
 | Language / runtime | Python 3.12–3.13 (`.python-version` pins **3.13**: dev venv + desktop builds) |
-| Package manager    | `uv` + `pyproject.toml` + committed **`uv.lock`** (desktop builds sync `--locked`; Docker still `uv pip install .`) |
+| Package manager    | `uv` + `pyproject.toml` + committed **`uv.lock`** (desktop builds and Docker sync `--locked`; Linux torch from PyTorch's CPU index via `[tool.uv.sources]`) |
 | Web UI             | NiceGUI (browser mode, not native), served by its bundled uvicorn |
 | CSS                | Tailwind **prebuilt** (`tools/tailwind/build.sh` → `resources/tailwind.css`, run after changing classes); NiceGUI runs `tailwind=False` — its in-browser compiler froze the infinite-scroll grid |
 | DB                 | SQLite via SQLModel/SQLAlchemy, migrations via Alembic |
@@ -142,7 +142,7 @@ applies — the native indexer and the container app must not both write.)
 Automated tests + a headless smoke are necessary but not sufficient. After building a feature:
 
 1. Run the quality gate (ruff, ruff format, mypy on the gated paths, pytest, alembic
-   autogenerate-empty).
+   autogenerate-empty, `uv audit`).
 2. **Boot the app so the user can click through it themselves** — native run against the
    `browser_test_data` app-data tree on `http://localhost:8080`:
 
@@ -286,11 +286,18 @@ Settings page. See `sortandpost.library_roots`.
 
 Under Docker the server is a Linux container with no host GUI, so "Reveal in
 Finder / File Explorer" and the native folder browser need a small agent run on
-the **host**, outside Docker: `python3 tools/sortandpost_helper.py --app-data
-<host APP_DATA>`. It listens on `127.0.0.1`, writes `local/helper.json`
-(`{port, token}`, seen by the container through the `/data` mount), and the
-browser calls it directly. Token-gated, CORS-restricted to localhost origins,
-and `/reveal` + `/open` are confined to registered `host` roots. Everything
+the **host**, outside Docker (Docker Desktop only — useless on a NAS):
+`python3 tools/sortandpost_helper.py --local-dir <LOCAL_DIR> --sync-dir <SYNC_DIR>`
+(or `--app-data <folder>` for a single-folder tree). It listens on `127.0.0.1`, writes
+`<local>/helper.json` (`{port, token}`, seen by the container through the `/data/local`
+mount, so `LOCAL_DIR` must be a host folder), and the browser calls it directly.
+Token-gated (`/health` excepted, and it lists nothing), CORS-restricted to localhost
+origins, `/reveal` + `/open` confined to registered `host` roots, `/open` runs only the OS
+default or the Open-with app it reads itself from `<local>/ui_prefs.json` (a request can't
+name a program — Security.md M2), `/listdir` confined to roots + home + drive / app
+folders. Start at login: `packaging/helper/` (macOS launchd installer, Windows `.bat`).
+Settings → File-manager helper (Docker only, `app._helper_panel`) shows status and the
+command with compose's `SORTANDPOST_HOST_LOCAL_DIR` / `_SYNC_DIR` filled in. Everything
 degrades gracefully to a "copy host path" button when the agent isn't running.
 See `sortandpost.helper` (server-side reader) + `tools/sortandpost_helper.py`.
 
@@ -848,8 +855,14 @@ How they're applied:
 
 ## Docker
 
-- One service `app` in `docker-compose.yml`. Base `python:3.12-slim` + `exiftool`, `libraw`,
-  build deps.
+- One service `app` in `docker-compose.yml`. Base `python:3.13-slim` + `uv`, both pinned by
+  digest, + `exiftool`, `libraw`, `curl`. Installs from `uv.lock` (a deps-only layer first, then
+  the app). Runs as **non-root**: `packaging/docker/docker-entrypoint.sh` re-owns only
+  `/data/local`, then drops to `PUID:PGID` (default 1000; on a Synology, the shared folders'
+  owner). `GET /healthz` backs the image + compose healthcheck (`app._install_healthz`).
+- Under Docker the scan always **skips** online-only stubs (`running_in_docker()` overrides
+  `indexer.online_only: download`), and "Download & index" is replaced by an "Always keep on
+  this device" hint — reading a stub through a Docker Desktop bind mount is an I/O error.
 - Mounts: `${PHOTO_LIBRARY}:/library:rw` (rw is required for EXIF writeback; only the metadata
   engine ever writes there); the shared folder `${SYNC_DIR}:/data/sync:rw`; and the container's
   own `local/` on a separate mount, `${LOCAL_DIR:-sortandpost-local}:/data/local` (a named
@@ -857,7 +870,21 @@ How they're applied:
   (`/library/0`, `/library/1`, …) registered in Settings.
 - `hostname: ${DEVICE_NAME:-sortandpost-docker}` — the name other machines see in "read-only ·
   <name>" (a container's default hostname is a random id).
-- Port `${BIND:-127.0.0.1}:${PORT:-8080}:8080` — localhost only until the P6b login exists.
+- Port `${BIND:-127.0.0.1}:${PORT:-8080}:8080` — localhost only by default; `BIND=0.0.0.0`
+  needs a password (below), or other hosts are refused.
+- **Server-mode guard** (V3 P6b, `sortandpost.auth.ServerGuard`, installed by
+  `app._install_server_guard` for every run, desktop included): one pure-ASGI middleware, so
+  it covers static mounts and socket.io too, not only page routes.
+  - **Host allowlist** (always): without a password only loopback names (`localhost`,
+    `127.0.0.1`, `[::1]`, `*.localhost`) + `SORTANDPOST_ALLOWED_HOSTS`. **Origin check**
+    (always): websocket / socket.io / non-GET requests must be same-origin.
+  - **Login** only when `SORTANDPOST_PASSWORD` / `SORTANDPOST_PASSWORD_FILE` is set (file
+    wins; unreadable file = refuse to start). scrypt hash in memory only. Cookie
+    `sp_session_<port>`, HMAC with `local/session_secret` (also NiceGUI's `storage_secret`
+    — never the device id) + the password hash. `/login` is plain HTML; open paths:
+    `/login`, `/healthz`, `/_desktop/*` (own token). Rate limit 5 / 5 min per address.
+  - `HOST` defaults to `127.0.0.1` (the image sets `0.0.0.0` in the container). Any new
+    route is gated automatically; a new *open* route must be added to `auth._OPEN_PATHS`.
 - Two shapes, same compose: **Synology** (Container Manager; `SYNC_DIR` is the NAS's own
   shared folder, desktop apps reach it through Synology Drive) and **Docker Desktop on a
   Mac / PC** (`SYNC_DIR` inside Google Drive / OneDrive, kept "available offline"). Desktop apps
