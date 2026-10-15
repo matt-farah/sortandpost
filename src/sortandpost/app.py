@@ -26,7 +26,7 @@ import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
 from importlib import resources
@@ -208,7 +208,9 @@ from sortandpost.searches import (
 )
 from sortandpost.stacks import StackIndex, build_stacks, embed_target
 from sortandpost.sync import SyncManager, WriteMode
+from sortandpost.sync.changelog import ReadOnlyError, set_write_guard
 from sortandpost.sync.clock import utcnow
+from sortandpost.sync.online_only import OnlineOnlyReport, find_online_only
 from sortandpost.sync.recovery import RecoveryReport, recover_working_db
 from sortandpost.sync.recovery import read_report as read_recovery
 from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
@@ -601,11 +603,29 @@ class State:
     # local/ is inside a sync tool's folder and couldn't be moved (a real
     # APP_DATA env var): the sync tool's name, for a warning banner.
     local_in_cloud: str | None = None
+    # Editing checkout (sortandpost.sync.handoff), copied from the manager by
+    # apply() on every lock-watch tick; the header's edit controls show them.
+    edit_request_from: str | None = None  # writer: who is asking for editing
+    handover_in: float | None = None  # writer: seconds left of the grace period
+    my_request: bool = False  # read-only: we asked for editing
+    waiting_for: tuple[int, int] | None = None  # handed to us, DB still syncing
+    denied_by: str | None = None  # read-only: the writer answered Keep editing
+    lost_lock_to: str | None = None
+    # Under Docker: files in sync/ the sync client turned online-only, which
+    # the container can't read (sortandpost.sync.online_only). None = fine.
+    sync_online_only: OnlineOnlyReport | None = None
 
     @classmethod
     def apply(cls, manager: SyncManager) -> None:
         cls.write_mode = manager.mode
         cls.lock_holder = manager._holder_name()
+        incoming = manager.incoming_request()
+        cls.edit_request_from = incoming[0].name if incoming else None
+        cls.handover_in = incoming[1] if incoming else None
+        cls.my_request = manager.my_request is not None
+        cls.waiting_for = manager.waiting_for
+        cls.denied_by = manager.denied_by
+        cls.lost_lock_to = manager.lost_lock_to
 
     @classmethod
     def get_clip_model(cls, settings: Settings) -> ClipModel:
@@ -701,14 +721,124 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
         with ui.row().classes("items-center gap-2 no-wrap"):
             _inject_helper()
             achievements_ui.header_chip()
-            if State.write_mode == WriteMode.writable:
-                ui.label("writable").classes("sp-chip text-primary")
-            else:
-                ui.label(f"read-only · {State.lock_holder}").classes(
-                    "sp-chip text-amber-600 dark:text-amber-400"
-                )
+            _edit_lock_controls()
     _status_bar()
     return dark
+
+
+def _edit_lock_controls() -> None:
+    """The header's write-lock chip plus the editing checkout's buttons: "Take
+    over editing" when read-only, "Keep editing" while another computer is
+    asking. A tab reloads when this machine gains or loses editing, so every
+    star widget / editor on the page matches."""
+    box = ui.row().classes("items-center gap-1 no-wrap")
+    shown_mode = State.write_mode
+    last: list[object] = [None]
+    amber = "sp-chip text-amber-600 dark:text-amber-400"
+
+    async def _call(fn: Callable[[], None]) -> None:
+        await nicegui_run.io_bound(fn)  # sync/ may be a slow network folder
+        manager = State.manager
+        if manager is not None:
+            State.apply(manager)
+        render()
+
+    def _take_over() -> Callable[[], None]:
+        manager = State.manager
+        return manager.request_edit if manager is not None else (lambda: None)
+
+    def _cancel() -> Callable[[], None]:
+        manager = State.manager
+        return manager.cancel_request if manager is not None else (lambda: None)
+
+    def _keep_editing() -> None:
+        manager = State.manager
+        if manager is None:
+            return
+        got = manager.incoming_request()
+        if got is not None:
+            manager.deny(got[0])
+
+    def render() -> None:
+        left = State.handover_in
+        sig = (
+            State.write_mode,
+            State.lock_holder,
+            State.edit_request_from,
+            None if left is None else int(left),
+            State.my_request,
+            State.waiting_for,
+            State.denied_by,
+        )
+        if sig == last[0]:
+            return
+        last[0] = sig
+        box.clear()
+        with box:
+            if State.write_mode == WriteMode.writable:
+                if State.edit_request_from is None:
+                    ui.label("writable").classes("sp-chip text-primary").tooltip(
+                        "This computer is editing the library"
+                    )
+                    return
+                ui.label(
+                    f"{State.edit_request_from} wants to edit · handing over in {int(left or 0)}s"
+                ).classes(amber)
+                ui.button("Keep editing", on_click=lambda: _call(_keep_editing)).props(
+                    "unelevated dense no-caps size=sm color=primary"
+                ).classes("px-2").tooltip(f"Say no; {State.edit_request_from} keeps viewing only")
+                return
+            holder = State.lock_holder
+            if State.waiting_for is not None:
+                have, want = State.waiting_for
+                ui.label("taking over · waiting for the library to sync").classes(amber).tooltip(
+                    f"Editing was handed to this computer. Waiting for the sync tool to "
+                    f"deliver the latest database (version {have} of {want})."
+                )
+                return
+            if State.my_request:
+                ui.label(f"read-only · asked {holder} to hand over…").classes(amber)
+                ui.button("Cancel", on_click=lambda: _call(_cancel())).props(
+                    "outline dense no-caps size=sm"
+                ).classes("px-2")
+                return
+            if State.denied_by:
+                ui.label(f"read-only · {State.denied_by} kept editing").classes(amber)
+            else:
+                ui.label(f"read-only · {holder}").classes(amber)
+            if holder != "nobody":
+                ui.button(
+                    "Ask again" if State.denied_by else "Take over editing",
+                    on_click=lambda: _call(_take_over()),
+                ).props("unelevated dense no-caps size=sm color=primary").classes("px-2").tooltip(
+                    f"Ask {holder} to hand editing to this computer. It hands over in "
+                    "about half a minute unless someone there clicks Keep editing."
+                )
+
+    def tick() -> None:
+        if State.write_mode != shown_mode:
+            if State.write_mode == WriteMode.writable:
+                ui.notify("This computer is editing the library now", type="positive")
+            elif State.lost_lock_to:
+                ui.notify(f"{State.lost_lock_to} took over editing", type="warning")
+            else:
+                ui.notify(f"Editing handed to {State.lock_holder}", type="info")
+            ui.timer(1.5, ui.navigate.reload, once=True)
+            ticker.deactivate()
+            return
+        render()
+
+    render()
+    ticker = ui.timer(1.0, tick)
+
+
+def _notify_read_only_edit(e: Exception) -> None:
+    """An edit refused by the write guard (another computer took over editing
+    while this tab still showed the editors): say so instead of a stack trace."""
+    if not isinstance(e, ReadOnlyError):
+        return
+    with suppress(RuntimeError):  # no page context (a background thread)
+        ui.notify(f"Not saved: {State.lock_holder} is editing this library now", type="warning")
 
 
 def _current_helper() -> HelperInfo | None:
@@ -894,6 +1024,57 @@ _WARN_BANNER = (
 )
 
 
+_ONLINE_ONLY_CHECK_SEC = 300.0
+
+
+def _shared_folder_label() -> str:
+    """The shared folder as the user knows it: the host path compose passes in
+    (``SORTANDPOST_HOST_SYNC_DIR``), not the container's ``/data/sync``."""
+    return os.environ.get("SORTANDPOST_HOST_SYNC_DIR") or "the shared library folder"
+
+
+def _online_only_text(report: OnlineOnlyReport) -> str:
+    count = f"{report.found}{'' if report.complete else '+'}"
+    what = (
+        f", including {', '.join(report.important[:3])}"
+        if report.important
+        else " (e.g. thumbnails, which then show blank)"
+    )
+    return (
+        f"{count} file(s) in {_shared_folder_label()} are online-only{what}. "
+        "Docker can't download them, so editing handovers and thumbnails can fail. "
+        "In your sync app, keep that folder downloaded: OneDrive → Always keep on this "
+        "device, Google Drive → Mirror files, iCloud → Keep Downloaded."
+    )
+
+
+def _start_online_only_watch(settings: Settings) -> None:
+    """Under Docker only: check ``sync/`` for online-only files now and every
+    few minutes (a native app's reads download them; the container's fail)."""
+    if not running_in_docker():
+        return
+    stop = threading.Event()
+
+    def _watch() -> None:
+        while True:
+            try:
+                report = find_online_only(settings.paths.sync)
+                State.sync_online_only = report if report.any else None
+                if report.any:
+                    log.warning(
+                        "%d online-only file(s) in sync/ (e.g. %s); Docker can't read them",
+                        report.found,
+                        ", ".join(report.examples),
+                    )
+            except Exception:
+                log.exception("online-only check failed")
+            if stop.wait(_ONLINE_ONLY_CHECK_SEC):
+                return
+
+    threading.Thread(target=_watch, name="sortandpost-online-only", daemon=True).start()
+    nicegui_app.on_shutdown(stop.set)
+
+
 def _storage_banners(settings: Settings) -> None:
     """`/` notices about this computer's working files: they're inside a sync
     tool's folder (can't be moved: a real APP_DATA), they were just moved out of
@@ -905,6 +1086,9 @@ def _storage_banners(settings: Settings) -> None:
             f"{State.local_in_cloud}. Sync tools can damage the database; set "
             "APP_DATA to a folder outside it."
         )
+    report = State.sync_online_only
+    if report is not None:
+        notes.append(_online_only_text(report))
     if settings.relocated:
         moved = read_relocation(settings.paths)
         where = moved.provider if moved else "your sync folder"
@@ -971,6 +1155,9 @@ def build_ui(settings: Settings) -> None:
         log.exception("sync layer failed to start; continuing read-only")
     State.apply(manager)
     State.manager = manager
+    # An edit that races a handover is refused, not written to a DB the next pull overwrites.
+    set_write_guard(lambda: manager.writes_open)
+    nicegui_app.on_exception(_notify_read_only_edit)
     State.onboarding_pending = settings.onboarding_pending
     if not settings.config.clip.enabled:
         # CLIP is off library-wide (the flag rides in the shared config): this
@@ -992,6 +1179,7 @@ def build_ui(settings: Settings) -> None:
     ):
         _start_indexer_thread(settings, manager)
     _start_lock_watch(settings, manager)
+    _start_online_only_watch(settings)
     _install_onboarding_gate()
     _register_welcome(settings, engine, manager)
 
@@ -1739,10 +1927,14 @@ def build_ui(settings: Settings) -> None:
         # the saved position while the page is still growing.
         try:
             await ui.context.client.connected()
-            want_n, want_y, want_c = await ui.run_javascript(_GRID_RESTORE_JS, timeout=3.0)
+            restore = await ui.run_javascript(_GRID_RESTORE_JS, timeout=3.0)
         except TimeoutError:
             _end_restore()
             return
+        if not restore:  # the tab went away mid-load (e.g. a reload on a lock change)
+            _end_restore()
+            return
+        want_n, want_y, want_c = restore
         if mode is not None and want_c:  # restore which sections were folded shut
             reopen = {k for k in want_c if k in group_bounds}
             if reopen:
@@ -2922,6 +3114,8 @@ def build_ui(settings: Settings) -> None:
         ]
         if State.local_in_cloud:
             rows.append(("⚠ Warning", f"those files are inside {State.local_in_cloud}"))
+        if State.sync_online_only is not None:
+            rows.append(("⚠ Online-only files", _online_only_text(State.sync_online_only)))
         moved = read_relocation(settings.paths)
         if moved is not None:
             note = f"{_local_when(moved.moved_at)}, out of {moved.provider}"
@@ -3171,6 +3365,22 @@ def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
 _INDEXER_JOIN_SEC = 60.0
 
 
+def _stop_indexer() -> None:
+    """Stop the in-app indexer between files and wait for it (a handover, or a
+    lost lock). The lock watch starts a new one if this machine edits again."""
+    thread = State.indexer_thread
+    if State.indexer_stop is not None:
+        State.indexer_stop.set()
+    if thread is not None:
+        thread.join(timeout=_INDEXER_JOIN_SEC)
+        if thread.is_alive():
+            log.warning("indexer still busy after %.0fs; handing over anyway", _INDEXER_JOIN_SEC)
+            return  # keep indexer_started so a second one can't start beside it
+    State.indexer_thread = None
+    State.indexer_stop = None
+    State.indexer_started = False
+
+
 def _shutdown_all(manager: SyncManager) -> None:
     """App shutdown (Quit, restart, Ctrl-C, SIGTERM), strictly in this order:
     stop the indexer and wait for it -- it stops between files, so this is
@@ -3200,13 +3410,25 @@ def _start_lock_watch(settings: Settings, manager: SyncManager) -> None:
     no-op once we already hold the lock, so this keeps running harmlessly after
     promotion (and reflects a future takeover in ``State`` for the status bar)."""
     stop = threading.Event()
-    interval = max(5, settings.config.sync.lock_heartbeat_sec)
+    interval = 3  # also the editing checkout's tick: grace countdown, handover, take
 
     def _watch() -> None:
         while not stop.wait(interval):
             try:
                 before = manager.mode
+                if before is WriteMode.writable and not State.shutting_down:
+                    manager.maybe_hand_over(prepare=_stop_indexer)
                 mode = manager.refresh()
+                if before is WriteMode.writable and mode is not WriteMode.writable:
+                    _stop_indexer()  # a handover already did; a lost lock didn't
+                elif (
+                    State.indexer_started
+                    and State.indexer_thread is not None
+                    and not State.indexer_thread.is_alive()
+                    and State.indexer_stop is not None
+                    and State.indexer_stop.is_set()
+                ):
+                    _stop_indexer()  # a slow stop has finished: allow a restart
                 State.apply(manager)
                 if mode is not before:
                     log.info("write-lock state changed: %s -> %s", before, mode)

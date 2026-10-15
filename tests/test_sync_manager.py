@@ -231,7 +231,11 @@ def test_stop_releases_the_lock_and_publishes(
     assert settings.paths.lock_file.exists()
 
     mgr.stop()
-    assert not settings.paths.lock_file.exists()
+    # released as a handoff to anyone at the final published generation, so the
+    # next writer waits for that publish to sync before it takes over
+    released = read_lock(settings.paths.lock_file)
+    assert released is not None and released.handoff_to == ""
+    assert released.handoff_generation == read_generation(settings.paths.published_db)
     assert settings.paths.published_db.exists()
 
 

@@ -11,6 +11,7 @@ builds the log plumbing and the merge replay that consumes it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from sqlmodel import Session
@@ -18,6 +19,29 @@ from sqlmodel import Session
 from sortandpost.db.models import Change, ChangeOp
 
 ChangeKey = tuple[str, str, str, str, str | None, str | None]
+
+
+class ReadOnlyError(RuntimeError):
+    """A user edit was attempted while this machine isn't the writer."""
+
+
+# The web app installs ``lambda: manager.writes_open`` so an edit that races a
+# handover (or a lost lock) is refused instead of landing in a working DB that
+# the next pull overwrites. CLIs and tests leave it unset: always writable.
+_write_guard: Callable[[], bool] | None = None
+
+
+def set_write_guard(guard: Callable[[], bool] | None) -> None:
+    global _write_guard
+    _write_guard = guard
+
+
+def ensure_writable() -> None:
+    """Raise :class:`ReadOnlyError` unless this machine may write user edits.
+    Called by :func:`record_change`, and up front by actions that move files
+    before they record (delete, put back)."""
+    if _write_guard is not None and not _write_guard():
+        raise ReadOnlyError("another computer is editing this library right now")
 
 
 def record_change(
@@ -31,6 +55,7 @@ def record_change(
     old_value: str | None = None,
     new_value: str | None = None,
 ) -> Change:
+    ensure_writable()
     row = Change(
         ts=ts,
         device_id=device_id,

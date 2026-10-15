@@ -51,7 +51,7 @@ from sortandpost.db.models import (
 )
 from sortandpost.hashing import pixel_hash_of_image
 from sortandpost.paths import Paths
-from sortandpost.sync.changelog import record_change
+from sortandpost.sync.changelog import ensure_writable, record_change
 from sortandpost.sync.clock import parse as parse_ts
 from sortandpost.trash import TrashedItem, TrashResult, move_to_trash
 
@@ -94,6 +94,8 @@ def delete_photos(
     """Delete *pixel_hashes* on this machine. Only files under *roots* (this
     machine's library folders) are moved -- see :func:`_trash_with_state`.
     Caller commits the session."""
+    if emit_change:
+        ensure_writable()  # before any file moves
     wanted: list[str] = list(dict.fromkeys(pixel_hashes))
     result = DeleteResult()
     if not wanted:
