@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import threading
@@ -3259,6 +3260,9 @@ def build_ui(settings: Settings) -> None:
                         _theme_editor(settings, dark)
                     with _settings_card("Open with", "open_in_new"):
                         _open_with_app_editor(settings)
+                    if running_in_docker():
+                        with _settings_card("File-manager helper", "terminal", wide=True):
+                            _helper_panel(settings)
 
                 with (
                     _settings_section("profile"),
@@ -5590,6 +5594,57 @@ def _photo_grid(min_px: int = 220) -> ui.grid:
         .classes("w-full gap-2 p-2")
         .style(f"grid-template-columns: repeat(auto-fill, minmax({min_px}px, 1fr))")
     )
+
+
+def _helper_panel(settings: Settings) -> None:
+    """Settings -> File-manager helper (Docker only): is the host agent
+    (``tools/sortandpost_helper.py``) running, and the commands to start it, with
+    this container's real host folders filled in (compose passes them as
+    ``SORTANDPOST_HOST_LOCAL_DIR`` / ``SORTANDPOST_HOST_SYNC_DIR``)."""
+    ui.label(
+        "Docker can't open Finder or File Explorer on your computer. A small helper that runs "
+        "on the same computer as Docker Desktop does it, and lets Settings browse your folders. "
+        "On a NAS there's no screen to open, so use the Copy path buttons instead."
+    ).classes("text-xs sp-faint max-w-2xl")
+    status = ui.label().classes("text-sm")
+
+    def _refresh() -> None:
+        hi = read_helper_info(settings.paths)
+        if hi is not None:
+            status.set_text(f"🖥 Running (port {hi.port}). Reveal, Open and Browse use it.")
+            status.classes(replace="text-sm text-emerald-600")
+        else:
+            status.set_text("Not running. Reveal, Open and Browse are off; Copy path still works.")
+            status.classes(replace="text-sm text-amber-600")
+
+    _refresh()
+    ui.timer(5.0, _refresh)
+
+    host_local = os.environ.get("SORTANDPOST_HOST_LOCAL_DIR", "").strip()
+    host_sync = os.environ.get("SORTANDPOST_HOST_SYNC_DIR", "").strip()
+    if not host_local or not host_sync:
+        ui.label(
+            "This container's own data is in a Docker volume the helper can't reach. In .env, "
+            "set LOCAL_DIR to a folder on this computer (never inside a synced folder), then run "
+            "docker compose up -d."
+        ).classes("text-xs text-amber-600 max-w-2xl")
+        return
+    folders = f"--local-dir {shlex.quote(host_local)} --sync-dir {shlex.quote(host_sync)}"
+    commands = [
+        ("Run it now", f"python3 tools/sortandpost_helper.py {folders}"),
+        ("Start it at login (macOS)", f"packaging/helper/install-macos.sh {folders}"),
+    ]
+    ui.label(
+        "Run these in the sortandpost folder (the one with docker-compose.yml). On Windows, "
+        "use packaging/helper/sortandpost-helper.bat (see packaging/helper/README.md)."
+    ).classes("text-xs sp-faint max-w-2xl")
+    for label, cmd in commands:
+        with ui.row().classes("items-center gap-2 no-wrap w-full"):
+            ui.label(label).classes("text-xs sp-muted w-44 shrink-0")
+            ui.label(cmd).classes("font-mono text-xs break-all flex-1")
+            ui.button(icon="content_copy", on_click=lambda c=cmd: _copy_path(c)).props(
+                "flat dense round size=xs"
+            ).tooltip("Copy")
 
 
 def _copy_path(path: str) -> None:

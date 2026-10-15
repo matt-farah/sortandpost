@@ -286,11 +286,18 @@ Settings page. See `sortandpost.library_roots`.
 
 Under Docker the server is a Linux container with no host GUI, so "Reveal in
 Finder / File Explorer" and the native folder browser need a small agent run on
-the **host**, outside Docker: `python3 tools/sortandpost_helper.py --app-data
-<host APP_DATA>`. It listens on `127.0.0.1`, writes `local/helper.json`
-(`{port, token}`, seen by the container through the `/data` mount), and the
-browser calls it directly. Token-gated, CORS-restricted to localhost origins,
-and `/reveal` + `/open` are confined to registered `host` roots. Everything
+the **host**, outside Docker (Docker Desktop only — useless on a NAS):
+`python3 tools/sortandpost_helper.py --local-dir <LOCAL_DIR> --sync-dir <SYNC_DIR>`
+(or `--app-data <folder>` for a single-folder tree). It listens on `127.0.0.1`, writes
+`<local>/helper.json` (`{port, token}`, seen by the container through the `/data/local`
+mount, so `LOCAL_DIR` must be a host folder), and the browser calls it directly.
+Token-gated (`/health` excepted, and it lists nothing), CORS-restricted to localhost
+origins, `/reveal` + `/open` confined to registered `host` roots, `/open` runs only the OS
+default or the Open-with app it reads itself from `<local>/ui_prefs.json` (a request can't
+name a program — Security.md M2), `/listdir` confined to roots + home + drive / app
+folders. Start at login: `packaging/helper/` (macOS launchd installer, Windows `.bat`).
+Settings → File-manager helper (Docker only, `app._helper_panel`) shows status and the
+command with compose's `SORTANDPOST_HOST_LOCAL_DIR` / `_SYNC_DIR` filled in. Everything
 degrades gracefully to a "copy host path" button when the agent isn't running.
 See `sortandpost.helper` (server-side reader) + `tools/sortandpost_helper.py`.
 

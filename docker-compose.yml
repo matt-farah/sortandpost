@@ -12,6 +12,8 @@ services:
       CLIP_MODEL: ${CLIP_MODEL:-}
       # Shown in messages instead of /data/sync (e.g. "keep <folder> downloaded").
       SORTANDPOST_HOST_SYNC_DIR: ${SYNC_DIR}
+      # Settings -> File-manager helper fills these into its start command.
+      SORTANDPOST_HOST_LOCAL_DIR: ${LOCAL_DIR:-}
       # The app runs as this user / group (not root). Use the owner of PHOTO_LIBRARY
       # and SYNC_DIR on a Linux / Synology host; Docker Desktop is fine with 1000.
       PUID: ${PUID:-1000}
@@ -47,9 +49,10 @@ services:
       start_period: 60s
       retries: 3
     # File-manager "Reveal in Finder/Explorer" needs a small host agent that runs
-    # OUTSIDE Docker (the container has no host GUI). See tools/sortandpost_helper.py:
-    #   python3 tools/sortandpost_helper.py --app-data <a host folder holding local/>
-    # (it writes local/helper.json, so it needs LOCAL_DIR set to a host folder).
+    # OUTSIDE Docker (the container has no host GUI). Settings -> File-manager helper
+    # shows the exact command; it needs LOCAL_DIR set to a host folder:
+    #   python3 tools/sortandpost_helper.py --local-dir "$LOCAL_DIR" --sync-dir "$SYNC_DIR"
+    # To start it at login: packaging/helper/ (macOS launchd, Windows .bat).
 
   # One-shot indexer pass. Runs the same image with a different entrypoint.
   #   docker compose run --rm indexer --once

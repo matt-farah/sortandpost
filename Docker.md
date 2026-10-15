@@ -55,9 +55,12 @@ photos.example.com {          # or: nas.local { tls internal ... }
 - [x] Dependency audit: `uv audit` is in the quality gate (no CI yet). Clean on 2026-10-14.
 - [x] Runs as a non-root user (P6a): `docker-entrypoint.sh` re-owns only `/data/local`, then
       drops to `PUID:PGID` (default 1000) with `setpriv`. `/library` stays the only photo mount.
-- [ ] Helper agent hardening (Security.md **M2**) — the helper is the Docker path's
-      Reveal / Open, so ship it fixed: it ignores the request's `app`, and `/listdir`
-      is limited.
+- [x] Helper agent hardening (Security.md **M2**, P6c): `/open` only runs the default app or
+      the one saved in Settings → Open with (read from `<local>/ui_prefs.json`); `/listdir`
+      is limited to library folders, home and the drive / app locations; `/health` no longer
+      lists folders. `--local-dir` / `--sync-dir` for the split compose mounts. Start at login:
+      `packaging/helper/` (launchd installer, Windows `.bat`). Settings → File-manager helper
+      shows status and the command (Docker only).
 - [x] Healthcheck (P6a): `GET /healthz` → `ok`, in the image and in compose.
 
 ## Validated (P6a, 2026-10-14, Docker Desktop on macOS arm64)
@@ -71,6 +74,32 @@ event through the mount triggers a scoped pass, and a sparse stub reads as onlin
 WSL2 mounts.
 
 ## Deployment shapes
+
+### Always-on NAS (Synology)
+
+The NAS runs the container 24/7: it indexes new photos, runs CLIP and publishes the
+database to the shared folder. Laptops and desktops run the desktop app on the same shared
+folder (through Synology Drive) and borrow editing with **Take over editing** (P6d); when
+they quit, the NAS takes it back. Browse the NAS's own web UI from a phone or another computer
+only with a password and HTTPS ([HTTPS](#https)). There's no Reveal in Finder there (the helper
+needs Docker and the browser on one computer); Copy path works.
+
+Set `PUID` / `PGID` to the owner of the photo and shared folders (`id <user>` over SSH),
+`DEVICE_NAME` to a stable name, and leave `LOCAL_DIR` unset (a Docker volume) or point it at
+a folder that isn't synced.
+
+### Bind-mount performance
+
+- **Linux / Synology**: bind mounts are native; scans run at disk speed.
+- **Docker Desktop (macOS / Windows)**: every file read crosses into the Linux VM
+  (virtiofs on macOS, the WSL2 9P share on Windows). A first scan and CLIP pass are slower
+  than a native run, and CLIP runs on the CPU only (no Apple GPU / MPS in Docker). For a
+  large first index, the native app is faster; Docker is for the steady state after that.
+- Thumbnails and the working DB live on Docker's side (`/data/local`, a volume by default),
+  so browsing doesn't touch the bind mounts much.
+- On Windows, keep the photos on an NTFS drive the WSL2 VM can reach; network drives
+  (SMB) work but are slow and don't deliver file-change events, so new photos wait for the
+  15-minute full scan.
 
 - **Synology NAS**: Docker (Container Manager) on the NAS; `sync/` and the photos are native
   NAS folders; desktop apps reach them through Synology Drive.

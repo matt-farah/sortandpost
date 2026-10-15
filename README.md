@@ -93,6 +93,11 @@ rating writes and the shared folder will fail with "permission denied". Docker D
 on a Mac or PC works with the default. `docker ps` shows the container as `healthy` once
 the web UI answers.
 
+**Reveal in Finder / Explorer under Docker Desktop** needs a small helper running on the
+same computer: see **Settings → File-manager helper** and
+[packaging/helper/README.md](packaging/helper/README.md). Docker.md covers the always-on NAS
+setup and bind-mount speed.
+
 **Editing from a desktop app while Docker runs.** Only one computer edits at a time, and
 Docker usually holds editing. In the desktop app, click **Take over editing** in the top
 bar. Docker hands over in about 30 seconds, unless someone using Docker clicks **Keep

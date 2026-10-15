@@ -15,7 +15,7 @@ release) · **accepted** (a known, deliberate trade-off for now).
 | H1 | High | Web UI on `0.0.0.0` with no login (source + Docker runs) | **fixed** (V3 P6b) |
 | H3 | High | The shared sync folder is fully trusted | **accepted** — single-user by design |
 | M1 | Medium | DNS rebinding / cross-site websocket to the local server | **fixed** (V3 P6b) |
-| M2 | Medium | Helper `/open` runs any program named in the request | deferred |
+| M2 | Medium | Helper `/open` runs any program named in the request | **fixed** (V3 P6c) |
 | L1 | Low | NiceGUI `storage_secret` is the device id, which is visible in `sync/` | **fixed** (V3 P6b) |
 | L2 | Low | Docker build unpinned; no dependency audit in the quality gate | **fixed** (V3 P6a) |
 | L3 | Low | No rate limiting | **fixed** (V3 P6b, login attempts) |
@@ -112,13 +112,20 @@ websocket.
 password is set or the name is in `SORTANDPOST_ALLOWED_HOSTS`, and refuses any websocket,
 socket.io request or non-GET request whose `Origin` isn't the same host:port.
 
-## M2 — helper `/open` runs any program · deferred
+## M2 — helper `/open` runs any program · fixed
 
 `tools/sortandpost_helper.py` takes `app` from the request body and runs
 `[app, path]`. Only the *path* is confined to library roots. The token is put in
 `window.__spHelper` on every page, so anyone who can load the UI has it. `/listdir`
 lists any folder on the computer. Fix: the helper reads the configured open-with app
 itself (or an allowlist) and ignores the request's `app`; consider limiting `/listdir`.
+
+**Fixed in V3 P6c**: the request's `app` is only a flag. The helper reads the saved
+Open-with app from `<local>/ui_prefs.json` and refuses (403) any other name. `/listdir`
+only lists under the registered roots, home, and the usual drive / app folders, with no
+"up" link above them; `/health` (no token) no longer lists folders. Remaining by design:
+whoever can use the UI can still *set* the Open-with app in Settings, the same as on a native
+run; with the P6b login that's only someone with the password.
 
 ## L1 — `storage_secret` is the device id · fixed
 
