@@ -180,17 +180,43 @@ def collections_containing(paths: Paths, pixel_hash: str) -> list[Collection]:
     return [c for c in load_collections(paths) if c.has(pixel_hash)]
 
 
+class DuplicateNameError(ValueError):
+    """Another collection already has this name (compared case-insensitively)."""
+
+    def __init__(self, existing: Collection) -> None:
+        super().__init__(f'a collection named "{existing.name}" already exists')
+        self.existing = existing
+
+
+def find_by_name(
+    collections: list[Collection], name: str, *, exclude_id: str | None = None
+) -> Collection | None:
+    """The collection whose (cleaned) name matches *name* case-insensitively."""
+    key = clean_name(name).casefold()
+    for c in collections:
+        if c.name.casefold() == key and c.id != exclude_id:
+            return c
+    return None
+
+
 def create_collection(paths: Paths, name: str, *, notes: str = "") -> Collection:
+    """Raises :class:`DuplicateNameError` when the name is taken -- a double
+    submit (Enter + the Create button) once made two "Double Exposure"s."""
     coll = Collection(name=clean_name(name), notes=notes.strip())
     existing = load_collections(paths)
+    if (dup := find_by_name(existing, coll.name)) is not None:
+        raise DuplicateNameError(dup)
     existing.append(coll)
     _write_sorted(paths, existing)
     return coll
 
 
 def rename_collection(paths: Paths, coll_id: str, new_name: str) -> list[Collection]:
+    """Raises :class:`DuplicateNameError` when another collection has *new_name*."""
     new_name = clean_name(new_name)
     colls = load_collections(paths)
+    if new_name and (dup := find_by_name(colls, new_name, exclude_id=coll_id)) is not None:
+        raise DuplicateNameError(dup)
     for c in colls:
         if c.id == coll_id and new_name:
             c.name = new_name

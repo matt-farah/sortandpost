@@ -383,3 +383,18 @@ def test_server_command_from_source() -> None:
 
     assert server_command() == [sys.executable, "-m", "sortandpost", "--serve"]
     assert os.path.isabs(server_command()[0])
+
+
+def test_quit_reports_photos_the_trash_refused() -> None:
+    pytest.importorskip("pystray")
+    from sortandpost.desktop.tray import trash_failure_message
+
+    assert trash_failure_message({"moved": 5, "failed": 0}) is None
+    msg = trash_failure_message(
+        {"moved": 1, "failed": 4, "error": "The volume doesn't have a trash."}
+    )
+    assert msg is not None
+    assert "4 deleted photo(s)" in msg and "(1 were)" in msg
+    assert "The volume doesn't have a trash." in msg and "Recently deleted" in msg
+    gone = trash_failure_message(None)  # the server didn't answer
+    assert gone is not None and "couldn't move" in gone

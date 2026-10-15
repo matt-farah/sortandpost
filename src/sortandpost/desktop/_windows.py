@@ -39,6 +39,7 @@ def hold_app_mutex() -> None:
 
 _MB_YESNO = 0x04
 _MB_ICONQUESTION = 0x20
+_MB_ICONWARNING = 0x30
 _MB_SETFOREGROUND = 0x10000
 _MB_TOPMOST = 0x40000
 _IDYES = 6
@@ -52,6 +53,13 @@ def ask(title: str, message: str, *, yes: str, no: str) -> bool:
     flags = _MB_YESNO | _MB_ICONQUESTION | _MB_SETFOREGROUND | _MB_TOPMOST
     user32 = ctypes.windll.user32  # type: ignore[attr-defined,unused-ignore]
     return bool(user32.MessageBoxW(None, text, title, flags) == _IDYES)
+
+
+def notify(title: str, message: str) -> None:
+    """A modal OK box in front of everything (any thread)."""
+    flags = _MB_ICONWARNING | _MB_SETFOREGROUND | _MB_TOPMOST
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined,unused-ignore]
+    user32.MessageBoxW(None, message, title, flags)
 
 
 def name_window(icon: Any) -> None:
