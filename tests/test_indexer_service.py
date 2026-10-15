@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 from sortandpost.config import Settings
@@ -147,8 +148,11 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
 def _photo_count(settings: Settings) -> int:
     if not settings.paths.working_db.exists():
         return 0
-    with Session(make_engine(settings.paths.working_db)) as s:
-        return len(s.exec(select(Photo)).all())
+    try:
+        with Session(make_engine(settings.paths.working_db)) as s:
+            return len(s.exec(select(Photo)).all())
+    except OperationalError:  # the indexer thread created the file but not the tables yet
+        return 0
 
 
 def _run_in_thread(settings: Settings, *, is_writable, stop) -> threading.Thread:
