@@ -1,7 +1,7 @@
 """CLIP engine: image embeddings + zero-shot tagging.
 
 Embeddings are L2-normalized and stored as rows in a memory-mapped ``float32``
-matrix under ``sync/embeddings/``. See CLAUDE.md -> "CLIP tagging & search".
+matrix under ``sync/embeddings/``. See docs/architecture.md -> "CLIP tagging & search".
 
 * :mod:`sortandpost.clip.model` -- guarded ``open_clip`` wrapper (CPU).
 * :mod:`sortandpost.clip.store` -- the append-mostly embedding matrix + rowmap.

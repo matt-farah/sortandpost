@@ -63,7 +63,7 @@ def test_find_conflict_copies(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# two-machine convergence (CLAUDE.md step-4 acceptance test)
+# two-machine convergence (docs/architecture.md step-4 acceptance test)
 # --------------------------------------------------------------------------- #
 def test_two_machine_merge_converges(tmp_path: Path) -> None:
     base = tmp_path / "base.db"

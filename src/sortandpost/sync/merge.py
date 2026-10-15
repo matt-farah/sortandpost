@@ -1,4 +1,4 @@
-"""Conflict-copy detection and the deterministic merge (CLAUDE.md → "Sync model").
+"""Conflict-copy detection and the deterministic merge (docs/architecture.md → "Sync model").
 
 Two machines can both edit if the sync tool is slow to propagate, leaving a
 "conflicted copy" in ``sync/``. Merge is deterministic:

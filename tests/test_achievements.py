@@ -71,7 +71,7 @@ def _rate(session: Session, h: str, stars: int) -> None:
 
 def test_bundled_table_parses_every_row() -> None:
     defs = definitions()
-    src = Path(__file__).parents[1] / "Achievements" / "Achievements.md"
+    src = Path(__file__).parents[1] / "dev-notes" / "achievements" / "Achievements.md"
     rows = [ln for ln in src.read_text(encoding="utf-8").splitlines() if ln.startswith("| ")]
     assert len(defs) == len(rows) - 2  # minus the header + separator rows
     keys = [a.key for a in defs]
@@ -90,7 +90,7 @@ def test_bundled_table_parses_every_row() -> None:
 
 
 def test_bundled_copy_matches_the_repo_table() -> None:
-    repo = Path(__file__).parents[1] / "Achievements" / "Achievements.md"
+    repo = Path(__file__).parents[1] / "dev-notes" / "achievements" / "Achievements.md"
     assert resource_path("achievements.md").read_text(encoding="utf-8") == repo.read_text(
         encoding="utf-8"
     )

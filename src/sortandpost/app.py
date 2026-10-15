@@ -3,7 +3,7 @@
 ``/`` is the library *and* search: a filter bar + text query drive the grid via
 URL params (:mod:`sortandpost.library_view`); ``/search`` just redirects there.
 Plus ``/photo``, ``/rate``, ``/collections``, ``/review`` and ``/settings``.
-See CLAUDE.md -> "Frontend (NiceGUI pages)".
+See docs/architecture.md -> "Frontend (NiceGUI pages)".
 
 Only cheap keyed SELECTs run on the event loop here; image decode / exiftool /
 CLIP stay off it -- the indexer process, or ``run.io_bound`` for query embedding
@@ -3967,7 +3967,7 @@ def _delete_targets(session: Session, settings: Settings, hashes: list[str]) -> 
 
 def _apply_bulk_delete(settings: Settings, engine: Engine, hashes: list[str]) -> DeleteResult:
     """Off the event loop: move the selected photos' files to trash and purge
-    their rows (CLAUDE.md constraint #1, exception 2)."""
+    their rows (docs/architecture.md constraint #1, exception 2)."""
     with Session(engine) as session:
         targets = _delete_targets(session, settings, hashes)
         result = delete_photos(
@@ -4179,7 +4179,7 @@ def _cpu_speed_editor(settings: Settings) -> None:
 
 
 def _deletion_editor(settings: Settings, *, autosave: bool = False) -> None:
-    """`/settings` control for the "Delete photos" action (CLAUDE.md constraint
+    """`/settings` control for the "Delete photos" action (docs/architecture.md constraint
     #1, exception 2). Only the stack scope is user-configurable."""
     cfg = settings.config.deletion
     ui.label(
@@ -4314,7 +4314,7 @@ def _fmt_trash_time(iso: str) -> str:
 
 def _app_data_editor(settings: Settings) -> None:
     """`/settings` control for the shared folder -- where the database,
-    thumbnails and CLIP embeddings are kept and synced (CLAUDE.md "App-data
+    thumbnails and CLIP embeddings are kept and synced (docs/architecture.md "App-data
     layout"). Saving writes the pointer file in the user's home directory
     (:mod:`sortandpost.launcher_pref`) and restarts: a clean shutdown (final
     publish, lock release) and a re-launch on the new folder. A genuine
@@ -5048,7 +5048,7 @@ def _exclude_editor(settings: Settings, engine: Engine, *, autosave: bool = Fals
 
 
 # Under Docker the container can't trigger the host's sync client: reading a stub
-# through the bind mount is an I/O error (Docker.md -> Cloud folders).
+# through the bind mount is an I/O error (docs/docker.md -> Cloud folders).
 _DOCKER_KEEP_HINT = (
     'on the host computer, set the photo folder to "Always keep on this device" '
     '(OneDrive) or "Mirror files" / "Available offline" (Google Drive, Dropbox), '
@@ -6567,7 +6567,7 @@ def _install_server_guard(secret: str, port: int) -> None:
 
 def run(settings: Settings) -> None:
     # A random per-machine secret in local/ signs the login and NiceGUI's storage
-    # cookie -- not the device id, which is visible in sync/ (Security.md L1).
+    # cookie -- not the device id, which is visible in sync/ (docs/security-review.md L1).
     secret = load_or_create_secret(settings.paths.local)
     build_ui(settings)
     _install_desktop_control(settings)

@@ -1,24 +1,53 @@
 # sortandpost
 
-Locally-run photo organization app. Scans existing photo folders, lets you rate photos 1–5
-stars, auto-tags them with CLIP, and provides natural-language semantic search — in the
-browser, no cloud service. Your library's state (database, thumbnails, search index) lives in
-one shared folder you keep in any file-sync tool (OneDrive, Google Drive, Synology Drive,
-Dropbox) — pick the same folder on another computer and it works there with no rebuild.
+**Rate, tag, search and post your photos — locally, in your browser, with no cloud service.**
 
-**Architecture and design decisions live in [CLAUDE.md](CLAUDE.md). Read it first.**
+sortandpost scans the photo folders you already have and gives you a fast, keyboard-first
+library on top of them: rate photos 1–5 stars, let CLIP suggest tags, and find anything by
+describing it ("dog on a beach at sunset"). It never reorganizes your files. Your library's
+state (database, thumbnails, search index) lives in one shared folder you keep in any
+file-sync tool (OneDrive, Google Drive, Synology Drive, Dropbox), so another computer picks
+it up with no rebuild.
+
+<!-- Screenshots: add docs/images/library.png, photo.png, search.png and uncomment.
+![The library grid](docs/images/library.png)
+-->
+
+## Features
+
+- **Keyboard-first rating.** Arrow keys to move, `1`–`5` to rate, `0` to clear, `f` to flag.
+- **AI tagging you approve.** CLIP (open_clip, runs on your machine — Apple MPS / CUDA / CPU)
+  suggests tags from an editable vocabulary; only tags you approve are kept.
+- **Semantic search.** Natural-language search and "more like this", plus filters for stars,
+  camera, date range, folder, tag, GPS, duplicates and more. Group by month, day, folder or
+  camera.
+- **Your files stay yours.** Photos are never renamed or moved. Ratings and approved tags are
+  written into the file's standard XMP / IPTC metadata (JPEG, HEIC, TIFF, PNG) so Lightroom
+  and Windows Explorer see them. RAW files are read-only.
+- **Multi-computer, no server.** Pick the same shared folder on another computer and your
+  ratings, tags and search index are there. One computer edits at a time; the others can hand
+  editing over with one click. Conflicting copies from a slow sync are merged automatically.
+- **Stacks, duplicates, collections.** RAW+JPEG pairs and "copy" files stack together;
+  identical photos at several paths are recognised by their pixels; build ordered collections.
+- **Post to social media** through a scheduling service you already use (robopost, Postiz,
+  Zernio, Upload-Post), with clean exported JPEGs (no EXIF / GPS) and Instagram-ready crops.
+- **Safe deletes.** "Delete" moves files into a recoverable trash with one-click undo.
+- Seasonal light / dark themes, and optional achievements to make sorting a bit of a game.
 
 > [!WARNING]
 > **Opening sortandpost to other devices needs a password.** By default it only answers on
 > this computer (`HOST=127.0.0.1`; Docker publishes on `127.0.0.1`). To use it from a phone
 > or another computer, set `SORTANDPOST_PASSWORD` (or `SORTANDPOST_PASSWORD_FILE`) and, for
 > Docker, `BIND=0.0.0.0`. On a network, plain HTTP lets others on that network read the
-> password: put it behind HTTPS (see [Docker.md](Docker.md#https)). The macOS / Windows
-> desktop app only listens on this computer. See [Security.md](Security.md).
+> password: put it behind HTTPS (see [docs/docker.md](docs/docker.md#https)). The macOS /
+> Windows desktop app only listens on this computer. See [SECURITY.md](SECURITY.md).
 
-## macOS app (easiest)
+## Install
 
-Download `sortandpost-<version>-arm64.dmg` (Apple Silicon), drag **sortandpost** to
+### macOS app (easiest)
+
+Download `sortandpost-<version>-arm64.dmg` (Apple Silicon) from
+[Releases](https://github.com/matt-farah/sortandpost/releases), drag **sortandpost** to
 Applications and open it. No Python or exiftool needed. It lives in the **menu bar**: the ★
 icon opens the library in your browser and lets you pause or resume indexing, start
 sortandpost at login, show logs, and quit. Quitting finishes the current photo, saves the
@@ -28,13 +57,22 @@ Trash.
 
 The app isn't notarized yet, so the first time you open it, **right-click → Open**, or go to
 System Settings → Privacy & Security → *Open Anyway*. It opens at
-`http://sortandpost.localhost:8080` and only listens on this computer. To build it yourself, run `packaging/macos/build.sh` (see CLAUDE.md →
-"Desktop app").
+`http://sortandpost.localhost:8080` and only listens on this computer. To build it yourself,
+run `packaging/macos/build.sh` (see
+[docs/architecture.md → Desktop app](docs/architecture.md#desktop-app-v2-p5-sortandpostdesktop-packaging)).
 
-## Quick start (native — from source)
+### Windows app
+
+Download `sortandpost-<version>-setup.exe` from
+[Releases](https://github.com/matt-farah/sortandpost/releases) and run it. It installs for
+your user only (no admin prompt) and lives in the system tray, like the macOS app. It isn't
+code-signed yet, so Windows SmartScreen may ask you to confirm (**More info → Run anyway**).
+To build it yourself: `pwsh packaging\windows\build.ps1`.
+
+### From source (any OS)
 
 Runs directly on your machine: native filesystem speed, GPU CLIP (Apple MPS /
-CUDA), and "Reveal in Finder / Explorer" works with no helper process.
+CUDA), and "Reveal in Finder / Explorer" works.
 
 ```bash
 # 1. one external tool
@@ -64,7 +102,7 @@ One-shot index (also runs continuously inside the app):
 uv run python -m sortandpost.indexer --once
 ```
 
-## Docker (server / NAS / headless)
+### Docker (experimental — server / NAS / headless)
 
 For an always-on box that indexes 24/7 while you browse from a laptop. CLIP runs
 CPU-only in the container and bind-mount scans are slower on macOS/Windows — use
@@ -98,7 +136,7 @@ photo page's copy button copies the file's path instead. Give each library folde
 **network path** in **Settings → Library** (e.g. `\\nas\photo` or `smb://nas.local/photo`)
 and it copies a path your other computers can open: `\\nas\photo\…` on Windows (paste in
 Explorer's address bar), `smb://nas/photo/…` on a Mac (Finder → Go → Connect to Server).
-Docker.md covers the always-on NAS setup and bind-mount speed.
+[docs/docker.md](docs/docker.md) covers the always-on NAS setup and bind-mount speed.
 
 **Editing from a desktop app while Docker runs.** Only one computer edits at a time, and
 Docker usually holds editing. In the desktop app, click **Take over editing** in the top
@@ -106,17 +144,32 @@ bar. Docker hands over in about 30 seconds, unless someone using Docker clicks *
 editing**. When you quit the desktop app, Docker takes editing back. Docker's own page
 has the same button.
 
-## Development
+## How it works
 
-```bash
-uv sync --locked --extra dev --extra desktop
-uv run python -m sortandpost            # web app (first run: welcome wizard; or set APP_DATA)
-uv run pytest
-uv run ruff check . && uv run mypy src
-```
+Every photo is identified by a hash of its decoded pixels, so moves, renames, copies and
+metadata edits never lose its ratings or tags. The app runs against a local working copy of
+its SQLite database and atomically publishes a snapshot into the shared folder, which is what
+makes plain file-sync tools safe to use. The full design — constraints, sync model, indexer,
+schema — is in [docs/architecture.md](docs/architecture.md).
 
-Build order and status are tracked in CLAUDE.md → "Suggested build order".
+## Contributing
 
-# How to run locally for testing
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev
+setup and checks, and [SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
-.venv/bin/python -m sortandpost
+## Repository layout
+
+| Path | What's there |
+|------|--------------|
+| `src/sortandpost/` | The app (web UI, indexer, sync layer, CLIP, posting, desktop tray) |
+| `tests/` | pytest suite |
+| `migrations/` | Alembic migrations for the SQLite schema |
+| `packaging/` | Docker entrypoint, macOS `.app` / DMG and Windows installer builds |
+| `tools/` | Dev helpers (Tailwind CSS build, UI copy export) |
+| `docs/` | Architecture spec, Docker / NAS setup, security review |
+| `dev-notes/` | Planning notes, roadmaps, progress log and issue history from development |
+| `CLAUDE.md` | Instructions for Claude Code (imports `docs/architecture.md`) |
+
+## License
+
+[MIT](LICENSE)

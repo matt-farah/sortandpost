@@ -2,7 +2,7 @@
 
 Brute-force cosine (dot product on normalized rows) via NumPy, memory-mapped.
 Target <= ~25k photos. If the library outgrows that, add an on-disk ANN index
-behind this same interface without changing it. See CLAUDE.md.
+behind this same interface without changing it. See docs/architecture.md.
 
 * :mod:`sortandpost.search.vector` -- matrix open + ``rank`` primitive.
 * :mod:`sortandpost.search.filters` -- ``PhotoFilter`` + ``browse_photos``.

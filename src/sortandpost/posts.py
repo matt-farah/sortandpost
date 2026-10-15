@@ -4,7 +4,7 @@
 
 Like collections these ride along in the sync folder but are **not** merged
 through the DB ``changes`` log: a post is not ``pixel_hash``-keyed state, it is
-a small document. (A deliberate exception to CLAUDE.md constraint #4, the same
+a small document. (A deliberate exception to docs/architecture.md constraint #4, the same
 one collections and saved searches have.) One file per post rather than one
 ``posts.json`` so two machines editing *different* posts never produce a sync
 conflict copy -- losing a post's send log could lead to a double post.
