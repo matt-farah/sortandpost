@@ -74,6 +74,26 @@ def _ask(title: str, message: str, *, yes: str, no: str) -> bool:
 TRASH_NAME = "Recycle Bin" if sys.platform == "win32" else "Trash"
 
 
+def trash_failure_message(res: dict[str, Any] | None) -> str | None:
+    """What to tell the user after Quit's "Move to Trash", or None if it all
+    went. Failures used to reach only the log, so Quit looked like it worked
+    (dev-notes/Issues.md: send2trash refused every file in a synced folder)."""
+    if res is not None and not res.get("failed"):
+        return None
+    if res is None:
+        head = f"sortandpost couldn't move your deleted photos to the {TRASH_NAME}."
+    else:
+        n, moved = int(res["failed"]), int(res.get("moved") or 0)
+        head = f"{n} deleted photo(s) couldn't be moved to the {TRASH_NAME}"
+        head += f" ({moved} were)." if moved else "."
+        if res.get("error"):
+            head += f"\n\n{res['error']}"
+    return (
+        f"{head}\n\nThey're still in sortandpost's “Recently deleted” (Settings → Deleting), "
+        "where you can put them back or try again."
+    )
+
+
 class TrayApp:
     def __init__(self, server: ServerProcess, lock: InstanceLock) -> None:
         import pystray
@@ -159,6 +179,29 @@ class TrayApp:
             # win32: menu callbacks already run on pystray's message-loop thread,
             # and update_menu only rebuilds an HMENU, which any thread may do.
             fn()
+
+    def _notify_and_wait(self, title: str, message: str) -> None:
+        """An OK box, from a worker thread; returns once it's dismissed."""
+        try:
+            if sys.platform == "darwin":
+                from sortandpost.desktop import _macos
+
+                done = threading.Event()
+
+                def _show() -> None:
+                    try:
+                        _macos.notify(title, message)
+                    finally:
+                        done.set()
+
+                _macos.call_on_main(_show)  # AppKit alerts run on the main thread
+                done.wait()
+            elif sys.platform == "win32":  # pragma: no cover - Windows only
+                from sortandpost.desktop import _windows
+
+                _windows.notify(title, message)
+        except Exception:  # never let a notice stand between the user and Quit
+            log.exception("quit: could not show %r", title)
 
     # -- actions ------------------------------------------------------------ #
     def open_browser(self) -> None:
@@ -260,6 +303,8 @@ class TrayApp:
             if move_trash:
                 res = self.server.flush_trash()
                 log.info("quit: moved deleted photos to the system Trash: %s", res)
+                if (msg := trash_failure_message(res)) is not None:
+                    self._notify_and_wait(f"Not moved to the {TRASH_NAME}", msg)
             self.shutdown()
             self.icon.stop()
 

@@ -90,6 +90,7 @@ from sortandpost.clip.vocab import load_vocab
 from sortandpost.cloud_folders import cloud_provider
 from sortandpost.collections import (
     Collection,
+    DuplicateNameError,
     add_to_collection,
     clean_name,
     collections_containing,
@@ -2486,7 +2487,11 @@ def build_ui(settings: Settings) -> None:
                     if not name:
                         ui.notify("Enter a name (letters, numbers, spaces).", type="warning")
                         return
-                    c = create_collection(settings.paths, name, notes=notes_in.value or "")
+                    try:
+                        c = create_collection(settings.paths, name, notes=notes_in.value or "")
+                    except DuplicateNameError as exc:
+                        ui.notify(f'"{exc.existing.name}" already exists.', type="warning")
+                        return
                     achievements_ui.poke()
                     dialog.close()
                     ui.navigate.to(f"/collections/{c.id}" + ("?add=1" if then_add else ""))
@@ -2592,7 +2597,11 @@ def build_ui(settings: Settings) -> None:
                     if not new:
                         ui.notify("Enter a name (letters, numbers, spaces).", type="warning")
                         return
-                    rename_collection(settings.paths, coll_id, new)
+                    try:
+                        rename_collection(settings.paths, coll_id, new)
+                    except DuplicateNameError as exc:
+                        ui.notify(f'"{exc.existing.name}" already exists.', type="warning")
+                        return
                     title.set_text(new)
                     dialog.close()
 
@@ -4292,7 +4301,9 @@ def _trash_panel(settings: Settings, engine: Engine) -> None:
                             msg = f"moved {res.moved} file(s) to the system Trash"
                             if res.failed:
                                 msg += f"; {len(res.failed)} could not be moved"
-                            ui.notify(msg)
+                                if res.failed[0].error:
+                                    msg += f" ({res.failed[0].error})"
+                            ui.notify(msg, type="warning" if res.failed else None)
                         _render()
                         dialog.close()
 
@@ -5897,11 +5908,14 @@ def _collection_add_button(
             name_in = ui.input(placeholder="name").props("dense autofocus").classes("w-64")
 
             def _go() -> None:
-                name = (name_in.value or "").strip()
+                name = clean_name(name_in.value or "")
                 if not name:
                     return
-                coll = create_collection(settings.paths, name)
-                achievements_ui.poke()
+                try:
+                    coll = create_collection(settings.paths, name)
+                    achievements_ui.poke()
+                except DuplicateNameError as exc:
+                    coll = exc.existing  # same name: add to the one that's there
                 dialog.close()
                 _pick(coll)
 
@@ -6508,7 +6522,10 @@ def _desktop_flush_trash(settings: Settings) -> dict[str, Any]:
     user click in the tray's dialog (constraint #1), never automatic."""
     res = flush_to_system_trash(settings.paths.local)
     State.last_delete = None
-    return {"moved": res.moved, "failed": len(res.failed)}
+    out: dict[str, Any] = {"moved": res.moved, "failed": len(res.failed)}
+    if res.failed:
+        out["error"] = res.failed[0].error  # the first reason, for the tray's notice
+    return out
 
 
 def _install_desktop_control(settings: Settings | None) -> None:

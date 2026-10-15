@@ -24,7 +24,7 @@ from nicegui import ui
 from sqlalchemy.engine import Engine
 
 from sortandpost.collections import get_collection, load_collections
-from sortandpost.config import Settings
+from sortandpost.config import PostingConfig, Settings
 from sortandpost.post_export import (
     IgSpec,
     resolve_sources,
@@ -1157,8 +1157,10 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
         spec = active_provider(settings)
         with ui.row().classes("items-center gap-3"):
             ui.label("Posting service").classes("text-sm")
-            t = ui.toggle({k: sp.name for k, sp in PROVIDERS.items()}, value=spec.key).props(
-                "dense no-caps"
+            t = (
+                ui.select({k: sp.name for k, sp in PROVIDERS.items()}, value=spec.key)
+                .props("dense outlined")
+                .classes("w-48")
             )
             t.set_enabled(writable)
 
@@ -1208,16 +1210,36 @@ def posting_settings_panel(settings: Settings, *, writable: bool) -> None:
             .classes("w-40")
         )
         q_lbl = ui.label(str(pc.export_quality)).classes("text-sm w-8")
+        defaults = PostingConfig()
+        reset = (
+            ui.button("Reset to defaults", on_click=lambda: _reset_export())
+            .props("flat dense no-caps")
+            .tooltip(f"{defaults.export_long_edge} px, quality {defaults.export_quality}")
+        )
+
+    def _sync_reset() -> None:
+        reset.set_enabled(
+            (pc.export_long_edge, pc.export_quality)
+            != (defaults.export_long_edge, defaults.export_quality)
+        )
+
+    def _reset_export() -> None:
+        # setting the widgets fires their handlers, which save the config
+        edge.set_value(defaults.export_long_edge)
+        q.set_value(defaults.export_quality)
+        _save_export()
 
     def _save_export(_e: Any = None) -> None:
         pc.export_long_edge = int(edge.value or 0)
         pc.export_quality = int(q.value or 90)
         q_lbl.set_text(str(pc.export_quality))
         settings.config.dump(settings.paths.config_file)
+        _sync_reset()
 
     edge.on_value_change(_save_export)
     q.on("change", _save_export)
     q.on_value_change(lambda e: q_lbl.set_text(str(int(e.value or 0))))
+    _sync_reset()
 
 
 def _key_panel(spec: ProviderSpec, client: Any) -> None:

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from sortandpost.collections import (
     NAME_MAX_LEN,
     Collection,
+    DuplicateNameError,
     add_to_collection,
     clean_name,
     collections_containing,
@@ -203,3 +206,23 @@ def test_corrupt_file_is_backed_up_not_lost(paths: Paths) -> None:
     # and the store is usable again afterwards
     create_collection(paths, "fresh")
     assert [c.name for c in load_collections(paths)] == ["fresh"]
+
+
+def test_create_refuses_a_name_already_taken(paths: Paths) -> None:
+    first = create_collection(paths, "Double Exposure")
+    for again in ("Double Exposure", "double exposure", "  Double   Exposure "):
+        with pytest.raises(DuplicateNameError) as err:
+            create_collection(paths, again)
+        assert err.value.existing.id == first.id
+    assert [c.name for c in load_collections(paths)] == ["Double Exposure"]
+
+
+def test_rename_refuses_another_collections_name(paths: Paths) -> None:
+    a = create_collection(paths, "alpha")
+    create_collection(paths, "beta")
+    with pytest.raises(DuplicateNameError):
+        rename_collection(paths, a.id, "BETA")
+    assert sorted(c.name for c in load_collections(paths)) == ["alpha", "beta"]
+    # re-casing its own name is fine
+    rename_collection(paths, a.id, "Alpha")
+    assert sorted(c.name for c in load_collections(paths)) == ["Alpha", "beta"]

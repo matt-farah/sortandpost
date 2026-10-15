@@ -8,6 +8,17 @@ _Working branch: `main`. V3 through P6a–d merged._
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🐛 2026-10-15 — Issues.md sweep (branch `fix/issues-list-2026-10-15`)
+
+- **Duplicate collections:** `DuplicateNameError` on create / rename with a taken name
+  (case-insensitive); dialogs warn; the add-to menu's "New collection…" reuses the existing one.
+- **Settings → Posting:** provider toggle → dropdown; Upload size "Reset to defaults"
+  (2048 px / 90, from `PostingConfig`).
+- **Quit → Trash:** a notice when the Trash refuses files (cause was `local/` in Synology,
+  fixed 2026-10-08); Settings' flush warns with the reason.
+- **SQL `disk I/O error`:** closed — the 2026-10-08 root cause, none since the move.
+- All open Issues.md items closed. Hands-on tested (except the packaged-app Quit notice).
+
 ## 🧪 2026-10-15 — Docker full test, helper shelved; Docker ships as **experimental**
 
 - **Full sandbox test** (scratch copies of `browser_test_data` + sample photos, port 8090):
