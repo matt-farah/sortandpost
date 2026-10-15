@@ -1,12 +1,32 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-15 (V3 P6a–c Docker / server mode)._
+_Last updated: 2026-10-15 (Docker full test; helper shelved; Docker = experimental)._
 _Working branch: `main`. V3 through P6a–d merged._
 
 > **▶️ Next:** V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🧪 2026-10-15 — Docker full test, helper shelved; Docker ships as **experimental**
+
+- **Full sandbox test** (scratch copies of `browser_test_data` + sample photos, port 8090):
+  join wizard, re-index by pixel hash (0 new / 0 thumbs / 0 re-embeds), all pages, rating →
+  DB fan-out + one EXIF write, publish, Docker ↔ native Mac handover both ways, clean stop
+  (release + final publish), password mode on `0.0.0.0`, `indexer --once`, `db snapshot`.
+- **Fixed:** a new container seeded its roots from `config.yaml` (another machine's paths →
+  scanned nothing); it now registers `/library` (host = `SORTANDPOST_HOST_LIBRARY_DIR`).
+  `ServerGuard` is added last so it wraps the onboarding redirect (a foreign Host got a 307 +
+  cookie on `/`). The wizard no longer says "Last used on <this machine>".
+- **Helper shelved:** the host file-manager helper is removed for the first release (too much
+  setup). Under Docker, copy buttons copy each file's **network path** (per-folder `network`
+  in Settings → Library; `\\nas\share\…` on Windows, `smb://…` elsewhere), with a
+  clipboard fallback for plain-http LAN origins. Bulk toolbar: copy paths.
+- **Docker is listed as experimental** for the release.
+- **Open:** `indexer --once` / `--reembed` ignore the write lock (only continuous mode checks
+  it) — proposed: refuse if another machine holds it, or if this device's own lock heartbeat
+  is fresh (the app is running). Cosmetic: a new lock's `db_generation` lags until the first
+  heartbeat.
 
 ## 🐳 2026-10-15 — V3 P6a–c: Docker validate, server login, helper (branches `v3-p6a/b/c-…`)
 

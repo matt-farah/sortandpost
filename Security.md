@@ -15,7 +15,7 @@ release) · **accepted** (a known, deliberate trade-off for now).
 | H1 | High | Web UI on `0.0.0.0` with no login (source + Docker runs) | **fixed** (V3 P6b) |
 | H3 | High | The shared sync folder is fully trusted | **accepted** — single-user by design |
 | M1 | Medium | DNS rebinding / cross-site websocket to the local server | **fixed** (V3 P6b) |
-| M2 | Medium | Helper `/open` runs any program named in the request | **fixed** (V3 P6c) |
+| M2 | Medium | Helper `/open` runs any program named in the request | **fixed** (V3 P6c); helper removed 2026-10-15 |
 | L1 | Low | NiceGUI `storage_secret` is the device id, which is visible in `sync/` | **fixed** (V3 P6b) |
 | L2 | Low | Docker build unpinned; no dependency audit in the quality gate | **fixed** (V3 P6a) |
 | L3 | Low | No rate limiting | **fixed** (V3 P6b, login attempts) |
@@ -113,6 +113,9 @@ password is set or the name is in `SORTANDPOST_ALLOWED_HOSTS`, and refuses any w
 socket.io request or non-GET request whose `Origin` isn't the same host:port.
 
 ## M2 — helper `/open` runs any program · fixed
+
+**2026-10-15:** the helper agent was shelved and removed from the repo, so this surface no
+longer exists. Kept for the record.
 
 `tools/sortandpost_helper.py` takes `app` from the request body and runs
 `[app, path]`. Only the *path* is confined to library roots. The token is put in

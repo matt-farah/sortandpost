@@ -136,6 +136,15 @@ def test_existing_library_found_directly(tmp_path: Path) -> None:
     assert "3 photos" in ins.message
 
 
+def test_wizard_ignores_its_own_lock(tmp_path: Path) -> None:
+    # The wizard runs with the library open: the lock is this machine's own.
+    _make_library(tmp_path / "lib")
+    lock = tmp_path / "lib" / ".sortandpost.lock"
+    lock.write_text(json.dumps({"hostname": "docker", "device_id": "me"}))
+    assert inspect_folder(str(tmp_path / "lib"), this_device="me").last_host is None
+    assert inspect_folder(str(tmp_path / "lib"), this_device="other").last_host == "docker"
+
+
 def test_legacy_app_data_folder_uses_its_sync_subfolder(tmp_path: Path) -> None:
     _make_library(tmp_path / "appdata" / "sync")
     (tmp_path / "appdata" / "local").mkdir()
@@ -195,6 +204,22 @@ def test_fresh_native_machine_is_pending_and_not_seeded(
     s = Settings.resolve()
     assert s.onboarding_pending
     assert s.library_roots == []  # no bogus "/library" from the config template
+
+
+def test_fresh_docker_container_registers_its_library_mount(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Joining a library a Mac made: config.yaml's roots are Mac paths, which
+    # don't exist in the container -- the compose mount /library is what to scan.
+    monkeypatch.setattr("sortandpost.config.running_in_docker", lambda: True)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "config.yaml").write_text("library_roots: [/Users/me/Pictures]\n")
+    launcher_pref.remember_sync_dir(shared)
+    monkeypatch.delenv("APP_DATA", raising=False)
+    monkeypatch.setenv("SORTANDPOST_HOST_LIBRARY_DIR", "/Users/me/Pictures")
+    s = Settings.resolve()
+    assert s.library_roots == [LibraryRoot(container="/library", host="/Users/me/Pictures")]
 
 
 def test_upgrading_install_is_not_pending(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

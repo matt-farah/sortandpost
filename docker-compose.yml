@@ -12,8 +12,9 @@ services:
       CLIP_MODEL: ${CLIP_MODEL:-}
       # Shown in messages instead of /data/sync (e.g. "keep <folder> downloaded").
       SORTANDPOST_HOST_SYNC_DIR: ${SYNC_DIR}
-      # Settings -> File-manager helper fills these into its start command.
-      SORTANDPOST_HOST_LOCAL_DIR: ${LOCAL_DIR:-}
+      # The real folder behind /library: a new container registers it as its photo
+      # folder (shown in the UI and by Copy path).
+      SORTANDPOST_HOST_LIBRARY_DIR: ${PHOTO_LIBRARY}
       # The app runs as this user / group (not root). Use the owner of PHOTO_LIBRARY
       # and SYNC_DIR on a Linux / Synology host; Docker Desktop is fine with 1000.
       PUID: ${PUID:-1000}
@@ -48,11 +49,9 @@ services:
       timeout: 5s
       start_period: 60s
       retries: 3
-    # File-manager "Reveal in Finder/Explorer" needs a small host agent that runs
-    # OUTSIDE Docker (the container has no host GUI). Settings -> File-manager helper
-    # shows the exact command; it needs LOCAL_DIR set to a host folder:
-    #   python3 tools/sortandpost_helper.py --local-dir "$LOCAL_DIR" --sync-dir "$SYNC_DIR"
-    # To start it at login: packaging/helper/ (macOS launchd, Windows .bat).
+    # A container can't open Finder / File Explorer: the photo page copies a file's
+    # path instead. Set each folder's network path in Settings -> Library
+    # (\\nas\photo or smb://nas/photo) to copy one your other computers can open.
 
   # One-shot indexer pass. Runs the same image with a different entrypoint.
   #   docker compose run --rm indexer --once

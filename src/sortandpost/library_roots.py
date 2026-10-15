@@ -15,10 +15,13 @@ Each entry is a :class:`LibraryRoot`:
 
 * ``container`` -- the path the **scanner** walks. Under Docker this is a
   bind-mount target (``/library``); native it is just the real folder.
-* ``host`` -- the real path on *this* computer, used for display, "copy path",
-  and the file-manager helper (:mod:`sortandpost.helper`). Same as ``container``
-  on a native run.
+* ``host`` -- the real path on *this* computer, used for display and "copy
+  path". Same as ``container`` on a native run.
 * ``label`` -- free text for the UI.
+* ``network`` -- optional, Docker: how other computers reach ``host`` over the
+  network (``\\\\nas\\photo\\Film`` or ``smb://nas/photo/Film``). The photo page's
+  copy button then copies a file's network path, spelled for the viewer's OS
+  (:func:`network_parts` / :func:`format_network_path`).
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Literal
+from urllib.parse import quote, unquote, urlsplit
 
 from sortandpost.paths import Paths
 
@@ -64,6 +69,7 @@ class LibraryRoot:
     container: str
     host: str
     label: str = ""
+    network: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -115,7 +121,9 @@ def _coerce(raw: object) -> LibraryRoot | None:
     host = clean_path(host) if isinstance(host, str) and clean_path(host) else container
     label = raw.get("label")
     label = label.strip() if isinstance(label, str) else ""
-    return LibraryRoot(container=container, host=host, label=label)
+    network = raw.get("network")
+    network = clean_path(network) if isinstance(network, str) else ""
+    return LibraryRoot(container=container, host=host, label=label, network=network)
 
 
 def load_roots(paths: Paths, device_id: str, hostname: str) -> list[LibraryRoot]:
@@ -145,7 +153,11 @@ def save_roots(paths: Paths, device_id: str, hostname: str, roots: list[LibraryR
     path = _library_file(paths, device_id, hostname)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "roots": [{"container": r.container, "host": r.host, "label": r.label} for r in roots]
+        "roots": [
+            {"container": r.container, "host": r.host, "label": r.label}
+            | ({"network": r.network} if r.network else {})
+            for r in roots
+        ]
     }
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -187,6 +199,24 @@ def _is_windows_path(p: str) -> bool:
     return bool(re.match(r"^[A-Za-z]:[\\/]", p)) or p.startswith("\\\\")
 
 
+def _match_root(
+    container_path: str, roots: list[LibraryRoot]
+) -> tuple[LibraryRoot, PurePosixPath] | None:
+    """The root holding *container_path* (longest ``container`` prefix wins) and
+    the path relative to it."""
+    best: LibraryRoot | None = None
+    for r in roots:
+        try:
+            PurePosixPath(container_path).relative_to(PurePosixPath(r.container))
+        except ValueError:
+            continue
+        if best is None or len(r.container) > len(best.container):
+            best = r
+    if best is None:
+        return None
+    return best, PurePosixPath(container_path).relative_to(PurePosixPath(best.container))
+
+
 def to_host_path(container_path: str, roots: list[LibraryRoot]) -> str:
     """Translate a stored (container) path to the real path on this computer.
 
@@ -195,18 +225,10 @@ def to_host_path(container_path: str, roots: list[LibraryRoot]) -> str:
     *container_path* unchanged when nothing matches (native runs, or a path that
     predates the mapping).
     """
-    best: LibraryRoot | None = None
-    for r in roots:
-        cp = PurePosixPath(r.container)
-        try:
-            PurePosixPath(container_path).relative_to(cp)
-        except ValueError:
-            continue
-        if best is None or len(r.container) > len(best.container):
-            best = r
-    if best is None:
+    match = _match_root(container_path, roots)
+    if match is None:
         return container_path
-    rel = PurePosixPath(container_path).relative_to(PurePosixPath(best.container))
+    best, rel = match
     if not rel.parts:
         return best.host
     if _is_windows_path(best.host):
@@ -217,3 +239,49 @@ def to_host_path(container_path: str, roots: list[LibraryRoot]) -> str:
 def compose_volume_line(root: LibraryRoot) -> str:
     """The ``docker-compose.yml`` volume entry that would mount this folder."""
     return f'- "{root.host}:{root.container}:rw"'
+
+
+# --------------------------------------------------------------------------- #
+# network paths (Docker: "copy the path other computers open")
+# --------------------------------------------------------------------------- #
+NetworkStyle = Literal["windows", "smb"]
+
+
+def parse_network_path(raw: str) -> tuple[str, ...] | None:
+    """``(server, share, *folders)`` from ``\\\\server\\share\\a``, ``//server/share/a``
+    or ``smb://[user@]server/share/a`` (percent-escapes decoded). ``None`` unless
+    there are at least a server and a share."""
+    text = clean_path(raw)
+    if text.lower().startswith("smb://"):
+        url = urlsplit(text)
+        server = url.hostname or ""
+        if url.port:
+            server = f"{server}:{url.port}"
+        rest = [unquote(p) for p in url.path.split("/")]
+    elif text.startswith(("\\\\", "//")):
+        server, *rest = text[2:].replace("\\", "/").split("/")
+    else:
+        return None
+    parts = tuple(p for p in [server, *rest] if p)
+    if not server or len(parts) < 2 or any(p in (".", "..") for p in parts):
+        return None
+    return parts
+
+
+def network_parts(container_path: str, roots: list[LibraryRoot]) -> tuple[str, ...] | None:
+    """The network path of a stored (container) path, as parts, when its root
+    has a ``network`` path set; else ``None``."""
+    match = _match_root(container_path, roots)
+    if match is None or not match[0].network:
+        return None
+    base = parse_network_path(match[0].network)
+    return None if base is None else base + match[1].parts
+
+
+def format_network_path(parts: tuple[str, ...], style: NetworkStyle) -> str:
+    """``\\\\server\\share\\a.jpg`` for Windows (File Explorer's address bar), or
+    ``smb://server/share/a.jpg`` for macOS / Linux (Finder's Connect to Server)."""
+    if style == "windows":
+        return "\\\\" + "\\".join(parts)
+    server, *rest = parts
+    return "smb://" + "/".join([quote(server, safe=":"), *(quote(p) for p in rest)])

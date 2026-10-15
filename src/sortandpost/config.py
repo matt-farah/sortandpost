@@ -319,8 +319,14 @@ class Settings(BaseModel):
             config.clip.model = env.clip_model_override
         device_id, hostname = load_device(paths)
         roots = load_roots(paths, device_id, hostname)
-        seed = not onboarding.fresh_device or running_in_docker()
-        if not roots and config.library_roots and seed:
+        if not roots and onboarding.fresh_device and running_in_docker():
+            # A new container: compose always mounts the photo library at /library.
+            # The shared config's roots are whichever machine made the library
+            # (a Mac / Windows path when joining one), so they'd scan nothing here.
+            host = os.environ.get("SORTANDPOST_HOST_LIBRARY_DIR", "").strip() or "/library"
+            roots = [LibraryRoot(container="/library", host=host)]
+            save_roots(paths, device_id, hostname, roots)
+        elif not roots and config.library_roots and not onboarding.fresh_device:
             # First run after upgrading: seed the per-device file once from the
             # old shared config, then treat the per-device file as canonical.
             # A brand-new native machine gets its folders from onboarding
