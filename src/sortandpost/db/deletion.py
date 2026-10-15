@@ -1,4 +1,4 @@
-"""The explicit "Delete photos" action (CLAUDE.md constraint #1, exception 2).
+"""The explicit "Delete photos" action (docs/architecture.md constraint #1, exception 2).
 
 A user-invoked delete on the machine that runs it:
 

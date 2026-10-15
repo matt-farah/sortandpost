@@ -28,7 +28,7 @@ Two roots: a machine-local one and a shared (synced) one. Two ways to place them
         thumbnails/<hh>/<pixel_hash>_<size>.webp
         embeddings/img_<model>.npy, text_<model>_<vocabhash>.npy, rowmap.json
 
-See CLAUDE.md → "App-data layout" and "Sync model".
+See docs/architecture.md → "App-data layout" and "Sync model".
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Cross-machine sync: local working copy + atomic publish + single-writer lock.
 
-See CLAUDE.md → "Sync model". Build-order step 4.
+See docs/architecture.md → "Sync model". Build-order step 4.
 
 Layout:
 

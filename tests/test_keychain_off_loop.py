@@ -1,4 +1,4 @@
-"""A keychain read must never run on the web event loop (Issues.md "Keychain
+"""A keychain read must never run on the web event loop (dev-notes/Issues.md "Keychain
 freeze", 2026-09-30): a rebuilt ad-hoc-signed app makes macOS ask again whether
 it may read a posting API key, and every page hung until that prompt was answered.
 

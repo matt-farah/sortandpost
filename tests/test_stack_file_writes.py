@@ -1,4 +1,4 @@
-"""Stack writes touch one file only (Issues.md, 2026-10-03).
+"""Stack writes touch one file only (dev-notes/Issues.md, 2026-10-03).
 
 Rating or tagging a stack still lands on every member in the DB (stack-level
 ratings), but only the stack's *embed target* -- its newest member that can

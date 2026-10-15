@@ -1,4 +1,4 @@
-"""SQLModel schema. See CLAUDE.md → "Database schema (core tables)".
+"""SQLModel schema. See docs/architecture.md → "Database schema (core tables)".
 
 Identity is always ``pixel_hash`` (sha256 of decoded RGB bytes), never a path or
 whole-file hash. Tables split into:

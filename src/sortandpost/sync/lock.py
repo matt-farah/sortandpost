@@ -1,4 +1,4 @@
-"""``sync/.sortandpost.lock`` — the single-writer lock (CLAUDE.md → "Sync model").
+"""``sync/.sortandpost.lock`` — the single-writer lock (docs/architecture.md → "Sync model").
 
 The lock is a small JSON file. Its authority comes from ``heartbeat_at``: the
 holder rewrites it every ``lock_heartbeat_sec``; a lock whose heartbeat is older

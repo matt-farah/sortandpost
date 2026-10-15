@@ -52,7 +52,7 @@ class Env(BaseSettings):
     # both sources into it).
     app_data: Path | None = Field(default=None, alias="APP_DATA")
     port: int = Field(default=8080, alias="PORT")
-    # Loopback by default (Security.md H1): a source run is only reachable from this
+    # Loopback by default (docs/security-review.md H1): a source run is only reachable from this
     # computer. The Docker image sets HOST=0.0.0.0 inside the container (compose still
     # publishes it on 127.0.0.1); other devices need a login -- see sortandpost.auth.
     host: str = Field(default="127.0.0.1", alias="HOST")
@@ -193,7 +193,7 @@ class StackingConfig(BaseModel):
 
 
 class DeletionConfig(BaseModel):
-    """The explicit "Delete photos" action (CLAUDE.md constraint #1, exception 2)."""
+    """The explicit "Delete photos" action (docs/architecture.md constraint #1, exception 2)."""
 
     # "selected"    -> delete only the photo(s) the user clicked
     # "whole_stack" -> delete every member of a selected photo's stack (like ratings fan out)

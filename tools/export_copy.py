@@ -1,6 +1,6 @@
 """Dump every user-visible string on `/welcome` + `/settings` to a CSV (V3 P5a).
 
-    .venv/bin/python tools/export_copy.py            # -> copy/onboarding_settings.csv
+    .venv/bin/python tools/export_copy.py            # -> dev-notes/copy/onboarding_settings.csv
 
 Static analysis only (nothing is imported or run): starting from the page
 functions, it follows calls through `app.py` and the UI modules it uses, and
@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / "src" / "sortandpost"
-OUT = ROOT / "copy" / "onboarding_settings.csv"
+OUT = ROOT / "dev-notes" / "copy" / "onboarding_settings.csv"
 
 # Modules whose code is followed (others are back-end; their strings never reach these pages
 # except as error text).

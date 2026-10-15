@@ -3,7 +3,7 @@
 Rows in ``img_<model>.npy`` are already L2-normalized, so cosine similarity is a
 plain dot product. The query vector is normalized here defensively. Target
 <= ~25k photos; if the library outgrows that, an ANN index slots in behind this
-same ``rank`` signature. See CLAUDE.md.
+same ``rank`` signature. See docs/architecture.md.
 """
 
 from __future__ import annotations

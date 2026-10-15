@@ -1,4 +1,4 @@
-"""Pixel-identity hashing -- CLAUDE.md hard constraint #3.
+"""Pixel-identity hashing -- docs/architecture.md hard constraint #3.
 
 ``pixel_hash`` is the sha256 of the decoded RGB bytes at the image's stored
 resolution, ignoring the EXIF orientation flag. It does not change when we (or

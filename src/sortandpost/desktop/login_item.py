@@ -63,6 +63,8 @@ def run_command(exe: Path) -> str:
 
 
 def _run_key_get() -> str | None:
+    if sys.platform != "win32":  # callers check; this also tells mypy winreg exists
+        raise OSError("the Run key is Windows-only")
     import winreg
 
     try:
@@ -74,6 +76,8 @@ def _run_key_get() -> str | None:
 
 
 def _run_key_set(command: str | None) -> None:
+    if sys.platform != "win32":
+        raise OSError("the Run key is Windows-only")
     import winreg
 
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:

@@ -1,12 +1,15 @@
-# Docker release — plan
+# Docker (experimental)
 
-Work to do before the Docker image is a supported way to run sortandpost (a
-NAS / always-on server browsed from other devices). Today the Docker path works,
-but it has no login and listens on the whole network. See [Security.md](Security.md).
+Running sortandpost in Docker on a NAS or an always-on server, browsed from other devices.
+The quick start is in the [README](../README.md#docker-experimental--server--nas--headless).
+This page covers the deeper setup (HTTPS, NAS, bind-mount speed, cloud folders, handing
+editing between Docker and a desktop app) and the checklist of work done to make Docker
+usable. Docker is still **experimental**: the desktop apps are the main way to run it.
+See [security-review.md](security-review.md) for the security side.
 
 ## Must-have
 
-- [x] **Login screen** (Security.md **H1**, V3 P6b, `sortandpost.auth`): one shared
+- [x] **Login screen** (security-review.md **H1**, V3 P6b, `sortandpost.auth`): one shared
       password from `SORTANDPOST_PASSWORD` or `SORTANDPOST_PASSWORD_FILE` (a Docker secret;
       the file wins, and an unreadable file stops the app rather than starting it open).
       Kept only as a scrypt hash in memory. A signed cookie (`sp_session_<port>`, HttpOnly,
@@ -19,7 +22,7 @@ but it has no login and listens on the whole network. See [Security.md](Security
 - [x] **Bind to localhost by default.** Compose: `${BIND:-127.0.0.1}:${PORT}:8080`
       (P6d); the source-run default is now `HOST=127.0.0.1` too (P6b). The image sets
       `HOST=0.0.0.0` inside the container.
-- [x] **Host / Origin checks** (Security.md **M1**, P6b): without a password only
+- [x] **Host / Origin checks** (security-review.md **M1**, P6b): without a password only
       `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` and `SORTANDPOST_ALLOWED_HOSTS` are
       served; with one, any Host reaches the login page. A websocket, socket.io request or
       non-GET request from another Origin is refused.
@@ -48,7 +51,7 @@ photos.example.com {          # or: nas.local { tls internal ... }
 
 ## Should-have
 
-- [x] **Pinned, locked builds** (Security.md **L2**, P6a): `python:3.13-slim` and `uv` are
+- [x] **Pinned, locked builds** (security-review.md **L2**, P6a): `python:3.13-slim` and `uv` are
       pinned by digest; the image installs from `uv.lock` (`uv sync --locked`) in a
       deps-only layer. Linux torch / torchvision come from PyTorch's CPU index
       (`[tool.uv.sources]`), so the lock carries the CPU build; macOS / Windows are unchanged.
@@ -164,6 +167,6 @@ instances, no new auth), usable in either direction:
 ## Open questions
 
 - ~~Single-user or multi-user?~~ One shared password (V3 P6b). Accounts would tie into
-  Security.md H3 (the shared folder is fully trusted) and are a V4+ question.
+  security-review.md H3 (the shared folder is fully trusted) and are a V4+ question.
 - Should the robopost composer be available on a network-exposed server at all,
   or only when logged in as an "owner"? (Today: anyone with the password.)

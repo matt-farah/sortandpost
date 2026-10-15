@@ -5,6 +5,21 @@ description = "Locally-run photo organization app: star ratings, CLIP auto-taggi
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = { file = "LICENSE" }
+authors = [{ name = "Matt Farah" }]
+keywords = ["photos", "photo-management", "clip", "semantic-search", "exif", "xmp", "nicegui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics",
+]
 dependencies = [
     "nicegui>=2.0",
     # <0.0.45: 0.0.45 made every `datetime` column a UTC-aware type that rejects
@@ -35,11 +50,17 @@ dependencies = [
     "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
+[project.urls]
+Homepage = "https://github.com/matt-farah/sortandpost"
+Documentation = "https://github.com/matt-farah/sortandpost/blob/main/docs/architecture.md"
+Issues = "https://github.com/matt-farah/sortandpost/issues"
+Changelog = "https://github.com/matt-farah/sortandpost/releases"
+
 [project.scripts]
 sortandpost = "sortandpost.__main__:main"
 
 [project.optional-dependencies]
-# The packaged desktop app (V2 P5): menu-bar tray + the PyInstaller build.
+# The packaged desktop app: menu-bar / system-tray icon + the PyInstaller build.
 desktop = [
     "pystray>=0.19",
     "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",

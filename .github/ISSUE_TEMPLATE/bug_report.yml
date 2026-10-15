@@ -1,0 +1,65 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! For a **security** problem, please don't use this form —
+        see [SECURITY.md](https://github.com/matt-farah/sortandpost/blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the library
+        2. Press …
+        3. See …
+  - type: dropdown
+    id: install
+    attributes:
+      label: How do you run sortandpost?
+      options:
+        - macOS app
+        - Windows app
+        - From source
+        - Docker
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown next to the "sortandpost" name in the top bar (plus `git rev-parse --short HEAD` for a source run).
+  - type: input
+    id: os
+    attributes:
+      label: OS and browser
+      placeholder: macOS 15.4, Firefox 140
+  - type: dropdown
+    id: sync
+    attributes:
+      label: Where is your shared library folder?
+      options:
+        - Not shared / one computer
+        - OneDrive
+        - Google Drive
+        - Dropbox
+        - iCloud Drive
+        - Synology Drive
+        - Other / NAS
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Desktop app: tray menu → Show logs. Source / Docker: the terminal output.
+        Please remove any paths or names you don't want to share.
+      render: text

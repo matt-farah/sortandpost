@@ -301,7 +301,7 @@ def test_docker_always_skips_online_only_files(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """In a container, reading a stub is an I/O error that never downloads it, so
-    ``online_only: download`` falls back to recording the stub (Docker.md)."""
+    ``online_only: download`` falls back to recording the stub (docs/docker.md)."""
     lib = _lib(settings)
     _jpeg(lib / "stub.jpg")
     settings.config.indexer.online_only = "download"

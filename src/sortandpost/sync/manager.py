@@ -1,5 +1,5 @@
 """``SyncManager`` — the startup sequence, heartbeat, and publish loop that make
-``sync/`` a safe cross-machine source of truth (CLAUDE.md → "Sync model").
+``sync/`` a safe cross-machine source of truth (docs/architecture.md → "Sync model").
 
 Lifecycle:
 

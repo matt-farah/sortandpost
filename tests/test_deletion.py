@@ -1,5 +1,5 @@
 """``sortandpost.db.deletion`` -- the explicit "Delete photos" action and the
-lazy cross-machine tombstone sweep (CLAUDE.md constraint #1, exception 2)."""
+lazy cross-machine tombstone sweep (docs/architecture.md constraint #1, exception 2)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Server-mode protection (V3 P6b; Security.md H1 / M1 / L1 / L3).
+"""Server-mode protection (V3 P6b; docs/security-review.md H1 / M1 / L1 / L3).
 
 One pure-ASGI middleware, :class:`ServerGuard`, sits in front of the whole app,
 so it sees plain HTTP **and** websocket connections -- NiceGUI's pages, the

@@ -1,4 +1,4 @@
-"""CPU-bound per-file work that runs in a ``ProcessPoolExecutor`` (CLAUDE.md hard
+"""CPU-bound per-file work that runs in a ``ProcessPoolExecutor`` (docs/architecture.md hard
 constraint #7: "all CPU-bound work goes through the process pool").
 
 A worker decodes one file, computes its ``pixel_hash`` + perceptual ``dhash``,

@@ -1,7 +1,7 @@
 """Move deleted photo files to a recoverable, per-machine "oops" buffer.
 
 This is the **only** module that removes a user's photo file, and it never
-``unlink``s (CLAUDE.md hard constraint #1, exception 2). Every delete moves the
+``unlink``s (docs/architecture.md hard constraint #1, exception 2). Every delete moves the
 files into a managed ``<APP_DATA>/local/trash/<batch>/`` folder with a
 ``manifest.json``. ``local/`` is never synced, so trashed files never ride the
 sync tool, and nothing here ever writes under a library root.

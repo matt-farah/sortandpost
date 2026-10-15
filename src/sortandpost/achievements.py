@@ -1,7 +1,7 @@
 """Achievements (V3 #2) -- the engine: definitions, the synced profile, and
 which achievements are unlocked.
 
-**Definitions** come from a bundled copy of ``Achievements/Achievements.md``
+**Definitions** come from a bundled copy of ``dev-notes/achievements/Achievements.md``
 (``resources/achievements/achievements.md``): one Markdown table row per
 achievement (name, trigger, points, shown, angel / devil text). The free-text
 *Trigger* column is parsed into a :class:`Trigger`:
@@ -22,7 +22,7 @@ device only ever writes its own file and the truth is the **union** of every
 device's file (earliest timestamp wins), so two machines unlocking at once never
 conflict and nothing needs a merge. Unlocks are sticky: deleting a collection
 later never takes one away. Like collections and posts this is a deliberate
-exception to CLAUDE.md constraint #4 -- it is not ``pixel_hash`` state and does
+exception to docs/architecture.md constraint #4 -- it is not ``pixel_hash`` state and does
 not go in the ``changes`` log.
 
 **Profile** -- the display name and the mode (Angel / Devil / Off) -- is one

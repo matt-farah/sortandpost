@@ -3,7 +3,7 @@
 A legacy single-folder install (``Paths(app_data=X)``: ``X/local`` + ``X/sync``)
 whose ``X`` sits inside a sync tool's folder has its machine-only data synced
 too -- the working SQLite DB, its journal, the managed trash, CLIP weights.
-That is exactly what the sync model forbids (CLAUDE.md -> "Sync model"), and it
+That is exactly what the sync model forbids (docs/architecture.md -> "Sync model"), and it
 broke a real library on 2026-10-08 (see :mod:`sortandpost.cloud_folders`).
 
 :func:`maybe_relocate` runs at startup, before anything opens ``local/``, and
