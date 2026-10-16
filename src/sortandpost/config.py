@@ -13,7 +13,9 @@ Two layers:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import socket
 import uuid
@@ -22,7 +24,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from sortandpost.cpu import ClipSpeed, default_workers
@@ -31,6 +33,8 @@ from sortandpost.library_roots import LibraryRoot, load_roots, running_in_docker
 from sortandpost.onboarding import settle_on_startup
 from sortandpost.paths import Paths
 from sortandpost.relocate import maybe_relocate
+
+log = logging.getLogger(__name__)
 
 PathsSource = Literal["env", "shared", "remembered", "dotenv", "unset"]
 
@@ -110,6 +114,21 @@ class NoAppDataFolder(RuntimeError):
             "sortandpost hasn't been set up on this computer yet -- start the web "
             "app (python -m sortandpost) and finish the setup wizard, or set APP_DATA."
         )
+
+
+class LibraryUnavailable(RuntimeError):
+    """The saved data folder can't be opened (unmounted drive / NAS, deleted,
+    no permission). The web app starts in setup mode and explains; the CLIs exit."""
+
+    def __init__(self, folder: Path, reason: str, *, source: PathsSource, missing: bool) -> None:
+        super().__init__(f"{folder}: {reason}")
+        self.folder = folder
+        self.reason = reason
+        self.source = source
+        self.missing = missing  # it may come back by itself (a drive / NAS reconnecting)
+
+    def __str__(self) -> str:
+        return f"The library folder {self.folder} isn't available: {self.reason}"
 
 
 # --------------------------------------------------------------------------- #
@@ -233,6 +252,43 @@ class AppConfig(BaseModel):
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         return cls.model_validate(data)
 
+    @classmethod
+    def load_lenient(cls, path: Path) -> tuple[AppConfig, str | None]:
+        """Like :meth:`load`, but a broken file never stops the app: ``config.yaml``
+        syncs, so one bad edit would brick every machine at once. Unparseable
+        YAML -> all defaults; a wrong-typed value -> that setting's default (the
+        rest is kept). Returns the config and what was wrong (``None`` if fine)."""
+        text = path.read_text(encoding="utf-8")  # OSError: a folder problem, not ours
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            where = getattr(exc, "problem_mark", None)
+            at = f" (line {where.line + 1})" if where is not None else ""
+            return cls(), f"it isn't valid YAML{at}, so every setting is at its default"
+        if data is None:
+            return cls(), None
+        if not isinstance(data, dict):
+            return cls(), "it doesn't hold settings, so every setting is at its default"
+        dropped: list[str] = []
+        for _ in range(100):
+            try:
+                config = cls.model_validate(data)
+            except ValidationError as exc:
+                progressed = False
+                for err in exc.errors():
+                    key = _drop_key(data, err["loc"])
+                    if key is not None:
+                        dropped.append(key)
+                        progressed = True
+                if not progressed:
+                    return cls(), f"{exc.error_count()} invalid value(s); using all defaults"
+                continue
+            if not dropped:
+                return config, None
+            names = ", ".join(dict.fromkeys(dropped))
+            return config, f"invalid value(s) for {names}; using the default for those"
+        return cls(), "too many invalid values; using all defaults"
+
     def dump(self, path: Path) -> None:
         path.write_text(
             yaml.safe_dump(
@@ -246,6 +302,42 @@ class AppConfig(BaseModel):
         if isinstance(workers, int):
             return max(1, workers)
         return default_workers(self.clip.speed)
+
+
+def _drop_key(data: dict[str, object], loc: tuple[int | str, ...]) -> str | None:
+    """Delete the deepest mapping key on a validation error's path (a list or a
+    scalar is dropped whole). Returns its dotted name, or ``None`` if nothing
+    could be dropped."""
+    cur: object = data
+    parent: dict[str, object] | None = None
+    last = ""
+    names: list[str] = []
+    for key in loc:
+        if not (isinstance(cur, dict) and isinstance(key, str) and key in cur):
+            break
+        parent, last = cur, key
+        names.append(key)
+        cur = cur[key]
+    if parent is None:
+        return None
+    del parent[last]
+    return ".".join(names)
+
+
+def _keep_broken_config(paths: Paths, problem: str) -> Path | None:
+    """Copy a ``config.yaml`` that didn't load into ``snapshots/`` (once per
+    distinct content) before the app's next settings save rewrites it."""
+    try:
+        raw = paths.config_file.read_bytes()
+        dest = paths.snapshots_dir / f"config-broken-{hashlib.sha256(raw).hexdigest()[:8]}.yaml"
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw)
+    except OSError as exc:
+        log.warning("could not keep a copy of the broken config.yaml: %s", exc)
+        return None
+    log.warning("config.yaml: %s (a copy is in %s)", problem, dest)
+    return dest
 
 
 def _resource_text(name: str) -> str:
@@ -281,6 +373,32 @@ def load_device(paths: Paths) -> tuple[str, str]:
     return str(data["device_id"]), str(data.get("hostname") or socket.gethostname())
 
 
+def _check_available(paths: Paths, source: PathsSource) -> None:
+    """A folder the user picked earlier that isn't there now (a drive or NAS
+    not mounted, a sync folder deleted) must not be silently recreated as an
+    empty library -- or, on an unmounted volume, crash the boot."""
+    if source not in ("shared", "remembered"):
+        return  # APP_DATA / .env: creating it on first run is the expected setup
+    folder = paths.sync if source == "shared" else paths.app_data
+    assert folder is not None
+    try:
+        there = folder.is_dir()
+    except OSError:
+        there = False
+    if not there:
+        raise LibraryUnavailable(
+            folder,
+            "the folder isn't there. If it's on an external drive or a network share, connect it",
+            source=source,
+            missing=True,
+        )
+
+
+def _os_reason(exc: OSError) -> str:
+    text = exc.strerror or str(exc)
+    return f"{text} ({exc.filename})" if exc.filename else text
+
+
 class Settings(BaseModel):
     """Everything resolved: env + synced config + identity."""
 
@@ -299,22 +417,36 @@ class Settings(BaseModel):
     joined_existing: bool = False
     # This launch moved local/ out of a cloud-synced folder (sortandpost.relocate).
     relocated: bool = False
+    # config.yaml didn't load cleanly: what was wrong + where a copy was kept.
+    config_problem: str | None = None
+    config_backup: Path | None = None
 
     @classmethod
     def resolve(cls) -> Settings:
+        """Raises :class:`NoAppDataFolder` (nothing chosen yet) or
+        :class:`LibraryUnavailable` (the chosen folder can't be opened)."""
         env = Env()
         paths = env.paths
+        source = env.paths_source()
+        _check_available(paths, source)
         relocated = False
-        if env.paths_source() in ("remembered", "dotenv"):
-            # A legacy single folder inside OneDrive / Synology Drive / ...: move
-            # this machine's working files out before anything opens them.
-            moved = maybe_relocate(paths)
-            if moved is not None:
-                paths, relocated = moved, True
-        paths.local.mkdir(parents=True, exist_ok=True)
-        onboarding = settle_on_startup(paths)  # before bootstrap creates device.json
-        bootstrap(paths)
-        config = AppConfig.load(paths.config_file)
+        try:
+            if source in ("remembered", "dotenv"):
+                # A legacy single folder inside OneDrive / Synology Drive / ...: move
+                # this machine's working files out before anything opens them.
+                moved = maybe_relocate(paths)
+                if moved is not None:
+                    paths, relocated = moved, True
+            paths.local.mkdir(parents=True, exist_ok=True)
+            onboarding = settle_on_startup(paths)  # before bootstrap creates device.json
+            bootstrap(paths)
+            config, config_problem = AppConfig.load_lenient(paths.config_file)
+        except OSError as exc:
+            folder = paths.app_data or paths.sync
+            raise LibraryUnavailable(folder, _os_reason(exc), source=source, missing=False) from exc
+        config_backup = (
+            _keep_broken_config(paths, config_problem) if config_problem is not None else None
+        )
         if env.clip_model_override:
             config.clip.model = env.clip_model_override
         device_id, hostname = load_device(paths)
@@ -343,6 +475,8 @@ class Settings(BaseModel):
             onboarding_pending=onboarding.pending,
             joined_existing=onboarding.joined_existing,
             relocated=relocated,
+            config_problem=config_problem,
+            config_backup=config_backup,
         )
 
     def set_library_roots(self, roots: list[str | Path]) -> None:

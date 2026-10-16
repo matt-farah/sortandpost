@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from sortandpost import launcher_pref, onboarding
-from sortandpost.config import Settings, bootstrap
+from sortandpost.config import LibraryUnavailable, Settings, bootstrap
 from sortandpost.indexer.__main__ import main as indexer_main
 from sortandpost.library_roots import LibraryRoot, save_roots
 from sortandpost.onboarding import (
@@ -199,6 +200,7 @@ def test_fresh_native_machine_is_pending_and_not_seeded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("sortandpost.config.running_in_docker", lambda: False)
+    (tmp_path / "shared").mkdir()  # the wizard creates it before saving the pointer
     launcher_pref.remember_sync_dir(tmp_path / "shared")
     monkeypatch.delenv("APP_DATA", raising=False)
     s = Settings.resolve()
@@ -254,3 +256,108 @@ def test_gated_pages() -> None:
     assert not _is_gated("/_nicegui/3.16.0/static/quasar.js")
     assert not _is_gated("/thumbs/ab/abc_320.webp")
     assert not _is_gated("/postsomething")
+
+
+# --------------------------------------------------------------------------- #
+# Issues.md S4 / S5: bad folders and a saved folder that went away
+# --------------------------------------------------------------------------- #
+needs_non_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores folder permissions"
+)
+
+
+def test_inspect_folder_normalizes_dot_dot(tmp_path: Path) -> None:
+    # "<tmp>/x/../.." used to be a "new library" in a folder named "x/../.."
+    # (mkdir created x, and the saved pointer resolved somewhere else entirely)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "photo.jpg").write_bytes(b"x")
+    ins = inspect_folder(str(base / "x" / ".." / "y" / ".."))
+    assert ins.kind == "new"
+    assert ins.sync_dir == base.resolve() / NEW_LIBRARY_SUBDIR
+    assert not (base / "x").exists()
+
+
+@needs_non_root
+def test_inspect_folder_refuses_an_unwritable_folder(tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "other.txt").write_text("x")
+    locked.chmod(0o555)
+    try:
+        for raw in (locked, locked / "new" / "deeper"):
+            ins = inspect_folder(str(raw))
+            assert ins.kind == "invalid", raw
+            assert "permission" in ins.message
+    finally:
+        locked.chmod(0o755)
+
+
+@needs_non_root
+def test_inspect_folder_refuses_an_unwritable_existing_library(tmp_path: Path) -> None:
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "config.yaml").write_text("{}\n")
+    lib.chmod(0o555)
+    try:
+        assert inspect_folder(str(lib)).kind == "invalid"
+    finally:
+        lib.chmod(0o755)
+
+
+def test_inspect_folder_refuses_a_path_through_a_file(tmp_path: Path) -> None:
+    (tmp_path / "f").write_text("x")
+    ins = inspect_folder(str(tmp_path / "f" / "lib"))
+    assert ins.kind == "invalid"
+    assert "is a file" in ins.message
+
+
+def test_missing_saved_folder_is_unavailable_and_not_recreated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    gone = tmp_path / "Volumes" / "NAS" / "sortandpost"  # an unmounted share
+    launcher_pref.remember_sync_dir(gone)
+    monkeypatch.delenv("APP_DATA", raising=False)
+    with pytest.raises(LibraryUnavailable) as caught:
+        Settings.resolve()
+    assert caught.value.missing and caught.value.source == "shared"
+    assert caught.value.folder == gone.resolve()
+    assert not gone.exists()
+    assert indexer_main(["--once"]) == 1  # the CLIs explain instead of a traceback
+
+
+@needs_non_root
+def test_unwritable_saved_folder_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    launcher_pref.remember_sync_dir(shared)
+    monkeypatch.delenv("APP_DATA", raising=False)
+    shared.chmod(0o555)
+    try:
+        with pytest.raises(LibraryUnavailable) as caught:
+            Settings.resolve()
+    finally:
+        shared.chmod(0o755)
+    assert not caught.value.missing
+    assert "ermission" in caught.value.reason
+
+
+def test_broken_shared_config_falls_back_and_is_kept(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    bad = "sync: [unclosed\n"
+    (shared / "config.yaml").write_text(bad)
+    launcher_pref.remember_sync_dir(shared)
+    monkeypatch.delenv("APP_DATA", raising=False)
+    s = Settings.resolve()
+    assert s.config_problem is not None and "YAML" in s.config_problem
+    assert s.config.sync.publish_interval_sec == 60  # the default
+    assert s.config_backup is not None and s.config_backup.read_text() == bad
+    assert s.config_backup.parent == s.paths.snapshots_dir
+    assert (shared / "config.yaml").read_text() == bad  # left for the user to fix
+    assert Settings.resolve().config_backup == s.config_backup  # one copy per content
+    assert len(list(s.paths.snapshots_dir.glob("config-broken-*.yaml"))) == 1

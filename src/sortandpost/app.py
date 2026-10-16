@@ -103,7 +103,7 @@ from sortandpost.collections import (
     reorder_collection,
     set_collection_notes,
 )
-from sortandpost.config import Env, Settings
+from sortandpost.config import Env, LibraryUnavailable, Settings
 from sortandpost.cpu import default_workers
 from sortandpost.db import add_manual_tag, init_db, make_engine, remove_manual_tag, set_rating
 from sortandpost.db.browse import (
@@ -1129,6 +1129,8 @@ def _storage_banners(settings: Settings) -> None:
         if moved and moved.old_kept_at:
             text += f" Some files couldn't be copied and were left in {moved.old_kept_at}."
         notes.append(text)
+    if settings.config_problem is not None:
+        notes.append(_config_problem_text(settings))
     if State.recovery is not None:
         rec = State.recovery
         text = f"The library database was damaged and has been rebuilt from {rec.base}."
@@ -1151,6 +1153,16 @@ def _storage_banners(settings: Settings) -> None:
             ui.button(icon="close", on_click=lambda b=banner: b.set_visibility(False)).props(
                 "flat dense round size=sm"
             ).tooltip("dismiss")
+
+
+def _config_problem_text(settings: Settings) -> str:
+    text = (
+        f"The shared settings file ({settings.paths.config_file.name}) couldn't be read: "
+        f"{settings.config_problem}."
+    )
+    if settings.config_backup is not None:
+        text += f" A copy of it is kept in {settings.config_backup}."
+    return text + " Saving any setting rewrites the file for every computer."
 
 
 def build_ui(settings: Settings) -> None:
@@ -3194,6 +3206,8 @@ def build_ui(settings: Settings) -> None:
             rows.append(("⚠ Can't edit", manager.writer_error))
         if manager.restored_from_snapshot is not None:
             rows.append(("Restored from", manager.restored_from_snapshot.name))
+        if settings.config_problem is not None:
+            rows.append(("⚠ config.yaml", _config_problem_text(settings)))
         recovered = State.recovery or read_recovery(settings.paths)
         if recovered is not None:
             rows.append(
@@ -4428,9 +4442,8 @@ def _app_data_editor(settings: Settings) -> None:
 
         def _go() -> None:
             dlg.close()
-            target.mkdir(parents=True, exist_ok=True)
-            remember_sync_dir(target)
-            _restart_app("/", "Switching library…")
+            if _adopt_sync_dir(target):
+                _restart_app("/", "Switching library…")
 
         with ui.dialog() as dlg, ui.card().classes("w-[32rem] max-w-full gap-2"):
             ui.label("Restart on this folder?").classes("font-semibold")
@@ -6216,6 +6229,20 @@ def _install_onboarding_gate() -> None:
         return await call_next(request)
 
 
+def _adopt_sync_dir(target: Path) -> bool:
+    """Create *target* and save it as this computer's shared folder. ``False``
+    (and a toast) if it can't be created -- e.g. it's read-only, or a network
+    share went away after the folder was checked."""
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        remember_sync_dir(target)
+    except OSError as exc:
+        log.warning("could not use %s as the shared folder: %s", target, exc)
+        ui.notify(f"Couldn't use {target}: {exc.strerror or exc}", type="negative", multi_line=True)
+        return False
+    return True
+
+
 def _restart_app(landing: str, message: str) -> None:
     """Restart the whole process (to open a different data folder): show a
     waiting dialog, have the browser poll until the new server answers, then
@@ -6269,6 +6296,38 @@ def _reexec_if_requested() -> None:
 def _welcome_shell() -> Iterator[None]:
     with ui.column().classes("w-full max-w-3xl mx-auto p-4 gap-6 pb-16"):
         yield
+
+
+def _library_unavailable_card(problem: LibraryUnavailable) -> None:
+    """Setup mode's explanation when the saved folder can't be opened, with a
+    retry. A folder that's simply missing is re-checked every few seconds, so
+    plugging the drive in / the NAS coming back reopens the library by itself."""
+    with _settings_card("Your library folder isn't available", "folder_off", wide=True):
+        ui.label(str(problem.folder)).classes("font-mono text-sm break-all")
+        ui.label(problem.reason[:1].upper() + problem.reason[1:] + ".").classes("text-sm")
+        if problem.source == "env":
+            ui.label(
+                "This folder is set by the APP_DATA environment variable (Docker, or "
+                "APP_DATA=... on the command line) — fix it there, then try again."
+            ).classes("text-sm sp-muted")
+        else:
+            ui.label(
+                "Your photos, ratings and tags are safe — nothing was changed. Try again "
+                "once the folder is back, or pick another folder below."
+            ).classes("text-sm sp-muted")
+        ui.button(
+            "Try again",
+            icon="refresh",
+            on_click=lambda: _restart_app("/", "Opening your library…"),
+        ).props("color=primary")
+
+        if problem.missing:
+
+            async def _poll() -> None:
+                if await nicegui_run.io_bound(problem.folder.is_dir) and not _RESTART.is_set():
+                    _restart_app("/", "The folder is back — opening your library…")
+
+            ui.timer(5.0, _poll)
 
 
 def _welcome_intro(joined: bool = False) -> None:
@@ -6550,9 +6609,8 @@ def _welcome_folder_step(settings: Settings, joined: bool) -> None:
 
         def _use(ins: FolderInspection) -> None:
             assert ins.sync_dir is not None
-            ins.sync_dir.mkdir(parents=True, exist_ok=True)
-            remember_sync_dir(ins.sync_dir)
-            _restart_app(_WELCOME_URL, "Switching folder…")
+            if _adopt_sync_dir(ins.sync_dir):
+                _restart_app(_WELCOME_URL, "Switching folder…")
 
         _shared_folder_picker("", on_use=_use, button="Use this folder")
 
@@ -6672,11 +6730,12 @@ def run(settings: Settings) -> None:
     _reexec_if_requested()
 
 
-def run_setup(env: Env) -> None:
+def run_setup(env: Env, problem: LibraryUnavailable | None = None) -> None:
     """First run on this machine, before any data folder is chosen
-    (:meth:`Env.resolve_paths` is ``None``). Serves only the first welcome step
-    -- pick the shared folder -- with no DB, no lock and no indexer, then
-    restarts itself on the chosen folder (sortandpost.onboarding)."""
+    (:meth:`Env.resolve_paths` is ``None``) -- or the chosen one can't be opened
+    (*problem*: an unmounted drive / NAS, no permission). Serves only the first
+    welcome step -- pick the shared folder, or retry the saved one -- with no DB,
+    no lock and no indexer, then restarts itself on the folder (sortandpost.onboarding)."""
     # No local/ folder yet: a throwaway secret (a login here lasts until the restart).
     setup_secret = secrets.token_hex(32)
     _install_server_guard(setup_secret, env.port)
@@ -6692,15 +6751,24 @@ def run_setup(env: Env) -> None:
     def _setup_welcome() -> None:
         _header(_WELCOME_URL, minimal=True)
         with _welcome_shell():
-            _welcome_intro()
-            with _settings_card("Where should your database live?", "folder_shared", wide=True):
+            if problem is not None:
+                _library_unavailable_card(problem)
+                if problem.source == "env":
+                    return  # APP_DATA always wins: picking another folder can't help
+            else:
+                _welcome_intro()
+            title = (
+                "Or use a different folder"
+                if problem is not None
+                else "Where should your database live?"
+            )
+            with _settings_card(title, "folder_shared", wide=True):
                 _shared_folder_intro()
 
                 def _use(ins: FolderInspection) -> None:
                     assert ins.sync_dir is not None
-                    ins.sync_dir.mkdir(parents=True, exist_ok=True)
-                    remember_sync_dir(ins.sync_dir)
-                    _restart_app(_WELCOME_URL, "Setting up your library…")
+                    if _adopt_sync_dir(ins.sync_dir):
+                        _restart_app(_WELCOME_URL, "Setting up your library…")
 
                 _shared_folder_picker("", on_use=_use, button="Continue")
 

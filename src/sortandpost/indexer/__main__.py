@@ -20,7 +20,7 @@ import sys
 import threading
 
 from sortandpost.clip.store import ModelMismatch
-from sortandpost.config import NoAppDataFolder, Settings
+from sortandpost.config import LibraryUnavailable, NoAppDataFolder, Settings
 from sortandpost.db import init_db, make_engine
 from sortandpost.indexer.scan import scan_clip_once, scan_once
 from sortandpost.indexer.service import IndexerLoopConfig, run_indexer
@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         settings = Settings.resolve()
-    except NoAppDataFolder as exc:
+    except (NoAppDataFolder, LibraryUnavailable) as exc:
         print(exc, file=sys.stderr)
         return 1
     configure(settings.paths.logs_dir)

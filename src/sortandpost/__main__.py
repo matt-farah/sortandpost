@@ -7,6 +7,7 @@ process, :mod:`sortandpost.desktop`); that is the default for the packaged app.
 
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import os
 import sys
@@ -29,7 +30,7 @@ def _frozen_ca_bundle() -> None:
 
 def serve() -> None:
     from sortandpost import app as web_app
-    from sortandpost.config import Env, Settings
+    from sortandpost.config import Env, LibraryUnavailable, Settings
     from sortandpost.desktop.control import control_token
     from sortandpost.logging_setup import configure
     from sortandpost.paths import default_local_root
@@ -42,7 +43,15 @@ def serve() -> None:
         configure(default_local_root() / "logs", console=console)
         web_app.run_setup(env)
         return
-    settings = Settings.resolve()
+    try:
+        settings = Settings.resolve()
+    except LibraryUnavailable as exc:
+        # The saved folder can't be opened (drive / NAS not mounted, no
+        # permission): explain it on /welcome with a retry instead of dying.
+        configure(default_local_root() / "logs", console=console)
+        logging.getLogger("sortandpost").error("%s", exc)
+        web_app.run_setup(env, problem=exc)
+        return
     configure(settings.paths.logs_dir, console=console)
     web_app.run(settings)
 

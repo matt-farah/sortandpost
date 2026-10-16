@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -136,11 +137,14 @@ def inspect_folder(
     text = clean_path(raw)
     if not text:
         return FolderInspection(chosen=raw, kind="invalid", message="Enter a folder path.")
-    chosen = Path(text).expanduser()
-    if not chosen.is_absolute():
+    typed = Path(text).expanduser()
+    if not typed.is_absolute():
         return FolderInspection(
             chosen=raw, kind="invalid", message="Use a full path, e.g. /Users/you/Dropbox/Photos."
         )
+    # Normalize ("~/x/../.." is /Users, not a new folder "x"): what's checked
+    # here is what gets saved and opened.
+    chosen = typed.resolve()
     if chosen.exists() and not chosen.is_dir():
         return FolderInspection(chosen=raw, kind="invalid", message="That is a file, not a folder.")
     if local_root is not None and _within(chosen, local_root):
@@ -149,25 +153,42 @@ def inspect_folder(
             kind="invalid",
             message="That folder is this computer's private data folder — pick a shared one.",
         )
+    renamed = f" ({chosen})" if str(chosen) != text.rstrip("/\\") else ""
 
     for candidate in (chosen, chosen / "sync", chosen / NEW_LIBRARY_SUBDIR):
         if candidate.is_dir() and _is_sync_tree(candidate):
+            problem = _unwritable(candidate)
+            if problem:
+                return FolderInspection(chosen=raw, kind="invalid", message=problem)
             return _existing(raw, candidate, this_device)
 
     if not chosen.exists() or _is_empty(chosen):
-        return FolderInspection(
-            chosen=raw,
-            kind="new",
-            sync_dir=chosen,
-            message="A new, empty library will be created in this folder.",
-        )
-    target = chosen / NEW_LIBRARY_SUBDIR
-    return FolderInspection(
-        chosen=raw,
-        kind="new",
-        sync_dir=target,
-        message=f"This folder already has other files, so the library will go in {target}.",
-    )
+        target = chosen
+        message = f"A new, empty library will be created in this folder{renamed}."
+    else:
+        target = chosen / NEW_LIBRARY_SUBDIR
+        message = f"This folder already has other files, so the library will go in {target}."
+    problem = _unwritable(target)
+    if problem:
+        return FolderInspection(chosen=raw, kind="invalid", message=problem)
+    return FolderInspection(chosen=raw, kind="new", sync_dir=target, message=message)
+
+
+def _unwritable(target: Path) -> str | None:
+    """Why the library can't live at *target* (``None`` = it can): it, or the
+    nearest folder above it that exists, must be a folder this user can write to."""
+    probe = target
+    while not probe.exists():
+        if probe.parent == probe:
+            return f"{target} can't be created."
+        probe = probe.parent
+    if not probe.is_dir():
+        return f"{probe} is a file, so {target} can't be created there."
+    if not os.access(probe, os.W_OK | os.X_OK):
+        if probe == target:
+            return f"You don't have permission to change files in {target}."
+        return f"You don't have permission to create folders in {probe}."
+    return None
 
 
 def _within(p: Path, root: Path) -> bool:
