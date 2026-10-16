@@ -5110,10 +5110,11 @@ def _library_roots_editor(
         settings.library_roots = list(roots)
         missing.invalidate()
 
-    def _drop(container: str) -> None:
-        roots[:] = [r for r in roots if r.container != container]
+    def _drop(root: LibraryRoot) -> None:
+        roots[:] = [r for r in roots if r.container != root.container]
         _persist()
         _render()
+        ui.notify(f"Removed {root.label or root.host} (its files are untouched)")
 
     def _check(root: LibraryRoot) -> RootCheck:
         return check_new_root(root, roots, _app_data_dirs(settings), in_docker=in_docker)
@@ -5147,12 +5148,7 @@ def _library_roots_editor(
                 ui.label("No folders yet — add one below.").classes("text-xs sp-faint")
             for r in roots:
                 ok = Path(r.container).is_dir()
-                if ok:
-                    tip = "scanned"
-                elif in_docker:
-                    tip = "not mounted — add the compose line and run docker compose up -d"
-                else:
-                    tip = "folder not found on this computer"
+                tip = "scanned" if ok else _root_problem(in_docker)
                 with ui.row().classes("w-full items-center gap-2 no-wrap"):
                     ui.icon("check_circle" if ok else "error_outline").classes(
                         "text-emerald-500" if ok else "text-amber-500"
@@ -5166,13 +5162,19 @@ def _library_roots_editor(
                             ui.label(
                                 f"network: {r.network}" if r.network else "no network path"
                             ).classes("truncate text-xs sp-faint")
+                        if not ok:
+                            ui.label(
+                                tip
+                                if in_docker
+                                else f"{tip}. Check the path, or remove it if it was a mistake."
+                            ).classes("text-xs text-amber-600 dark:text-amber-400")
                     if in_docker:
                         ui.button(
                             icon="edit", on_click=lambda _=None, x=r: _network_dialog(x)
                         ).props("flat dense round size=sm").tooltip("set the network path")
-                    ui.button(icon="close", on_click=lambda _=None, c=r.container: _drop(c)).props(
-                        "flat dense round size=sm"
-                    ).tooltip("remove")
+                    ui.button("Remove", icon="close", on_click=lambda _=None, x=r: _drop(x)).props(
+                        "flat dense no-caps size=sm" + ("" if ok else " color=warning")
+                    ).tooltip("take this folder off the list; its files are not touched")
 
     def _network_dialog(root: LibraryRoot) -> None:
         with ui.dialog() as dialog, ui.card().classes("w-[36rem] max-w-full gap-2"):
@@ -5320,6 +5322,13 @@ def _library_roots_editor(
         ui.button("Save & rescan", on_click=_save_rescan).props("color=primary")
 
     _render()
+
+
+def _root_problem(in_docker: bool) -> str:
+    """Why a saved library folder isn't being scanned right now."""
+    if in_docker:
+        return "Not mounted — add the compose line and run docker compose up -d"
+    return "Not found on this computer"
 
 
 _NETWORK_HINT = "Use a network share, e.g. \\\\nas\\photo\\Film or smb://nas/photo/Film"
@@ -6713,13 +6722,31 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
                     type="warning",
                 )
                 return
-            if not any(Path(r.container).is_dir() for r in settings.library_roots):
-                ui.notify(
-                    "None of those folders can be accessed. They will be scanned when "
-                    "sortandpost.photos can access them.",
-                    type="warning",
-                )
-            stepper.next()
+            unreachable = [r for r in settings.library_roots if not Path(r.container).is_dir()]
+            if not unreachable:
+                stepper.next()
+                return
+            with ui.dialog() as dialog, ui.card().classes("w-[36rem] max-w-full gap-2"):
+                ui.label(
+                    "These folders aren't mounted in the container:"
+                    if running_in_docker()
+                    else "These folders can't be found on this computer:"
+                ).classes("font-bold")
+                for r in unreachable:
+                    ui.label(r.label or r.host).classes("font-mono text-xs break-all")
+                ui.label(
+                    "They'll be scanned once sortandpost.photos can reach them. If a path "
+                    "was a mistake, go back and remove it."
+                ).classes("text-sm sp-muted")
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Go back", on_click=dialog.close).props("flat")
+
+                    def _go_on() -> None:
+                        dialog.close()
+                        stepper.next()
+
+                    ui.button("Continue anyway", on_click=_go_on).props("color=primary")
+            dialog.open()
 
         def _read_only_note() -> None:
             ui.label(

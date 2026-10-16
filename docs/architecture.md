@@ -218,7 +218,9 @@ Adding a folder (Settings or the wizard) goes through `library_roots.check_new_r
 is normalized, and a relative path, a file, `/` / home, anything inside the app's own folders,
 a duplicate or a folder inside an existing root is refused. A folder that isn't there right
 now (offline drive) or that contains existing roots (they're replaced) needs "Add anyway".
-Under Docker only the mount point is checked. The scanner's full walk also skips a root nested
+Under Docker only the mount point is checked. A saved folder that isn't there shows that on its row
+(beside a labelled Remove button), and the wizard's Next lists any unreachable folder in a
+Go back / Continue anyway dialog. The scanner's full walk also skips a root nested
 in another one or inside app data (`scanner.walk_roots`).
 
 ### Opening files under Docker: copy the network path
