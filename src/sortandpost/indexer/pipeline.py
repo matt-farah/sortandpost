@@ -142,6 +142,8 @@ def persist_decoded(
     if scan is None:
         scan = ScanState(path=key)
         session.add(scan)
+    # Never indexed here with these pixels: reconcile only reads (Issues.md S6).
+    first_index = scan.indexed_at is None or scan.pixel_hash != decoded.pixel_hash
     scan.size = decoded.size
     scan.mtime_ns = decoded.mtime_ns
     scan.error = None
@@ -220,6 +222,7 @@ def persist_decoded(
                 file_mtime_ns=decoded.mtime_ns,
                 now=now,
                 write_back=_is_embed_target(session, stacking, pixel_hash, path),
+                first_index=first_index,
             )
         except MetadataError as exc:
             log.warning("metadata reconcile failed for %s: %s", path, exc)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,7 +11,7 @@ from sqlmodel import Session, select
 
 from sortandpost.config import Settings
 from sortandpost.db import make_engine
-from sortandpost.db.models import Photo, PhotoPath, ScanState
+from sortandpost.db.models import Photo, PhotoPath, Rating, ScanState
 from sortandpost.indexer import scan_once
 from sortandpost.indexer.pipeline import Stage
 
@@ -535,3 +536,62 @@ def test_scope_covering_a_root_is_a_full_scan(settings: Settings) -> None:
     _jpeg(lib / "a" / "one.jpg")
     stats = scan_once(settings, scope=[lib, lib / "a"])
     assert stats.scoped is None and stats.seen == 1
+
+
+# --------------------------------------------------------------------------- #
+# first scan never rewrites a file's rating (Issues.md S6)
+# --------------------------------------------------------------------------- #
+def _set_rating(path: Path, value: int, mtime_s: int) -> None:
+    subprocess.run(
+        ["exiftool", "-overwrite_original_in_place", f"-XMP-xmp:Rating={value}", str(path)],
+        capture_output=True,
+        check=True,
+    )
+    os.utime(path, (mtime_s, mtime_s))
+
+
+def _file_bytes(lib: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(lib)): p.read_bytes() for p in sorted(lib.rglob("*.jpg"))}
+
+
+@pytest.mark.skipif(not _HAS_EXIFTOOL, reason="exiftool not on PATH")
+def test_first_scan_of_duplicates_keeps_every_copys_rating(settings: Settings) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "a" / "x.jpg")
+    for folder in ("b", "c"):
+        (lib / folder).mkdir()
+        shutil.copy2(lib / "a" / "x.jpg", lib / folder / "x.jpg")
+    _set_rating(lib / "a" / "x.jpg", 2, 1_600_000_000)
+    _set_rating(lib / "b" / "x.jpg", 4, 1_700_000_000)  # the newest copy
+    _set_rating(lib / "c" / "x.jpg", 3, 1_650_000_000)
+    before = _file_bytes(lib)
+
+    scan_once(settings, workers=1)
+
+    assert _file_bytes(lib) == before  # no copy rewritten
+    with _session(settings) as s:
+        assert s.exec(select(Rating)).one().stars == 4  # newest file wins, whatever the order
+
+
+@pytest.mark.skipif(not _HAS_EXIFTOOL, reason="exiftool not on PATH")
+def test_out_of_range_file_ratings_are_never_overwritten(settings: Settings) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "reject.jpg", (1, 2, 3))
+    _jpeg(lib / "odd.jpg", (4, 5, 6))
+    _set_rating(lib / "reject.jpg", -1, 1_600_000_000)  # Lightroom reject
+    _set_rating(lib / "odd.jpg", 99, 1_600_000_000)
+    before = _file_bytes(lib)
+
+    scan_once(settings, workers=1)
+    with _session(settings) as s:
+        stars = {
+            Path(p.primary_path).name: (r.stars if (r := s.get(Rating, p.pixel_hash)) else None)
+            for p in s.exec(select(Photo))
+        }
+    assert stars == {"reject.jpg": None, "odd.jpg": 5}
+
+    # A later re-index (the file changed) still leaves the foreign value alone.
+    for name in ("reject.jpg", "odd.jpg"):
+        os.utime(lib / name, (1_650_000_000, 1_650_000_000))
+    scan_once(settings, workers=1)
+    assert _file_bytes(lib) == before

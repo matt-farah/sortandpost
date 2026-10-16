@@ -13,6 +13,7 @@ from sortandpost.db.models import (
     Change,
     ChangeOp,
     Photo,
+    PhotoPath,
     PhotoTag,
     Rating,
     RatingSource,
@@ -362,3 +363,86 @@ def test_keyword_import_is_additive(session: Session) -> None:
     assert dog_tag.source == TagSource.manual and dog_tag.written_to_file is True
     change = session.exec(select(Change).where(Change.op == ChangeOp.tag_add)).one()
     assert change.field == "dog"
+
+
+# --------------------------------------------------------------------------- #
+# a file's first index only reads (Issues.md S6)
+# --------------------------------------------------------------------------- #
+def _first(session: Session, ph: str, md: EmbeddedMetadata, mtime: datetime, et: MockExiftool):
+    return reconcile_metadata(
+        session,
+        pixel_hash=ph,
+        path=Path("/lib/new.jpg"),
+        md=md,
+        exiftool=et,
+        device_id=DEVICE,
+        file_mtime_ns=_ns(mtime),
+        now=NOW,
+        first_index=True,
+    )
+
+
+def test_first_index_never_writes_an_older_app_rating(session: Session) -> None:
+    ph = "f" * 64
+    _photo(session, ph, "/lib/new.jpg")
+    session.add(Rating(pixel_hash=ph, stars=3, updated_at=NEW, updated_by_device="other"))
+    session.commit()
+    et = MockExiftool()
+
+    for md in (_md(rating=1), _md(), _md(rating=0)):
+        out = _first(session, ph, md, OLD, et)
+        assert not out.rating_written and not out.rating_imported
+    assert et.rating_calls == []
+    assert session.get(Rating, ph).stars == 3
+
+
+def test_first_index_zero_never_clears_a_rating(session: Session) -> None:
+    ph = "f" * 64
+    _photo(session, ph, "/lib/new.jpg")
+    session.add(Rating(pixel_hash=ph, stars=3, updated_at=OLD, updated_by_device="other"))
+    session.commit()
+
+    out = _first(session, ph, _md(rating=0), NEW, MockExiftool())  # newer camera "0"
+    assert not out.rating_imported
+    assert session.get(Rating, ph).stars == 3
+
+
+def test_first_index_beats_a_file_rating_only_when_newest_copy(session: Session) -> None:
+    ph = "f" * 64
+    _photo(session, ph, "/lib/new.jpg")
+    session.add(PhotoPath(pixel_hash=ph, path="/lib/old.jpg", size=1, mtime_ns=_ns(NEW)))
+    # imported from /lib/old.jpg during this scan: updated_at is the scan time
+    session.add(
+        Rating(
+            pixel_hash=ph,
+            stars=2,
+            updated_at=NOW,
+            updated_by_device=DEVICE,
+            source=RatingSource.file,
+        )
+    )
+    session.commit()
+
+    assert not _first(session, ph, _md(rating=5), OLD, MockExiftool()).rating_imported
+    assert _first(session, ph, _md(rating=5), NOW, MockExiftool()).rating_imported
+    assert session.get(Rating, ph).stars == 5
+
+
+def test_unsupported_file_rating_is_never_written(session: Session) -> None:
+    ph = "f" * 64
+    _photo(session, ph, "/lib/new.jpg")
+    session.add(Rating(pixel_hash=ph, stars=3, updated_at=NEW, updated_by_device="other"))
+    session.commit()
+    et = MockExiftool()
+
+    out = reconcile_metadata(
+        session,
+        pixel_hash=ph,
+        path=Path("/lib/new.jpg"),
+        md=EmbeddedMetadata(rating=None, rating_unsupported=True),  # a -1 reject
+        exiftool=et,
+        device_id=DEVICE,
+        file_mtime_ns=_ns(OLD),
+        now=NOW,
+    )
+    assert not out.rating_written and et.rating_calls == []

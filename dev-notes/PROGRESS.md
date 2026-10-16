@@ -1,16 +1,29 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-15 (pre-release stress-test fixes S1–S5 merged: #70, #71, #72, #73)._
+_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, S6)._
 _Working branch: `main`. V3 through P6a–d merged._
 
-> **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session, starting
-> with **S6** (first scan overwrites ratings in duplicate copies) — decide the rule first (never
-> write back during a photo's first index? prefer the newest file mtime? never overwrite `-1`?),
-> then S7 (Add folder validation), S8 (tag overflow), S9 (tag-create race), S10 (small ones).
+> **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session:
+> **S7** (Add folder validation — consider V3.md #12, add/remove folders in onboarding, with it),
+> then S8 (tag overflow), S9 (tag-create race), S10 (small ones).
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🛡️ 2026-10-16 — S6: first scan never rewrites a file's rating (branch `fix/s6-duplicate-rating-writeback`)
+
+- **First index only reads** (`reconcile_metadata(first_index=…)`, set by `persist_decoded`
+  when the path was never indexed with these pixels): no DB -> file write, and a file `0`
+  never clears a DB rating.
+- **Newest copy wins**: on a first index, a file-sourced DB rating is beaten only by a copy
+  newer than every other present copy (`_newest_other_copy_ns`), so scan order doesn't matter.
+- **Out-of-range file ratings** (`EmbeddedMetadata.rating_unsupported`): `-1` reads as
+  unrated, `> 5` as 5★, and reconcile never writes into that file.
+- 6 new tests (2 end-to-end with real exiftool, failing before the fix). Hands-on tested: a
+  fresh library with 3 copies rated 2/4/3 (newest = 4) + `-1` / `99` files -> 4★ / unrated /
+  5★, every file byte-identical after the scan.
+- Noted for later: V3.md #12, add / remove photo folders in the onboarding wizard.
 
 ## 🛡️ 2026-10-15 — S4 + S5: startup never bricks, folder picks are checked (branch `fix/s4-startup-bricks`)
 
