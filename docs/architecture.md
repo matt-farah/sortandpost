@@ -515,6 +515,11 @@ The **only** module allowed to write under a library root. Wraps a persistent
   purpose: it moves the stack's tags onto that photo (`db.tags.move_tags`), then
   `ExiftoolClient.restamp` rewrites that photo's rating + keywords (unrated as an explicit
   `XMP:Rating=0`, so the file always changes) and refreshes `photo_paths`.
+- **A write counts only if exiftool says so**: `_commit` parses the summary (≥ 1 file
+  updated / unchanged, none "weren't updated due to errors") — a read-only or locked file
+  prints `Error opening … for writing` with no `Error:` prefix. Callers log the
+  `MetadataError` and keep the DB change; UI writes run through `app._io_write`, which
+  collects the action's failures (`metadata.collect_write_failures`) and shows a warning toast.
 - `-stay_open` reads **one argument per line**: `_execute` refuses any argument containing
   `\n` / `\r` / NUL, since a line break would inject exiftool options (`-Directory=` moves
   the file, `-if` runs Perl — docs/security-review.md C1). Tag names are normalized / validated by

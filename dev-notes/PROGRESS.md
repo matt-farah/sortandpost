@@ -8,6 +8,18 @@ _Working branch: `main`. V3 through P6a–d merged._
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🛡️ 2026-10-15 — S3: failed exiftool writes are failures (branch `fix/s3-exiftool-write-failures`)
+
+- `ExiftoolClient._commit` counts exiftool's summary instead of substring-matching
+  `"image files updated"` (which matched `0 image files updated`): a write succeeds only with
+  ≥ 1 file updated / unchanged and none "weren't updated due to errors".
+- **The user is told:** `metadata.collect_write_failures` (per thread) + `app._io_write` around
+  the UI write paths -> a warning toast "Saved in the library, but couldn't write it into
+  <file> (the file is read-only or in use)". The DB change still lands.
+- 4 regression tests (read-only file raises for rating / keywords / restamp and stays
+  byte-identical; collector; unchanged = success; `set_rating` saves + reports). Hands-on
+  tested with a `chmod 444` sample.
+
 ## 🛡️ 2026-10-15 — S2: one undecodable file no longer aborts a scan (branch `fix/s2-undecodable-file-scan`)
 
 - `DecompressionBombError` (not an `OSError`) is a `DecodeError` in `load_image` / RAW previews;

@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+from PIL import Image
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from sortandpost.app import _write_failure_text
 from sortandpost.db import set_rating
-from sortandpost.db.models import Change, ChangeOp, Photo, Rating, RatingSource
+from sortandpost.db.models import Change, ChangeOp, Photo, PhotoPath, Rating, RatingSource
+from sortandpost.metadata import ExiftoolClient, collect_write_failures
 
 NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 PH = "a" * 64
@@ -96,3 +102,26 @@ def test_out_of_range_rejected(engine: Engine, stars: int) -> None:
         _add_photo(s)
         with pytest.raises(ValueError):
             set_rating(s, pixel_hash=PH, stars=stars, device_id="dev1", now=NOW)
+
+
+@pytest.mark.skipif(shutil.which("exiftool") is None, reason="exiftool not on PATH")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores 0444")
+def test_read_only_file_rating_is_saved_and_reported(engine: Engine, tmp_path: Path) -> None:
+    """Issues.md S3: the DB keeps the rating, the failed file write is reported
+    (not silently treated as success)."""
+    path = tmp_path / "ro.jpg"
+    Image.new("RGB", (16, 16), (10, 20, 30)).save(path, "JPEG")
+    path.chmod(0o444)
+    try:
+        with Session(engine) as s, ExiftoolClient() as et, collect_write_failures() as failures:
+            _add_photo(s)
+            s.add(PhotoPath(pixel_hash=PH, path=str(path), size=1, mtime_ns=1, present=True))
+            s.commit()
+            assert set_rating(s, pixel_hash=PH, stars=2, device_id="dev1", now=NOW, exiftool=et)
+            s.commit()
+            row = s.get(Rating, PH)
+            assert row is not None and row.stars == 2
+    finally:
+        path.chmod(0o644)
+    assert [f.path for f in failures] == [path]
+    assert "read-only or in use" in _write_failure_text(failures)
