@@ -571,7 +571,8 @@ The **only** module allowed to write under a library root. Wraps a persistent
   ✓ approve / ✕ dismiss; ✕ on every applied tag — on an approved CLIP tag it also rejects the
   suggestion so it isn't re-suggested; an add-tag input — in a stack, tags live on its top photo
   only, see "Stacks write one file"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
-  prev/next walk the same resolved view (`resolve_view`, cached per query for 30 min).
+  prev/next (← / → or the round ‹ › buttons at the screen's edges) walk the same resolved view
+  (`resolve_view`, cached per query for 30 min).
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/achievements` — achievement cards + score (see "Achievements"); reached from the header's
   name + 🏆 chip, hidden when the mode is Off.

@@ -8,6 +8,13 @@ _Working branch: `main`. V3 through P6a–d merged._
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🖱️ 2026-10-15 — Photo page: prev / next buttons (branch `feat/photo-side-arrows`)
+
+- Round ‹ / › buttons pinned to the screen's left and right edges on `/photo/{hash}` move like
+  ← / → (same resolved view, `location.replace`; hidden at either end). The photo row is
+  padded so they never cover it. Keys and buttons share `_go`. Hands-on tested.
+- Tried first and dropped: mouse-wheel paging over the photo (would be annoying).
+
 ## 🐛 2026-10-15 — Issues.md sweep (branch `fix/issues-list-2026-10-15`)
 
 - **Duplicate collections:** `DuplicateNameError` on create / rename with a taken name

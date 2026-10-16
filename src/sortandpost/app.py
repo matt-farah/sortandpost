@@ -2014,10 +2014,30 @@ def build_ui(settings: Settings) -> None:
             anchor = locate(ordered, candidates)
         prev_hash, next_hash = neighbors(ordered, anchor) if anchor else (None, None)
 
+        def _go(target: str) -> None:
+            # location.replace (not a push) so a run of arrow presses doesn't
+            # stack history -- Back, in-app or browser, returns to the library
+            # grid you started from, not through every photo you skimmed. Same
+            # rationale as the stack filmstrip.
+            ui.run_javascript(f"location.replace({json.dumps(_photo_url(target, link_query))})")
+
         ui.button("← Back", on_click=lambda: ui.navigate.back()).props("flat dense").classes(
             "mx-4 mt-2"
         )
-        with ui.row().classes("w-full no-wrap gap-6 p-4"):
+        # prev / next buttons pinned to the screen's left and right edges, for moving with the
+        # mouse like ← / →; the row below is padded so they never cover it
+        for target, icon, side, tip in (
+            (prev_hash, "chevron_left", "left", "previous photo (←)"),
+            (next_hash, "chevron_right", "right", "next photo (→)"),
+        ):
+            if target:
+                ui.button(icon=icon, on_click=lambda t=target: _go(t)).props(
+                    "round flat size=16px"
+                ).style(
+                    f"position:fixed; {side}:0.5rem; top:50%; transform:translateY(-50%);"
+                    " z-index:10; background-color:var(--sp-surface-2); color:var(--sp-text)"
+                ).tooltip(tip)
+        with ui.row().classes("w-full no-wrap gap-6 p-4").style("padding-inline:3.75rem"):
             # a plain <img>, not ui.image: q-img sizes itself by aspect-ratio
             # padding and ignores max-height, so a portrait photo overflowed the
             # window. This fits whole inside the viewport (minus header, back
@@ -2249,18 +2269,10 @@ def build_ui(settings: Settings) -> None:
             if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
                 return
             key = e.key
-            # location.replace (not a push) so a run of arrow presses doesn't
-            # stack history -- Back, in-app or browser, returns to the library
-            # grid you started from, not through every photo you skimmed. Same
-            # rationale as the stack filmstrip.
             if (key == "ArrowLeft" or key == "k") and prev_hash:
-                ui.run_javascript(
-                    f"location.replace({json.dumps(_photo_url(prev_hash, link_query))})"
-                )
+                _go(prev_hash)
             elif (key == "ArrowRight" or key == "j") and next_hash:
-                ui.run_javascript(
-                    f"location.replace({json.dumps(_photo_url(next_hash, link_query))})"
-                )
+                _go(next_hash)
             elif star_widget is not None and key.number is not None and 0 <= key.number <= 5:
                 star_widget.set_value(key.number)  # fires the same write path as a click
             elif flag_switch is not None and key == "f":
