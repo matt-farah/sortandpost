@@ -201,7 +201,7 @@ from sortandpost.post_export import resolve_sources
 from sortandpost.posts import posted_hashes
 from sortandpost.posts_ui import (
     compose_button,
-    posted_note,
+    photo_posts_row,
     posting_settings_panel,
     register_post_pages,
 )
@@ -556,7 +556,11 @@ body, .q-page, .nicegui-content {
 @media (max-width: 640px) {
   .sp-photo-main { flex-direction: column; padding-inline: 1rem !important; }
   .sp-photo-info { width: 100%; max-width: 100%; }
+  .sp-photo-left { width: 100%; }
 }
+/* a panel under the photo (Collections, Posts): as wide as the photo, never wider --
+   `contain: inline-size` keeps its chips from widening the photo's column */
+.sp-photo-panel { width: 100%; contain: inline-size; }
 
 /* empty states --------------------------------------------------------------- */
 .sp-empty {
@@ -2110,13 +2114,20 @@ def build_ui(settings: Settings) -> None:
             # padding and ignores max-height, so a portrait photo overflowed the
             # window. This fits whole inside the viewport (minus header, back
             # button and status bar) and the width left beside the info column.
-            ui.element("img").props(f'src="{_thumb_src(pixel_hash, thumb_large)}"').classes(
-                "rounded shadow"
-            ).style(
-                "display:block; min-width:0; flex:0 1 auto; width:auto; height:auto;"
-                " max-width:min(100%, 1280px); max-height:calc(100vh - 12rem - 20px);"
-                " object-fit:contain"
-            )
+            # The Collections and Posts panels sit under the photo, in its column, and
+            # are exactly as wide as the photo (`.sp-photo-panel`).
+            with ui.column().classes("sp-photo-left gap-4").style("flex:0 1 auto; min-width:0"):
+                ui.element("img").props(f'src="{_thumb_src(pixel_hash, thumb_large)}"').classes(
+                    "rounded shadow"
+                ).style(
+                    "display:block; min-width:0; width:auto; height:auto;"
+                    " max-width:min(100%, 1280px); max-height:calc(100vh - 12rem - 20px);"
+                    " object-fit:contain"
+                )
+                collections_wrap = ui.column().classes(
+                    "sp-card sp-settings-card sp-photo-panel gap-1"
+                )
+                posts_wrap = ui.column().classes("sp-card sp-settings-card sp-photo-panel gap-1")
             with ui.column().classes("sp-photo-info gap-1 text-sm shrink-0 max-w-sm"):
                 star_widget = _star_widget(settings, engine, pixel_hash, stars or 0)
                 flag_switch = _edit_flag_button(settings, engine, pixel_hash, flagged)
@@ -2148,8 +2159,6 @@ def build_ui(settings: Settings) -> None:
                         roots=settings.library_roots,
                         native_reveal=native_reveal,
                     )
-
-        collections_wrap = ui.column().classes("w-full gap-1 px-4")
 
         def _paint_collections() -> None:
             collections_wrap.clear()
@@ -2276,8 +2285,8 @@ def build_ui(settings: Settings) -> None:
             await _tag_action(name, "add")
 
         await _paint_tags()
-        with ui.column().classes("w-full gap-1 px-4"):
-            posted_note(settings, pixel_hash)
+        with posts_wrap:
+            photo_posts_row(settings, pixel_hash)
 
         if len(members) > 1:
 
