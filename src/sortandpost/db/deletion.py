@@ -332,6 +332,23 @@ def restore_photo_state(session: Session, pixel_hash: str, state: dict[str, Any]
 # --------------------------------------------------------------------------- #
 # Internals
 # --------------------------------------------------------------------------- #
+def files_to_move(
+    session: Session, pixel_hashes: Sequence[str], roots: Sequence[Path]
+) -> list[str]:
+    """The file copies a delete of *pixel_hashes* would move on this machine:
+    present, on disk and inside one of *roots*. A preview for the confirm
+    dialog -- the delete itself also re-checks each file's pixels."""
+    rows = session.exec(
+        select(PhotoPath).where(
+            col(PhotoPath.pixel_hash).in_(list(pixel_hashes)),
+            col(PhotoPath.present).is_(True),
+        )
+    ).all()
+    return sorted(
+        r.path for r in rows if Path(r.path).exists() and _under_roots(Path(r.path), roots)
+    )
+
+
 def _under_roots(path: Path, roots: Sequence[Path]) -> bool:
     """Is *path* inside one of *roots*? Both sides are resolved, so a symlinked
     root (stored under its own spelling by the scanner) still matches."""

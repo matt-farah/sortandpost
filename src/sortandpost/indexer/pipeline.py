@@ -356,6 +356,7 @@ class SweepResult:
     marked_absent: int = 0
     marked_missing: int = 0
     revived: int = 0
+    pruned: int = 0  # stale rows dropped: the photo lives on at another path
     repointed_primary: list[str] = field(default_factory=list)
 
 
@@ -366,6 +367,7 @@ def sweep_presence(
     now: datetime,
     scope: list[Path] | None = None,
     judged: Callable[[str], bool] | None = None,
+    prunable: Callable[[str], bool] | None = None,
 ) -> SweepResult:
     """Reconcile ``present``/``missing_since`` after a scan pass.
 
@@ -381,6 +383,12 @@ def sweep_presence(
     computer owns: ``photo_paths`` is shared, and another device's copies are
     never under this computer's roots, so they would all look gone. A photo is
     only re-checked if one of its paths was judged (or it has none at all).
+
+    *prunable* says an absent path is really gone (its library folder is online
+    and the file isn't there). Such a row is deleted -- with its ``scan_state``
+    -- when the same photo has a present copy elsewhere: a renamed / moved
+    folder otherwise left its old rows behind forever. A photo with no present
+    copy keeps every row (it is missing, never purged: constraint #8).
     """
     result = SweepResult()
 
@@ -396,6 +404,10 @@ def sweep_presence(
             result.marked_absent += 1
         elif not pp.present and should_be_present:
             pp.present = True
+    if prunable is not None:
+        gone = _prune_moved_paths(session, rows, prunable)
+        result.pruned = len(gone)
+        rows = [pp for pp in rows if pp.id not in gone]
 
     if scope is None:
         photos = list(session.exec(select(Photo)).all())
@@ -430,6 +442,37 @@ def sweep_presence(
             result.marked_missing += 1
 
     return result
+
+
+def _prune_moved_paths(
+    session: Session, rows: list[PhotoPath], prunable: Callable[[str], bool]
+) -> set[int | None]:
+    """Delete absent *rows* whose photo has a present copy at another path
+    (see :func:`sweep_presence`). Returns the deleted rows' ids."""
+    absent = [pp for pp in rows if not pp.present]
+    if not absent:
+        return set()
+    hashes = {pp.pixel_hash for pp in absent}
+    with_copy = set(
+        session.exec(
+            select(PhotoPath.pixel_hash).where(
+                col(PhotoPath.pixel_hash).in_(hashes), col(PhotoPath.present).is_(True)
+            )
+        ).all()
+    )
+    pruned: set[int | None] = set()
+    for pp in absent:
+        if pp.pixel_hash not in with_copy or not prunable(pp.path):
+            continue
+        state = session.get(ScanState, pp.path)
+        if state is not None:
+            session.delete(state)
+        session.delete(pp)
+        pruned.add(pp.id)
+    if pruned:
+        session.flush()
+        log.info("dropped %d stale path(s) of photos that now live elsewhere", len(pruned))
+    return pruned
 
 
 def _in_scope[T: (Photo, PhotoPath)](

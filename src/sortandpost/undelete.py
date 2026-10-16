@@ -30,6 +30,7 @@ from sortandpost import binaries
 from sortandpost.config import Settings
 from sortandpost.db.deletion import lift_tombstone, restore_photo_state
 from sortandpost.indexer.pipeline import PipelineConfig, index_file
+from sortandpost.indexer.progress import PROGRESS
 from sortandpost.indexer.scan import _INDEX_LOCK
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.sync.changelog import ensure_writable
@@ -98,31 +99,38 @@ def put_back_batch(
             else nullcontext(None)
         )
         now = utcnow()
-        with Session(engine) as session, et_ctx as exiftool:
-            for h in pb.hashes:
-                n = sum(1 for i in pb.restored if i.pixel_hash == h)
-                lift_tombstone(
-                    session, pixel_hash=h, device_id=settings.device_id, now=now, n_paths=n
-                )
-            session.flush()  # the pipeline's tombstone guard must see them gone
-            for item in pb.restored:
-                outcome = index_file(
-                    session,
-                    Path(item.original),
-                    config=pcfg,
-                    exiftool=exiftool,
-                    device_id=settings.device_id,
-                    now=now,
-                )
-                if outcome.error:
-                    log.warning(
-                        "re-index after put back failed for %s: %s", item.original, outcome.error
+        PROGRESS.begin("restoring", total=len(pb.restored))
+        try:
+            with Session(engine) as session, et_ctx as exiftool:
+                for h in pb.hashes:
+                    n = sum(1 for i in pb.restored if i.pixel_hash == h)
+                    lift_tombstone(
+                        session, pixel_hash=h, device_id=settings.device_id, now=now, n_paths=n
                     )
-                    result.index_errors.append(item.original)
-            for h in pb.hashes:
-                state = pb.photos.get(h, {})
-                if restore_photo_state(session, h, state):
-                    result.photos_restored.append(h)
-            session.commit()
+                session.flush()  # the pipeline's tombstone guard must see them gone
+                for n_done, item in enumerate(pb.restored):
+                    PROGRESS.update(done=n_done, current=Path(item.original).name)
+                    outcome = index_file(
+                        session,
+                        Path(item.original),
+                        config=pcfg,
+                        exiftool=exiftool,
+                        device_id=settings.device_id,
+                        now=now,
+                    )
+                    if outcome.error:
+                        log.warning(
+                            "re-index after put back failed for %s: %s",
+                            item.original,
+                            outcome.error,
+                        )
+                        result.index_errors.append(item.original)
+                for h in pb.hashes:
+                    state = pb.photos.get(h, {})
+                    if restore_photo_state(session, h, state):
+                        result.photos_restored.append(h)
+                session.commit()
+        finally:
+            PROGRESS.finish()  # never leave the status bar saying "Putting back"
     log.info("put back %s: %s", batch_id, result.summary())
     return result

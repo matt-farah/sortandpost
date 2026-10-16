@@ -152,3 +152,65 @@ def test_unknown_batch(settings: Settings) -> None:
     engine = make_engine(settings.paths.working_db)
     result = put_back_batch(settings, engine, "nope")
     assert result.error is not None
+
+
+def test_put_back_reports_progress_and_always_finishes(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The status bar shows "Putting back n/N" while the files are re-indexed,
+    and the stage is cleared even if the re-index blows up."""
+    import sortandpost.undelete as undelete
+    from sortandpost.indexer.progress import ProgressTracker
+
+    _src, ph = _indexed_photo(settings)
+    batch_id = _delete(settings, ph)
+    tracker = ProgressTracker()
+    seen: list[str] = []
+    real_index = undelete.index_file
+
+    def _index(*args: object, **kwargs: object) -> object:
+        seen.append(tracker.snapshot().label())
+        return real_index(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(undelete, "PROGRESS", tracker)
+    monkeypatch.setattr(undelete, "index_file", _index)
+    put_back_batch(settings, make_engine(settings.paths.working_db), batch_id)
+    assert seen == ["Putting back 0/1"]
+    assert not tracker.snapshot().active
+
+    batch_id = _delete(settings, ph)
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(undelete, "index_file", _boom)
+    with pytest.raises(RuntimeError):
+        put_back_batch(settings, make_engine(settings.paths.working_db), batch_id)
+    assert not tracker.snapshot().active
+
+
+def test_files_to_move_lists_every_copy_under_this_machines_folders(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The delete dialog's preview: every present copy inside the library
+    folders (one photo can be many files), nothing outside them."""
+    from sortandpost.db.deletion import files_to_move
+    from sortandpost.db.models import PhotoPath
+
+    src, ph = _indexed_photo(settings)
+    lib = Path(settings.library_roots[0].container)
+    copy = lib / "elsewhere" / "a copy.jpg"
+    copy.parent.mkdir()
+    copy.write_bytes(src.read_bytes())
+    scan_once(settings, workers=1)
+    outside = tmp_path / "not-a-library" / "a.jpg"
+    outside.parent.mkdir()
+    outside.write_bytes(src.read_bytes())
+
+    engine = make_engine(settings.paths.working_db)
+    roots = container_roots(settings.library_roots)
+    with Session(engine) as s:
+        # another machine's row for a path that happens to exist here too
+        s.add(PhotoPath(pixel_hash=ph, path=str(outside), size=1, mtime_ns=1, present=True))
+        s.commit()
+        assert files_to_move(s, [ph], roots) == sorted([str(src), str(copy)])

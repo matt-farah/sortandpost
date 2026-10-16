@@ -15,7 +15,6 @@ from __future__ import annotations
 import hmac
 import logging
 import os
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -23,6 +22,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException
+
+from sortandpost.procwatch import parent_alive_check
 
 log = logging.getLogger(__name__)
 
@@ -114,28 +115,6 @@ def install(app: FastAPI, hooks: ControlHooks) -> bool:
         start_parent_watch(int(parent), hooks.shutdown)
     log.info("desktop control API enabled")
     return True
-
-
-def parent_alive_check(parent_pid: int) -> Callable[[], bool]:
-    """How to tell the tray is still running. POSIX: our parent pid changes
-    when it dies (we get re-parented to launchd / init). Windows never
-    re-parents, so hold a handle to the tray process -- taken now, while it's
-    certainly alive, so a recycled pid can't fool us -- and ask whether it has
-    exited."""
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        synchronize, wait_timeout = 0x00100000, 0x102
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        handle = kernel32.OpenProcess(synchronize, False, parent_pid)
-        if not handle:
-            return lambda: False  # already gone (or not ours to watch)
-        return lambda: bool(kernel32.WaitForSingleObject(handle, 0) == wait_timeout)
-    return lambda: os.getppid() == parent_pid
 
 
 def start_parent_watch(

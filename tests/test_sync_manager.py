@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 from collections.abc import Callable
@@ -287,6 +288,81 @@ def test_conflict_copy_is_merged_and_archived_on_start(
     assert (settings.paths.merged_snapshots_dir / "sortandpost (1).db").exists()
 
     mgr.stop()
+
+
+def _conflict_with_rating(settings: Settings, name: str, stars: int, at: datetime) -> Path:
+    """A conflict copy of the published DB carrying one extra rating + its changes row."""
+    conflict = settings.paths.sync / name
+    conflict.write_bytes(settings.paths.published_db.read_bytes())
+    ce = make_engine(conflict)
+    with Session(ce) as s:
+        ph = hash_for("a")
+        s.add(
+            Rating(
+                pixel_hash=ph,
+                stars=stars,
+                updated_at=at,
+                updated_by_device="other",
+                source=RatingSource.app,
+            )
+        )
+        record_change(
+            s,
+            device_id="other",
+            op=ChangeOp.rate,
+            pixel_hash=ph,
+            ts=at,
+            field="stars",
+            new_value=str(stars),
+        )
+        s.commit()
+    ce.dispose()
+    return conflict
+
+
+def test_a_running_writer_merges_a_conflict_copy_that_arrives_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    """An always-on writer folds in conflict copies on its tick, not only at
+    startup -- once the copy has stopped changing (the sync tool may still be
+    writing it), and without swapping out the live working DB."""
+    settings = _settings(monkeypatch, tmp_path / "a")
+    mgr = SyncManager(settings, clock=clock)
+    assert mgr.start(background=False) is WriteMode.writable
+    assert mgr.merge_arrived_copies() is None  # nothing there yet
+    wdb_inode = settings.paths.working_db.stat().st_ino
+
+    clock.advance(61)
+    conflict = _conflict_with_rating(settings, "sortandpost (1).db", 4, clock.now)
+    just_now = clock.now.timestamp() - 5
+    os.utime(conflict, (just_now, just_now))
+    assert mgr.merge_arrived_copies() is None  # written 5 s ago: may still be syncing
+    assert conflict.exists()
+
+    clock.advance(61)
+    summary = mgr.merge_arrived_copies()
+    assert summary is not None and summary.sources == ["sortandpost (1).db"]
+    assert mgr.last_merge is summary
+    assert not conflict.exists()
+    assert (settings.paths.merged_snapshots_dir / "sortandpost (1).db").exists()
+    assert settings.paths.working_db.stat().st_ino == wdb_inode  # merged in place
+    assert read_ratings(settings.paths.working_db).get(hash_for("a")) == 4
+    mgr.stop()
+
+
+def test_a_read_only_machine_leaves_conflict_copies_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    settings = _settings(monkeypatch, tmp_path / "a")
+    boot = SyncManager(settings, clock=clock)
+    boot.start(background=False)
+    boot.stop()
+    conflict = _conflict_with_rating(settings, "sortandpost (1).db", 4, clock.now)
+    old = clock.now.timestamp() - 3600
+    os.utime(conflict, (old, old))
+    mgr = SyncManager(settings, clock=clock)  # never started: read-only
+    assert mgr.merge_arrived_copies() is None
+    assert conflict.exists()
 
 
 def test_bad_conflict_copies_are_set_aside_and_start_stays_a_real_writer(

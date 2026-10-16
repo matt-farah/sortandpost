@@ -61,6 +61,7 @@ from sortandpost.posts import (
     save_post,
     validate,
 )
+from sortandpost.procwatch import pool_worker_init
 from sortandpost.secrets_store import get_key
 from sortandpost.sync.clock import utcnow
 
@@ -98,7 +99,9 @@ def pool_exporter(
     if not jobs:
         return
     ctx = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(max_workers=min(2, len(jobs)), mp_context=ctx) as pool:
+    with ProcessPoolExecutor(
+        max_workers=min(2, len(jobs)), mp_context=ctx, initializer=pool_worker_init
+    ) as pool:
         futures = [
             pool.submit(export_jpeg, src, dest, long_edge, quality, ig) for src, dest in jobs
         ]

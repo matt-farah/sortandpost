@@ -1,17 +1,41 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, #75; S7–S9 committed on their branch, unmerged)._
-_Working branch: `fix/s7-add-folder-validation` (S7+ batch). V3 through P6a–d merged._
+_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S10 done: S1–S6 #70–#73, #75; S7–S10 one combined PR)._
+_Working branch: `main`. V3 through P6a–d merged._
 
-> **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session:
-> **S10** (small ones); V3.md #12 (add / remove
+> **▶️ Next:** the pre-release stress-test list in `Issues.md` is done. V3.md #12 (add / remove
 > folders in onboarding) is still open.
-> **One PR for S7 onward:** keep committing each fix on branch `fix/s7-add-folder-validation`
-> (S7–S9 committed, not pushed — no PR yet), and open a single combined PR when the batch is done.
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🛡️ 2026-10-16 — S10: the small ones (branch `fix/s7-add-folder-validation`)
+
+- **Live conflict merge** — `SyncManager.merge_arrived_copies` on the sync tick (every
+  `_LIVE_MERGE_EVERY_SEC` = 60 s while `writes_open`): conflict copies unchanged for
+  `_LIVE_MERGE_SETTLE_SEC` (30 s) are merged with `_merge_conflicts(copies, live=True)` — the
+  working DB is always the base (never swapped under the running app), the published DB is
+  left out. An always-on writer no longer sits on another machine's edits until a restart.
+- **Delete dialogs** (photo page + bulk) say "This moves N files out of M folders" and list up
+  to 4 folders (host spelling) — `deletion.files_to_move` via `app._delete_preview`, off the
+  event loop.
+- **Put back** — progress stage `restoring` ("Putting back n/N" in the status bar, cleared in a
+  `finally`), a "Putting back…" toast, and the grid reload waits 3 s so the summary toast is
+  readable (the instant reload wiped it — why it "never appeared").
+- **Read-only keys** — 1-5 / 0 / `f` on the photo page and `/rate` toast "read-only — … ignored".
+- **Orphaned workers** — `procwatch.pool_worker_init` (every `ProcessPoolExecutor`: decode,
+  isolated decode, post export) watches the parent (`parent_alive_check`, moved from
+  `desktop.control`) and `os._exit`s ~2 s after it dies; the resource tracker then exits too.
+- **Late toasts** — `app._notify_late` for 18 after-await `ui.notify` calls: no more
+  "parent element this slot belongs to has been deleted" ERRORs.
+- **Stale paths** — `sweep_presence(prunable=…)` deletes an absent `photo_paths` row (+ its
+  `scan_state`) when the photo has a present copy elsewhere and `scan._really_gone` says the
+  path is under an online, non-empty root with nothing there. Missing photos keep every row
+  (constraint #8); an unplugged drive's duplicates are kept.
+- Tests: live merge + read-only no-op, SIGKILL'd parent's worker exits (failed without the fix),
+  rename prunes / offline + empty root don't, put-back progress, `files_to_move`. Hands-on:
+  delete dialog + undo signed off; live merge / read-only keys / kill -9 trusted to tests.
 
 ## 🛡️ 2026-10-16 — S9: tag-create race (branch `fix/s7-add-folder-validation`)
 
