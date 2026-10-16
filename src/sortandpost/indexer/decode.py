@@ -52,7 +52,9 @@ def load_image(path: Path) -> Image.Image:
     try:
         img = Image.open(path)
         img.load()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        # DecompressionBombError is a bare Exception, not an OSError: a huge
+        # (often tiny-on-disk) image must fail this one file, not the pass.
         raise DecodeError(f"{type(exc).__name__}: {exc}") from exc
     return img
 
@@ -73,6 +75,6 @@ def _load_raw_preview(path: Path) -> Image.Image:
                 img.load()
                 return img
             rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=True)
-    except (rawpy.LibRawError, OSError, ValueError) as exc:
+    except (rawpy.LibRawError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise DecodeError(f"RAW decode failed: {exc}") from exc
     return Image.fromarray(rgb)

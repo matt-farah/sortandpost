@@ -223,6 +223,7 @@ def _scan_once_locked(
             {s.path: s for s in session.exec(select(ScanState)).all()} if scoped is None else None
         )
         todo: list[str] = []
+        suspects: set[str] = set()  # killed a decode worker before: never decode inline
         for path in walk:
             if stop_now():
                 stats.interrupted = True
@@ -245,12 +246,16 @@ def _scan_once_locked(
                 stats.skipped += 1
                 continue
             todo.append(key)
+            if scan_row is not None and (scan_row.error or "").startswith(_CRASH_ERROR):
+                suspects.add(key)
 
         # -- stages 2-4 in parallel, stages 5-6 + DB serial here ------------- #
         if stats.interrupted:
             todo = []
         PROGRESS.begin("indexing", total=len(todo))
-        stream = _decode_stream(todo, pcfg, paths, n_workers, lower_priority=lower_priority)
+        stream = _decode_stream(
+            todo, pcfg, paths, n_workers, lower_priority=lower_priority, suspects=suspects
+        )
         for n_done, decoded in enumerate(stream, start=1):
             if stop_now():
                 stats.interrupted = True
@@ -314,28 +319,20 @@ def _decode_stream(
     n_workers: int,
     *,
     lower_priority: bool = False,
+    suspects: frozenset[str] | set[str] = frozenset(),
 ) -> Generator[DecodedFile]:
     """Yield a :class:`DecodedFile` per input path -- via a process pool when the
     batch is large enough, otherwise inline. Bounded in-flight work keeps peak
     memory flat regardless of library size. If the pool cannot run (``spawn``
     can't re-import ``__main__``, sandbox limits, ...) the scan falls back to
-    inline decoding rather than failing."""
+    inline decoding rather than failing.
+
+    One bad file never aborts the pass: any exception becomes a failed
+    :class:`DecodedFile` (Issues.md S2). A file that kills a worker process
+    (segfault, OOM) is recorded as crashed rather than retried in this process,
+    and *suspects* -- files that crashed a worker on an earlier pass -- always
+    decode in a throwaway one-worker pool, never inline."""
     if not paths_to_do:
-        return
-
-    def _inline(key: str) -> DecodedFile:
-        return decode_local(
-            Path(key),
-            thumb_path_fn=pcfg.thumbnail_path,
-            sizes=pcfg.thumbnail_sizes,
-            fmt=pcfg.thumbnail_format,
-            quality=pcfg.thumbnail_quality,
-            online_only_mode=pcfg.online_only_mode,
-        )
-
-    if n_workers <= 1 or len(paths_to_do) < _MIN_FILES_FOR_POOL:
-        for key in paths_to_do:
-            yield _inline(key)
         return
 
     job = DecodeJob(
@@ -346,17 +343,39 @@ def _decode_stream(
         thumb_quality=pcfg.thumbnail_quality,
         online_only_mode=pcfg.online_only_mode,
     )
-    max_inflight = n_workers * 2
     ctx = multiprocessing.get_context("spawn")  # safe from the app's indexer thread
+
+    def _inline(key: str) -> DecodedFile:
+        if key in suspects:
+            return _decode_isolated(job, key, ctx, lower_priority=lower_priority)
+        try:
+            return decode_local(
+                Path(key),
+                thumb_path_fn=pcfg.thumbnail_path,
+                sizes=pcfg.thumbnail_sizes,
+                fmt=pcfg.thumbnail_format,
+                quality=pcfg.thumbnail_quality,
+                online_only_mode=pcfg.online_only_mode,
+            )
+        except Exception as exc:  # never let one bad file kill the pass
+            log.exception("decode failed on %s", key)
+            return _worker_crash(key, exc, prefix="decode crashed")
+
+    if n_workers <= 1 or len(paths_to_do) < _MIN_FILES_FOR_POOL:
+        for key in paths_to_do:
+            yield _inline(key)
+        return
+
+    max_inflight = n_workers * 2
     log.info("indexing %d files across %d worker processes", len(paths_to_do), n_workers)
     done_keys: set[str] = set()
+    pending: dict[Future[DecodedFile], str] = {}
     try:
         with ProcessPoolExecutor(
             max_workers=n_workers,
             mp_context=ctx,
             initializer=lower_process_priority if lower_priority else None,
         ) as pool:
-            pending: dict[Future[DecodedFile], str] = {}
             stream = iter(paths_to_do)
             for key in islice(stream, max_inflight):
                 pending[pool.submit(decode_file, job, key)] = key
@@ -367,7 +386,8 @@ def _decode_stream(
                     try:
                         result = fut.result()
                     except BrokenProcessPool:
-                        raise  # abandon the pool; finish the rest inline below
+                        pending[fut] = key  # still unresolved: handled below
+                        raise
                     except Exception as exc:  # a single worker's un-picklable failure
                         log.exception("decode worker crashed on %s", key)
                         result = _worker_crash(key, exc)
@@ -377,17 +397,65 @@ def _decode_stream(
                     if nxt is not None:
                         pending[pool.submit(decode_file, job, nxt)] = nxt
     except BrokenProcessPool as exc:
+        if not done_keys:
+            # Nothing ever came back: the pool can't run here at all (spawn
+            # can't re-import __main__, sandbox limits, ...). Decode inline.
+            log.warning("decode process pool unusable (%s); indexing inline", exc)
+            for key in paths_to_do:
+                yield _inline(key)
+            return
+        # A worker died mid-pass: one of the files in flight killed it. Don't
+        # retry those here -- a segfault / OOM in this process takes the app
+        # down. Keep any that finished, record the rest as crashed
+        # (``attempts`` caps the retries; the next pass isolates them) and
+        # carry on with a fresh pool.
+        crashed = 0
+        for fut, key in pending.items():
+            done_keys.add(key)
+            if fut.done() and not fut.cancelled() and fut.exception() is None:
+                yield fut.result()
+            else:
+                crashed += 1
+                yield _worker_crash(key, exc)
+        log.warning("a decode worker died (%s); %d file(s) recorded as crashed", exc, crashed)
         remaining = [k for k in paths_to_do if k not in done_keys]
-        log.warning(
-            "decode process pool unusable (%s); indexing %d remaining file(s) inline",
-            exc,
-            len(remaining),
+        yield from _decode_stream(
+            remaining,
+            pcfg,
+            paths,
+            n_workers,
+            lower_priority=lower_priority,
+            suspects=suspects,
         )
-        for key in remaining:
-            yield _inline(key)
 
 
-def _worker_crash(key: str, exc: BaseException) -> DecodedFile:
+def _decode_isolated(
+    job: DecodeJob,
+    key: str,
+    ctx: multiprocessing.context.BaseContext,
+    *,
+    lower_priority: bool,
+) -> DecodedFile:
+    """Decode one suspect file in its own one-worker pool, so a crash takes
+    down only that throwaway process."""
+    try:
+        with ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=ctx,
+            initializer=lower_process_priority if lower_priority else None,
+        ) as pool:
+            return pool.submit(decode_file, job, key).result()
+    except Exception as exc:  # BrokenProcessPool included
+        log.warning("decode of %s crashed its worker again: %s", key, exc)
+        return _worker_crash(key, exc)
+
+
+# What a crashed decode leaves in ``scan_state.error`` ("<stage>: <message>"):
+# such a file is decoded only in an isolated worker on later passes.
+_CRASH_ERROR = "decode: worker crashed"
+
+
+def _worker_crash(key: str, exc: BaseException, *, prefix: str = "worker crashed") -> DecodedFile:
     try:
         st = Path(key).stat()
         size, mtime_ns = st.st_size, st.st_mtime_ns
@@ -397,7 +465,7 @@ def _worker_crash(key: str, exc: BaseException) -> DecodedFile:
         path=key,
         size=size,
         mtime_ns=mtime_ns,
-        error=f"worker crashed: {type(exc).__name__}: {exc}"[:400],
+        error=f"{prefix}: {type(exc).__name__}: {exc}"[:400],
         failed_stage="decode",
     )
 

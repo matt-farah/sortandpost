@@ -474,6 +474,11 @@ Rate / collections skip; a photo whose files are only on another computer shows 
 `missing_since` keeps the shared meaning "no present copy anywhere". Two machines with the
 *same* root spelling can't be told apart (accepted limitation).
 
+**One bad file never stops a pass**: any decode failure (incl. a decompression bomb) is recorded
+on that file's `scan_state` (`attempts` caps the retries) and the pass goes on. A file in flight
+when a pool worker dies (segfault / OOM) is recorded `decode: worker crashed` instead of being
+retried in the app's own process; later passes decode it only in a throwaway one-worker pool.
+
 Concurrency: `ProcessPoolExecutor` for decode/hash/thumbnails, sized by `clip.speed` (`slow` ≈ 30% of
 cores at lowered priority, the default; `fast` = `cpu_count - 1`); CLIP inference runs in the app/indexer
 process with the same thread budget. `watchdog`

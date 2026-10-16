@@ -264,6 +264,122 @@ def test_parallel_scan_falls_back_to_inline_when_pool_breaks(
         assert len(s.exec(select(Photo)).all()) == 10
 
 
+def test_decompression_bomb_fails_one_file_not_the_scan(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issues.md S2: a DecompressionBombError (not an OSError) on the inline
+    path used to abort the whole pass, every pass."""
+    lib = _lib(settings)
+    _jpeg(lib / "a.jpg", (10, 20, 30))
+    _jpeg(lib / "b.jpg", (200, 50, 50))
+    Image.new("L", (200, 200)).save(lib / "bomb.png")
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10_000)  # bomb > 2x, jpegs below
+
+    stats = scan_once(settings)
+    assert not stats.interrupted
+    assert stats.indexed == 2
+    assert stats.errors == 1
+    with _session(settings) as s:
+        bomb = s.get(ScanState, str(lib / "bomb.png"))
+        assert bomb is not None and bomb.attempts == 1
+        assert "DecompressionBombError" in (bomb.error or "")
+
+
+def test_inline_decode_exception_is_recorded_not_raised(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sortandpost.indexer.scan as scanmod
+
+    lib = _lib(settings)
+    _jpeg(lib / "a.jpg", (10, 20, 30))
+    _jpeg(lib / "odd.jpg", (200, 50, 50))
+    real = scanmod.decode_local
+
+    def flaky(path: Path, **kw: object) -> object:
+        if path.name == "odd.jpg":
+            raise RuntimeError("unexpected decoder failure")
+        return real(path, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(scanmod, "decode_local", flaky)
+    stats = scan_once(settings)
+    assert stats.indexed == 1
+    assert stats.errors == 1
+    assert stats.marked_absent == 0  # the presence sweep ran to completion
+    with _session(settings) as s:
+        odd = s.get(ScanState, str(lib / "odd.jpg"))
+        assert odd is not None and "RuntimeError" in (odd.error or "")
+
+
+def test_worker_death_records_the_file_and_isolates_it_next_pass(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file that kills a pool worker is recorded as crashed -- never retried in
+    the app's own process -- and later passes decode it only in an isolated
+    worker, even when the pass is small enough to run inline."""
+    from concurrent.futures import Future
+    from concurrent.futures.process import BrokenProcessPool
+
+    import sortandpost.indexer.scan as scanmod
+
+    lib = _lib(settings)
+    for i in range(10):
+        _jpeg(lib / f"f{i}.jpg", (i * 20 % 256, 30, 60))
+    _jpeg(lib / "killer.jpg", (1, 2, 3))
+
+    class _FakePool:
+        def __init__(self, *a: object, **k: object) -> None:
+            pass
+
+        def __enter__(self) -> _FakePool:
+            return self
+
+        def __exit__(self, *a: object) -> bool:
+            return False
+
+        def submit(self, fn: object, job: object, key: str) -> Future[object]:
+            fut: Future[object] = Future()
+            if key.endswith("killer.jpg"):
+                fut.set_exception(BrokenProcessPool("simulated: worker segfaulted"))
+            else:
+                fut.set_result(fn(job, key))  # type: ignore[operator]
+            return fut
+
+    inline_keys: list[str] = []
+    real_local = scanmod.decode_local
+
+    def tracking_local(path: Path, **kw: object) -> object:
+        inline_keys.append(path.name)
+        return real_local(path, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(scanmod, "ProcessPoolExecutor", _FakePool)
+    monkeypatch.setattr(scanmod, "decode_local", tracking_local)
+
+    stats = scan_once(settings, workers=4)
+    assert "killer.jpg" not in inline_keys
+    assert stats.indexed == 10
+    assert stats.errors == 1
+    with _session(settings) as s:
+        killer = s.get(ScanState, str(lib / "killer.jpg"))
+        assert killer is not None and killer.attempts == 1
+        assert (killer.error or "").startswith(scanmod._CRASH_ERROR)
+
+    # Next pass: only the killer is due, so the pass runs inline -- but the
+    # suspect still goes to its own worker.
+    isolated: list[str] = []
+
+    def fake_isolated(job: object, key: str, ctx: object, *, lower_priority: bool) -> object:
+        isolated.append(Path(key).name)
+        return scanmod._worker_crash(key, BrokenProcessPool("again"))
+
+    monkeypatch.setattr(scanmod, "_decode_isolated", fake_isolated)
+    again = scan_once(settings, workers=4)
+    assert isolated == ["killer.jpg"]
+    assert "killer.jpg" not in inline_keys
+    assert again.errors == 1
+    with _session(settings) as s:
+        assert s.get(ScanState, str(lib / "killer.jpg")).attempts == 2
+
+
 def test_online_only_file_is_recorded_not_indexed(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
