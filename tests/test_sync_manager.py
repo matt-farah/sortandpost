@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -286,6 +287,80 @@ def test_conflict_copy_is_merged_and_archived_on_start(
     assert (settings.paths.merged_snapshots_dir / "sortandpost (1).db").exists()
 
     mgr.stop()
+
+
+def test_bad_conflict_copies_are_set_aside_and_start_stays_a_real_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    """dev-notes/Issues.md S1: a copy from a newer app (unknown op) merges with
+    the row skipped; one that isn't a database, or can't be read, is
+    quarantined -- and start still ends writable *with* its heartbeat thread."""
+    settings = _settings(monkeypatch, tmp_path / "a")
+    boot = SyncManager(settings, clock=clock)
+    boot.start(background=False)
+    boot.stop()
+
+    sync = settings.paths.sync
+    newer = sync / "sortandpost (newer app).db"
+    newer.write_bytes(settings.paths.published_db.read_bytes())
+    conn = sqlite3.connect(newer)
+    with conn:
+        conn.execute(
+            "INSERT INTO changes (ts, device_id, op, pixel_hash) VALUES (?, ?, ?, ?)",
+            ("2026-09-06 12:00:00.000000", "other", "frobnicate", hash_for("a")),
+        )
+    conn.close()
+    text = sync / "sortandpost (conflicted copy).db"
+    text.write_text("this is not a database\n")
+    alien = sync / "sortandpost (2).db"  # a valid SQLite file, but not our schema
+    conn = sqlite3.connect(alien)
+    with conn:
+        conn.execute("CREATE TABLE something_else (x)")
+    conn.close()
+
+    mgr = SyncManager(settings, clock=clock)
+    assert mgr.start() is WriteMode.writable
+    try:
+        assert mgr._thread is not None and mgr._thread.is_alive()
+        assert mgr.writer_error is None
+        assert mgr.last_merge is not None and mgr.last_merge.skipped_rows == 1
+        assert not newer.exists() and not text.exists() and not alien.exists()
+        assert (settings.paths.merged_snapshots_dir / newer.name).exists()
+        unmergeable = settings.paths.unmergeable_dir
+        assert sorted(p.name for p in mgr.quarantined) == sorted([text.name, alien.name])
+        assert all(p.parent == unmergeable and p.exists() for p in mgr.quarantined)
+    finally:
+        mgr.stop()
+
+
+def test_a_failed_takeover_releases_the_lock_and_stays_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    """Writable must always mean heartbeating: a step after the lock is taken
+    that fails leaves no held-but-dead lock behind."""
+    settings = _settings(monkeypatch, tmp_path / "a")
+    mgr = SyncManager(settings, clock=clock)
+
+    def boom() -> None:
+        raise RuntimeError("working DB failed quick_check and no snapshot exists to restore")
+
+    monkeypatch.setattr(mgr, "_verify_or_restore", boom)
+    assert mgr.start() is WriteMode.read_only
+    assert mgr._thread is None
+    assert mgr.writer_error is not None and "quick_check" in mgr.writer_error
+    lock = read_lock(settings.paths.lock_file)
+    assert lock is not None and lock.is_handoff and lock.handoff_to == ""  # released
+
+    # it doesn't hammer the lock: no new attempt until the retry delay is over
+    monkeypatch.undo()
+    monkeypatch.setenv("APP_DATA", str(tmp_path / "a"))
+    assert mgr.refresh() is WriteMode.read_only
+    clock.advance(61)
+    try:
+        assert mgr.refresh() is WriteMode.writable
+        assert mgr._thread is not None and mgr.writer_error is None
+    finally:
+        mgr.stop()
 
 
 # --------------------------------------------------------------------------- #

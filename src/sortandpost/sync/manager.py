@@ -39,7 +39,7 @@ import logging
 import socket
 import threading
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Concatenate
@@ -88,6 +88,9 @@ from sortandpost.sync.snapshots import (
 
 log = logging.getLogger(__name__)
 
+# After a failed takeover (see _become_writer), wait this long before trying again.
+_PROMOTE_RETRY_SEC = 60
+
 
 class WriteMode(StrEnum):
     writable = "writable"
@@ -129,6 +132,10 @@ class SyncManager:
         self.lock_holder: LockInfo | None = None
         self.restored_from_snapshot: Path | None = None
         self.last_merge: MergeSummary | None = None
+        self.quarantined: list[Path] = []  # conflict copies set aside as unmergeable
+        # why the last attempt to become the writer failed (we stayed read-only)
+        self.writer_error: str | None = None
+        self._promote_retry_at: datetime | None = None
 
         self._stop = threading.Event()
         self._mutex = threading.RLock()
@@ -159,11 +166,7 @@ class SyncManager:
         self.paths.ensure_dirs()
         mode = self._acquire()
         if mode is WriteMode.writable:
-            self.last_merge = self._merge_conflicts()
-            self._reconcile_generation()
-            self._verify_or_restore()
-            if background:
-                self._start_thread()
+            mode = self._become_writer(background=background)
         else:
             self._pull_if_newer()
         log.info("sync started in %s mode (lock held by %s)", mode, self._holder_name())
@@ -176,13 +179,42 @@ class SyncManager:
         if self.mode is WriteMode.writable:
             return self.mode
         self._beat_request()
-        if self._acquire() is WriteMode.writable:
+        retry_at = self._promote_retry_at
+        if retry_at is not None and self._clock() < retry_at:
+            self._pull_if_newer()
+        elif self._acquire() is WriteMode.writable:
+            self._become_writer(background=True)
+        else:
+            self._pull_if_newer()
+        return self.mode
+
+    def _become_writer(self, *, background: bool) -> WriteMode:
+        """Finish taking the lock: merge conflict copies, line the working copy
+        up with ``sync/``, check it, and start the heartbeat/publish thread.
+
+        Exception-safe: writable must always mean "heartbeating". If a step
+        fails, release the lock (so it isn't left held with no heartbeat while
+        this machine edits and another takes it over) and stay read-only; the
+        reason is kept in :attr:`writer_error` and the next try waits
+        ``_PROMOTE_RETRY_SEC``."""
+        try:
             self.last_merge = self._merge_conflicts()
             self._reconcile_generation()
             self._verify_or_restore()
+        except Exception as exc:
+            log.exception("could not take over editing; staying read-only")
+            self.writer_error = f"{type(exc).__name__}: {exc}"
+            self._promote_retry_at = self._clock() + timedelta(seconds=_PROMOTE_RETRY_SEC)
+            try:
+                self._release()
+            except Exception:
+                log.exception("could not release the write lock")
+            self.mode = WriteMode.read_only
+            return self.mode
+        self.writer_error = None
+        self._promote_retry_at = None
+        if background:
             self._start_thread()
-        else:
-            self._pull_if_newer()
         return self.mode
 
     @property
@@ -498,6 +530,10 @@ class SyncManager:
 
     def _merge_conflicts(self) -> MergeSummary | None:
         copies = find_conflict_copies(self.paths.sync)
+        broken = [c for c in copies if not quick_check(c)]  # not a database / damaged
+        if broken:
+            self._quarantine(broken)
+            copies = [c for c in copies if c not in broken]
         if not copies:
             return None
 
@@ -532,7 +568,9 @@ class SyncManager:
             for e in engines:
                 e.dispose()
 
-        self._archive_conflict_copies(copies)
+        failed = [p for p in merge_sources if p.name in summary.failed]
+        self._quarantine(failed)
+        self._archive_conflict_copies([c for c in copies if c not in failed])
         self.publish(force=True)
         log.warning(
             "merged %d conflict copy(ies) into the working DB: %s",
@@ -617,8 +655,26 @@ class SyncManager:
         if self._engine is not None:
             self._engine.dispose()
 
-    def _archive_conflict_copies(self, copies: list[Path]) -> None:
-        dest_dir = self.paths.merged_snapshots_dir
+    def _quarantine(self, copies: list[Path]) -> None:
+        """Move conflict copies that can't be merged out of the way, so they
+        aren't retried on every start. Kept, never deleted, and listed in
+        ``/settings``."""
+        if not copies:
+            return
+        log.error(
+            "set aside %d conflict copy(ies) that can't be merged: %s",
+            len(copies),
+            ", ".join(c.name for c in copies),
+        )
+        self._archive_conflict_copies(copies, self.paths.unmergeable_dir, self.quarantined)
+
+    def _archive_conflict_copies(
+        self,
+        copies: list[Path],
+        dest_dir: Path | None = None,
+        moved: list[Path] | None = None,
+    ) -> None:
+        dest_dir = dest_dir or self.paths.merged_snapshots_dir
         dest_dir.mkdir(parents=True, exist_ok=True)
         for c in copies:
             if not c.exists():
@@ -629,6 +685,8 @@ class SyncManager:
                 dest = dest_dir / f"{c.stem}-{counter}{c.suffix}"
                 counter += 1
             c.replace(dest)
+            if moved is not None:
+                moved.append(dest)
 
     def _write_publish_state(self, generation: int, digest: str, now: datetime) -> None:
         self.paths.publish_state_file.write_text(

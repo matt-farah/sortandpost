@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -107,17 +108,17 @@ def test_rating_merge_is_last_writer_wins_by_ts_then_device(tmp_path: Path) -> N
 
     # same timestamp, different device -> higher device_id wins the tie
     rate(left, "a", 2, device="A", when=ts(50))
-    rate(right, "a", 9, device="Z", when=ts(50))
+    rate(right, "a", 5, device="Z", when=ts(50))
 
     _merge(left, right, target_gen=1, source_gen=1)
-    assert read_ratings(left) == {hash_for("a"): 9}
+    assert read_ratings(left) == {hash_for("a"): 5}
 
     # now an older edit must not clobber the merged value
     stale = tmp_path / "stale.db"
     make_db(stale, photos=["a"], generation=1)
     rate(stale, "a", 1, device="A", when=ts(1))
     _merge(left, stale, target_gen=2, source_gen=1)
-    assert read_ratings(left) == {hash_for("a"): 9}
+    assert read_ratings(left) == {hash_for("a"): 5}
 
 
 def test_derived_union_adds_photos_only_in_the_source(tmp_path: Path) -> None:
@@ -314,3 +315,93 @@ def test_unapprove_on_one_machine_merges_into_the_other(tmp_path: Path) -> None:
     with Session(make_engine(a)) as s:
         assert s.exec(select(PhotoTag)).all() == []
         assert s.exec(select(Prediction)).one().state == PredictionState.rejected
+
+
+# --------------------------------------------------------------------------- #
+# copies from a newer / broken app (dev-notes/Issues.md S1)
+# --------------------------------------------------------------------------- #
+def _raw(db: Path, *statements: tuple[str, tuple[object, ...]]) -> None:
+    """Write rows the ORM would refuse (plain sqlite3: no FK checks, no enums)."""
+    conn = sqlite3.connect(db)
+    with conn:
+        for sql, args in statements:
+            conn.execute(sql, args)
+    conn.close()
+
+
+_CHANGE_SQL = (
+    "INSERT INTO changes (ts, device_id, op, pixel_hash, field, new_value) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+_RATING_SQL = (
+    "INSERT INTO ratings (pixel_hash, stars, updated_at, updated_by_device, source) "
+    "VALUES (?, ?, ?, ?, 'app')"
+)
+
+
+def test_merge_skips_rows_this_version_cant_apply(tmp_path: Path) -> None:
+    target_db = tmp_path / "target.db"
+    source_db = tmp_path / "source.db"
+    make_db(target_db, photos=["a", "b"])
+    make_db(source_db, photos=["a", "b"])
+    when = "2026-09-06 12:00:00.000000"
+    _raw(
+        source_db,
+        (_CHANGE_SQL, (when, "new", "frobnicate", hash_for("a"), "x", "1")),
+        (_CHANGE_SQL, (when, "new", "rate", hash_for("a"), "stars", "abc")),
+        (_CHANGE_SQL, (when, "new", "rate", hash_for("a"), "stars", "99")),
+        (_CHANGE_SQL, (when, "new", "rate", hash_for("b"), "stars", "4")),
+        (_RATING_SQL, (hash_for("a"), 99, when, "new")),
+        (_RATING_SQL, (hash_for("b"), 4, when, "new")),
+        (_RATING_SQL, (hash_for("ghost"), 3, when, "new")),
+    )
+
+    te, se = make_engine(target_db), make_engine(source_db)
+    try:
+        with Session(te) as target, Session(se) as source:
+            summary = merge_all(
+                target, [("source.db", source)], now=NOW, base_generation=1, source_generations=[1]
+            )
+            target.commit()
+    finally:
+        se.dispose()
+        te.dispose()
+
+    assert summary.failed == []
+    assert summary.skipped_rows == 5  # frobnicate, "abc", "99", stars=99, ghost photo
+    assert read_ratings(target_db) == {hash_for("b"): 4}
+    conn = sqlite3.connect(target_db)
+    ops = {row[0] for row in conn.execute("SELECT op FROM changes")}
+    values = {row[0] for row in conn.execute("SELECT new_value FROM changes")}
+    conn.close()
+    assert ops == {"rate"}
+    assert values == {"4"}
+
+
+def test_a_source_that_cant_be_merged_is_rolled_back_alone(tmp_path: Path) -> None:
+    target_db = tmp_path / "target.db"
+    good_db = tmp_path / "good.db"
+    junk = tmp_path / "junk.db"
+    make_db(target_db, photos=["a"])
+    make_db(good_db, photos=["a", "b"])
+    junk.write_text("not a database\n")
+
+    te, ge, je = make_engine(target_db), make_engine(good_db), make_engine(junk)
+    try:
+        with Session(te) as target, Session(je) as bad, Session(ge) as good:
+            summary = merge_all(
+                target,
+                [("junk.db", bad), ("good.db", good)],
+                now=NOW,
+                base_generation=1,
+                source_generations=[50, 2],
+            )
+            target.commit()
+    finally:
+        for e in (te, ge, je):
+            e.dispose()
+
+    assert summary.failed == ["junk.db"]
+    assert summary.sources == ["good.db"]
+    assert count(target_db, Photo) == 2
+    assert get_generation_of(target_db) == 3  # the failed source's generation doesn't count
