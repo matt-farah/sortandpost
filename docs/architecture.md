@@ -629,7 +629,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   the facts and Paths (applied pills; dashed ghost pills for pending CLIP suggestions with
   ✓ approve / ✕ dismiss; ✕ on every applied tag — on an approved CLIP tag it also rejects the
   suggestion so it isn't re-suggested; an add-tag input — in a stack, tags live on its top photo
-  only, see "Stacks write one file"; pills wrap and truncate, 60 shown then "+N more"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
+  only, see "Stacks write one file"; pills wrap and truncate, 60 shown then "+N more"), under the photo, two panels exactly as wide as it (`.sp-photo-panel`): Collections
+  (rounded-square chips) and Posts (**Compose post** with just this photo — the one shown, in a
+  stack — then a chip per post it is in), "more like this". Links carry the grid's query string;
   prev/next (← / → or the round ‹ › buttons at the screen's edges) walk the same resolved view
   (`resolve_view`, cached per query for 30 min). Below 640px wide the info column goes under the image.
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
@@ -650,7 +652,7 @@ The **only** module allowed to write under a library root. Wraps a persistent
   `ensure_downloaded` — toggles `HF_HUB_OFFLINE` around the probe so it works even when the app
   itself was launched offline).
 - `/posts` + `/posts/{id}` — the post composer (see "Posting (robopost.app, Postiz, …)" below).
-  Entry points: "Compose post" on a collection, ✈ in the library's bulk toolbar. The grid
+  Entry points: "Compose post" on a collection or a photo page, ✈ in the library's bulk toolbar. The grid
   shows a ✈ badge on posted photos and `/` has a `posted=1|0` filter.
 - Persistent status bar: index progress (`X/Y`, current stage), CLIP queue depth, write-lock
   state (writable / read-only + holder), last publish time; "N missing (folder offline)" only

@@ -1462,19 +1462,31 @@ def _connection_panel(settings: Settings, spec: ProviderSpec, client: Any) -> No
     _channels()
 
 
-def posted_note(settings: Settings, pixel_hash: str) -> None:
-    """Photo page: which posts include this photo (links)."""
+def photo_posts_row(settings: Settings, pixel_hash: str) -> None:
+    """Photo page: a "Compose post" button for this one photo, then which posts
+    already include it -- chips styled like the Collections row's. For a stack
+    this is the photo being shown."""
     from sortandpost.posts import posts_containing
 
+    with ui.row().classes("items-center gap-2 flex-wrap"):
+        ui.label("Posts").classes("font-bold text-sm")
+        compose_button(
+            settings,
+            lambda: [pixel_hash],
+            title=lambda: f"Post · {utcnow():%d %b %Y}",
+        )
     rows = posts_containing(settings.paths, pixel_hash)
     if not rows:
+        ui.label("Not in any post yet.").classes("text-xs sp-muted")
         return
-    with ui.row().classes("items-center gap-2 flex-wrap"):
-        ui.icon("send", size="1rem").classes("text-emerald-600")
-        ui.label("In posts:").classes("text-sm")
+    with ui.row().classes("w-full items-center gap-1 flex-wrap"):
         for p in rows:
             label, _ = _status_label(p, settings)
-            ui.link(f"{p.title} ({label.lower()})", f"/posts/{p.id}").classes("text-sm")
+            with ui.row().classes("items-center gap-0 rounded-lg sp-placeholder px-1"):
+                ui.button(
+                    f"{p.title}  ·  {label.lower()}",
+                    on_click=lambda p=p: ui.navigate.to(f"/posts/{p.id}"),
+                ).props("flat dense no-caps size=md")
 
 
 def compose_button(

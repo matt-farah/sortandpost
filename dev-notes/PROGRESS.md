@@ -1,15 +1,26 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (V3.md #12 onboarding folder removal and #9 Start setup over done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-16 (V3.md #10 compose from a photo, #12 onboarding folder removal and #9 Start setup over done; stress-test fixes S1–S10 done)._
 _Working branch: `main`. V3 through P6a–d merged._
 
 > **▶️ Next:** the pre-release stress-test list in `Issues.md` is done, and V3.md #9 (Start setup
-> over), and #12 (add / remove folders in onboarding). Still open: V3.md #10 (compose a post
-> from the photo page).
-> After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
+> over), #12 (add / remove folders in onboarding) and #10 (compose a post from the photo page).
+> Next: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## ✈️ 2026-10-16 — V3.md #10: compose a post from the photo page (branch `feat/compose-from-photo`)
+
+- `posts_ui.photo_posts_row` (was `posted_note`): a **Posts** panel with **Compose post**
+  (`compose_button` with just this photo, titled "Post · <date>"; in a stack, the photo shown) and
+  a chip per post the photo is in. Not gated, like the bulk toolbar's ✈.
+- Placed beside Collections rather than next to Reveal / Open (those are per-file Paths rows,
+  hidden under Docker and for missing files).
+- Both panels now sit **under the photo, exactly as wide as it**: the image and panels share the
+  `.sp-photo-left` column, and `.sp-photo-panel` uses `contain: inline-size` so chips wrap instead
+  of widening it. Post links became chips styled like the collection chips. (Tried a separator
+  and full-width cards first; the user preferred photo-width.)
 
 ## 🗂️ 2026-10-16 — V3.md #12: removing a folder in onboarding (branch `feat/onboarding-remove-folder`)
 
