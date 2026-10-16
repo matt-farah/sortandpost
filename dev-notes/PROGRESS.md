@@ -1,15 +1,28 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (V3.md #9 Start setup over done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-16 (V3.md #12 onboarding folder removal and #9 Start setup over done; stress-test fixes S1–S10 done)._
 _Working branch: `main`. V3 through P6a–d merged._
 
 > **▶️ Next:** the pre-release stress-test list in `Issues.md` is done, and V3.md #9 (Start setup
-> over). Still open: V3.md #12 (add / remove folders in onboarding) and #10 (compose a post from
-> the photo page).
+> over), and #12 (add / remove folders in onboarding). Still open: V3.md #10 (compose a post
+> from the photo page).
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🗂️ 2026-10-16 — V3.md #12: removing a folder in onboarding (branch `feat/onboarding-remove-folder`)
+
+- Removing a folder already worked (a ✕ on each row of `_library_roots_editor`, the editor the
+  wizard and Settings → Library share). In testing nobody noticed the icon-only button, and
+  a folder's problem showed only in a tooltip.
+- Each row now has a labelled **Remove** button (amber on a folder that can't be found) and a
+  "Removed … (its files are untouched)" toast. A missing folder says so on its row (`_root_problem`:
+  "Not found on this computer. Check the path, or remove it…" / the Docker mount hint).
+- Wizard **Next** opens a dialog naming every folder it can't reach (**Go back** /
+  **Continue anyway**). Before, it was a toast, and only when *no* folder could be reached.
+- Test: `tests/test_library_roots_editor.py` (user_simulation). Tested hands-on as a fresh
+  machine (scratch `SORTANDPOST_PREF_DIR` / `LOCAL_DIR`).
 
 ## 🔄 2026-10-16 — V3.md #9: Start setup over (branch `feat/reset-onboarding`)
 
