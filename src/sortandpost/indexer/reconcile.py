@@ -46,9 +46,9 @@ from sortandpost.db.models import (
     Rating,
     RatingSource,
     Tag,
-    TagKind,
     TagSource,
 )
+from sortandpost.db.tags import get_or_create_tag
 from sortandpost.metadata import (
     EmbeddedMetadata,
     ExiftoolClient,
@@ -272,11 +272,7 @@ def _reconcile_keywords(
     for keyword in file_keywords:
         if keyword in have:
             continue
-        tag = session.exec(select(Tag).where(Tag.name == keyword)).first()
-        if tag is None:
-            tag = Tag(name=keyword, kind=TagKind.manual)
-            session.add(tag)
-            session.flush()
+        tag = get_or_create_tag(session, keyword)
         assert tag.id is not None
         session.add(
             PhotoTag(

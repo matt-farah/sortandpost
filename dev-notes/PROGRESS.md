@@ -1,17 +1,32 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, #75; S7–S8 committed on their branch, unmerged)._
+_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, #75; S7–S9 committed on their branch, unmerged)._
 _Working branch: `fix/s7-add-folder-validation` (S7+ batch). V3 through P6a–d merged._
 
 > **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session:
-> **S9** (tag-create race), then S10 (small ones); V3.md #12 (add / remove
+> **S10** (small ones); V3.md #12 (add / remove
 > folders in onboarding) is still open.
 > **One PR for S7 onward:** keep committing each fix on branch `fix/s7-add-folder-validation`
-> (S7–S8 committed, not pushed — no PR yet), and open a single combined PR when the batch is done.
+> (S7–S9 committed, not pushed — no PR yet), and open a single combined PR when the batch is done.
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🛡️ 2026-10-16 — S9: tag-create race (branch `fix/s7-add-folder-validation`)
+
+- **`db.tags.get_or_create_tag(session, name, *, kind, facet)`**: select, else
+  `INSERT … ON CONFLICT(name) DO NOTHING` + re-select — two sessions (two tabs, or the indexer
+  importing file keywords while the user tags) both creating a tag no longer lose one action to
+  `UNIQUE constraint failed: tags.name`. Replaces the select-then-add in `db.tags`,
+  `clip.tagging` (keeps its facet back-fill), `indexer.reconcile` and `db.deletion` put back.
+  `sync.merge` left alone (its target DB has no concurrent writer).
+- **`add_manual_tag`** inserts the `photo_tags` row insert-or-ignore on `uq_photo_tag`: a lost
+  race returns `False` with no `changes` row. The indexer-vs-user race on one photo + one tag
+  is accepted.
+- 3 new tests (`_RacedSession` commits a second session between the check and the insert; both
+  race tests failed with the S9 `IntegrityError` before the fix). Hands-on: app booted for
+  two-tab flagging; signed off.
 
 ## 🛡️ 2026-10-16 — S8: photo page tags wrap; tag names capped (branch `fix/s7-add-folder-validation`)
 

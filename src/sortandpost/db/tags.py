@@ -18,6 +18,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, col, select
 
 from sortandpost.db.models import ChangeOp, PhotoPath, PhotoTag, Tag, TagKind, TagSource
@@ -74,7 +75,7 @@ def add_manual_tag(
     if not is_valid_new_tag_name(name):
         raise ValueError(f"tag name is longer than {MAX_TAG_NAME_LEN} characters")
 
-    tag = _get_or_create_tag(session, name)
+    tag = get_or_create_tag(session, name)
     assert tag.id is not None
     existing = session.exec(
         select(PhotoTag).where(PhotoTag.pixel_hash == pixel_hash, PhotoTag.tag_id == tag.id)
@@ -82,8 +83,12 @@ def add_manual_tag(
     if existing is not None:
         return False
 
-    session.add(
-        PhotoTag(
+    # ON CONFLICT DO NOTHING: another session may have added the same tag to this
+    # photo since the check above (Issues.md S9) -- then it's a no-op here.
+    session.flush()
+    inserted = session.execute(
+        sqlite_insert(PhotoTag)
+        .values(
             pixel_hash=pixel_hash,
             tag_id=tag.id,
             source=TagSource.manual,
@@ -91,8 +96,10 @@ def add_manual_tag(
             added_by_device=device_id,
             written_to_file=False,
         )
+        .on_conflict_do_nothing(index_elements=["pixel_hash", "tag_id"])
     )
-    session.flush()
+    if not inserted.rowcount:  # type: ignore[attr-defined]
+        return False
     record_change(
         session,
         device_id=device_id,
@@ -208,13 +215,26 @@ def move_tags(session: Session, *, src: str, dst: str, device_id: str, now: date
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
-def _get_or_create_tag(session: Session, name: str) -> Tag:
+def get_or_create_tag(
+    session: Session, name: str, *, kind: TagKind = TagKind.manual, facet: str | None = None
+) -> Tag:
+    """The ``tags`` row for *name*, created if it doesn't exist yet.
+
+    Race-safe (Issues.md S9): two sessions -- two tabs, or the indexer importing
+    file keywords while the user tags -- can both miss the row and both insert
+    it. A plain select-then-insert then dies on ``UNIQUE(tags.name)`` and the
+    user's action is lost, so the insert is ``ON CONFLICT DO NOTHING`` and the
+    row is selected afterwards, whoever created it. *kind* / *facet* only apply
+    when this call creates the row."""
     tag = session.exec(select(Tag).where(Tag.name == name)).first()
-    if tag is None:
-        tag = Tag(name=name, kind=TagKind.manual)
-        session.add(tag)
-        session.flush()
-    return tag
+    if tag is not None:
+        return tag
+    session.execute(
+        sqlite_insert(Tag)
+        .values(name=name, kind=kind, facet=facet)
+        .on_conflict_do_nothing(index_elements=["name"])
+    )
+    return session.exec(select(Tag).where(Tag.name == name)).one()
 
 
 def photo_keywords(session: Session, pixel_hash: str) -> list[str]:

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from sortandpost.db import add_manual_tag, remove_manual_tag
-from sortandpost.db.models import Change, ChangeOp, Photo, PhotoTag, Tag, TagSource
-from sortandpost.db.tags import embeddable_keywords, move_tags, photo_keywords
+from sortandpost.db.models import Change, ChangeOp, Photo, PhotoTag, Tag, TagKind, TagSource
+from sortandpost.db.tags import embeddable_keywords, get_or_create_tag, move_tags, photo_keywords
 
 NOW = datetime(2026, 1, 2, tzinfo=UTC)
 PH = "a" * 64
@@ -190,3 +192,83 @@ def test_move_tags_keeps_source_skips_reserved_and_logs(engine: Engine) -> None:
             (ChangeOp.tag_remove, PH, "beach"),
             (ChangeOp.tag_remove, PH, "red"),
         }
+
+
+# --------------------------------------------------------------------------- #
+# Issues.md S9 -- two sessions creating the same tag at once
+# --------------------------------------------------------------------------- #
+class _RacedSession(Session):
+    """A session whose first query is followed by *other* committing first --
+    the window where two tabs (or the indexer + a tab) both miss the row."""
+
+    def __init__(self, engine: Engine, other: Callable[[], None]) -> None:
+        super().__init__(engine)
+        self._other: Callable[[], None] | None = other
+
+    def exec(self, *args: Any, **kwargs: Any) -> Any:
+        result = super().exec(*args, **kwargs)
+        if self._other is not None:
+            rows = result.all()
+            other, self._other = self._other, None
+            other()
+            return _Rows(rows)
+        return result
+
+
+class _Rows:
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+
+    def first(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+    def all(self) -> list[Any]:
+        return self._rows
+
+
+def _tag_from_other_session(
+    engine: Engine, name: str, pixel_hash: str | None = None
+) -> Callable[[], None]:
+    def run() -> None:
+        with Session(engine) as other:
+            if pixel_hash is None:
+                other.add(Tag(name=name))
+            else:
+                add_manual_tag(other, pixel_hash=pixel_hash, tag_name=name, device_id="d2", now=NOW)
+            other.commit()
+
+    return run
+
+
+def test_tag_created_concurrently_is_reused(engine: Engine) -> None:
+    with Session(engine) as s:
+        _photo(s)
+    with _RacedSession(engine, _tag_from_other_session(engine, "to-edit")) as s:
+        added = add_manual_tag(s, pixel_hash=PH, tag_name="to-edit", device_id="d1", now=NOW)
+        s.commit()
+        assert added is True
+    with Session(engine) as s:
+        assert len(s.exec(select(Tag).where(Tag.name == "to-edit")).all()) == 1
+        assert len(s.exec(select(PhotoTag)).all()) == 1
+        assert len(s.exec(select(Change)).all()) == 1
+
+
+def test_same_tag_on_same_photo_concurrently_is_noop(engine: Engine) -> None:
+    with Session(engine) as s:
+        _photo(s)
+    with _RacedSession(engine, _tag_from_other_session(engine, "to-edit", PH)) as s:
+        added = add_manual_tag(s, pixel_hash=PH, tag_name="to-edit", device_id="d1", now=NOW)
+        s.commit()
+        assert added is False
+    with Session(engine) as s:
+        assert len(s.exec(select(PhotoTag)).all()) == 1
+        changes = s.exec(select(Change)).all()
+        assert [c.device_id for c in changes] == ["d2"]
+
+
+def test_get_or_create_tag_keeps_kind_and_facet_on_create(engine: Engine) -> None:
+    with Session(engine) as s:
+        tag = get_or_create_tag(s, "sunset", kind=TagKind.clip_approved, facet="lighting")
+        s.commit()
+        assert (tag.kind, tag.facet) == (TagKind.clip_approved, "lighting")
+        assert get_or_create_tag(s, "sunset").id == tag.id
