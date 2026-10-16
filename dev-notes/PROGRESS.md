@@ -1,14 +1,31 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (V3.md #10 compose from a photo, #12 onboarding folder removal and #9 Start setup over done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-16 (V3 P5b + rename to sortandpost.photos; V3.md #10 compose from a photo, #12 onboarding folder removal and #9 Start setup over done; stress-test fixes S1–S10 done)._
 _Working branch: `main`. V3 through P6a–d merged._
 
 > **▶️ Next:** the pre-release stress-test list in `Issues.md` is done, and V3.md #9 (Start setup
-> over), #12 (add / remove folders in onboarding) and #10 (compose a post from the photo page).
+> over), #12 (add / remove folders in onboarding), #10 (compose a post from the photo page) and
+> P5b (copy) + the sortandpost.photos rename. The rename's tray / installer / DMG names only show
+> after a desktop rebuild (not done yet).
 > Next: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🏷️ 2026-10-16 — V3 P5b closed + rename to sortandpost.photos (branch `feat/copy-rewrite`)
+
+- **P5b was already applied** in `f741b0f` (2026-10-14) and never logged. Checked every edited
+  CSV row against the code: all present except #8 (replaced by #12's Go back / Continue anyway
+  dialog) and #177 (marked "delete", removed).
+- **Display name → sortandpost.photos** (the user bought the domain): header, browser tab +
+  welcome titles, wizard / restart / login-page / posts / data-folder texts, the tray tooltip +
+  menu + quit messages, the CLI "not set up" message, macOS `CFBundleDisplayName` + copyright + DMG
+  volume name, Windows version info + installer name + shortcuts (an upgrade deletes the old
+  `sortandpost.lnk` shortcuts), README / CONTRIBUTING / SECURITY / docker.md / architecture titles.
+- **Identifiers stay `sortandpost`** (package, CLIs, env vars, data folders, `.db` / `.app` / `.exe`
+  / installer file names, keychain service, bundle id, LaunchAgent / Run value, tray window title +
+  mutex): renaming them would break login items (absolute `.app` path), saved keys and existing
+  data. Recorded under "Naming" in docs/architecture.md.
 
 ## ✈️ 2026-10-16 — V3.md #10: compose a post from the photo page (branch `feat/compose-from-photo`)
 

@@ -1,8 +1,8 @@
-# sortandpost
+# sortandpost.photos
 
 **Rate, tag, search and post your photos — locally, in your browser, with no cloud service.**
 
-sortandpost scans the photo folders you already have and gives you a fast, keyboard-first
+sortandpost.photos scans the photo folders you already have and gives you a fast, keyboard-first
 library on top of them: rate photos 1–5 stars, let CLIP suggest tags, and find anything by
 describing it ("dog on a beach at sunset"). It never reorganizes your files. Your library's
 state (database, thumbnails, search index) lives in one shared folder you keep in any
@@ -35,7 +35,7 @@ it up with no rebuild.
 - Seasonal light / dark themes, and optional achievements to make sorting a bit of a game.
 
 > [!WARNING]
-> **Opening sortandpost to other devices needs a password.** By default it only answers on
+> **Opening sortandpost.photos to other devices needs a password.** By default it only answers on
 > this computer (`HOST=127.0.0.1`; Docker publishes on `127.0.0.1`). To use it from a phone
 > or another computer, set `SORTANDPOST_PASSWORD` (or `SORTANDPOST_PASSWORD_FILE`) and, for
 > Docker, `BIND=0.0.0.0`. On a network, plain HTTP lets others on that network read the
@@ -50,7 +50,7 @@ Download `sortandpost-<version>-arm64.dmg` (Apple Silicon) from
 [Releases](https://github.com/matt-farah/sortandpost/releases), drag **sortandpost** to
 Applications and open it. No Python or exiftool needed. It lives in the **menu bar**: the ★
 icon opens the library in your browser and lets you pause or resume indexing, start
-sortandpost at login, show logs, and quit. Quitting finishes the current photo, saves the
+sortandpost.photos at login, show logs, and quit. Quitting finishes the current photo, saves the
 library to your shared folder and releases it for your other computers. If photos you
 deleted are still waiting in *Recently deleted*, Quit asks whether to move them to the
 Trash.

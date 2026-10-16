@@ -1,10 +1,18 @@
-# sortandpost architecture
+# sortandpost.photos architecture
 
 ## What this project is
 
-**sortandpost** is a locally-run photo organization app. It scans one or more existing photo
+**sortandpost.photos** is a locally-run photo organization app. It scans one or more existing photo
 folders, lets the user rate photos 1–5 stars, auto-tags them with CLIP, and provides
 natural-language semantic search — all in a browser, with **no cloud service**.
+
+**Naming** (2026-10-16): the product's display name is **sortandpost.photos** (its website's
+domain) — every on-screen string, page titles, the tray menu, the macOS `CFBundleDisplayName`,
+Windows version info and installer/shortcut names. Identifiers stay **`sortandpost`** so
+existing installs keep working: the Python package and CLIs, env vars, data folders
+(`~/.sortandpost`, App Support / `%LOCALAPPDATA%\sortandpost`), file names (`sortandpost.db`,
+`sortandpost.app`, `sortandpost.exe`, the installer / DMG names), the keychain service, the
+LaunchAgent label / Run value, the Windows tray window title + mutex, and the bundle id.
 
 The whole app state (the SQLite database, generated thumbnails, and CLIP embeddings) lives in a
 single **app-data folder** that the user drops into any third-party file-sync tool (OneDrive,

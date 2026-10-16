@@ -308,7 +308,7 @@ def login_page_html(
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in · sortandpost</title>
+<title>Sign in · sortandpost.photos</title>
 <style>
 :root{{{tokens(light)}color-scheme:light}}
 @media (prefers-color-scheme: dark){{:root{{{tokens(dark)}color-scheme:dark}}}}
@@ -342,9 +342,10 @@ border-radius:8px;background:var(--primary);color:var(--on-primary);cursor:point
 _HOST_REFUSED_HTML = """<!doctype html><meta charset="utf-8"><title>Not allowed</title>
 <body style="font:16px/1.5 system-ui,sans-serif;max-width:560px;margin:10vh auto;padding:16px">
 <h1 style="font-size:20px">This address isn't allowed</h1>
-<p>sortandpost only answers on <code>localhost</code> until it has a password. To open it from
-other devices, set <code>SORTANDPOST_PASSWORD</code> (or <code>SORTANDPOST_PASSWORD_FILE</code>),
-or add this name to <code>SORTANDPOST_ALLOWED_HOSTS</code> on a network you trust.</p>"""
+<p>sortandpost.photos only answers on <code>localhost</code> until it has a password. To open it
+from other devices, set <code>SORTANDPOST_PASSWORD</code> (or
+<code>SORTANDPOST_PASSWORD_FILE</code>), or add this name to <code>SORTANDPOST_ALLOWED_HOSTS</code>
+on a network you trust.</p>"""
 
 
 # --------------------------------------------------------------------------- #

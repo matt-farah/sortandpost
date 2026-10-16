@@ -88,12 +88,12 @@ app = BUNDLE(
     version=__version__,
     info_plist={
         "CFBundleName": "sortandpost",
-        "CFBundleDisplayName": "sortandpost",
+        "CFBundleDisplayName": "sortandpost.photos",
         "CFBundleShortVersionString": __version__,
         "CFBundleVersion": __version__,
         "LSUIElement": True,  # menu bar only, no Dock icon
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
-        "NSHumanReadableCopyright": "sortandpost",
+        "NSHumanReadableCopyright": "sortandpost.photos",
     },
 )

@@ -250,7 +250,7 @@ def test_check_refuses_too_broad_folders(paths: Paths) -> None:
 def test_check_refuses_the_apps_own_folders(paths: Paths) -> None:
     for d in [paths.sync, paths.local, paths.sync / "thumbnails"]:
         check = check_new_root(_native(d), [], paths.roots(), in_docker=False)
-        assert "own data" in check.error, d
+        assert "data folder" in check.error, d
 
 
 def test_check_warns_for_a_missing_folder(tmp_path: Path, paths: Paths) -> None:

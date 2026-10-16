@@ -81,7 +81,7 @@ def trash_failure_message(res: dict[str, Any] | None) -> str | None:
     if res is not None and not res.get("failed"):
         return None
     if res is None:
-        head = f"sortandpost couldn't move your deleted photos to the {TRASH_NAME}."
+        head = f"sortandpost.photos couldn't move your deleted photos to the {TRASH_NAME}."
     else:
         n, moved = int(res["failed"]), int(res.get("moved") or 0)
         head = f"{n} deleted photo(s) couldn't be moved to the {TRASH_NAME}"
@@ -89,8 +89,8 @@ def trash_failure_message(res: dict[str, Any] | None) -> str | None:
         if res.get("error"):
             head += f"\n\n{res['error']}"
     return (
-        f"{head}\n\nThey're still in sortandpost's “Recently deleted” (Settings → Deleting), "
-        "where you can put them back or try again."
+        f"{head}\n\nThey're still in “Recently deleted” in sortandpost.photos "
+        "(Settings → Deleting), where you can put them back or try again."
     )
 
 
@@ -113,10 +113,12 @@ class TrayApp:
         self.icon = pystray.Icon(
             "sortandpost",
             render_tray_icon(),
-            "sortandpost",
+            "sortandpost.photos",
             menu=pystray.Menu(
                 item(lambda _i: self.status_text(), None, enabled=False),
-                item("Open sortandpost", self._menu_open, default=True, enabled=self._can_open),
+                item(
+                    "Open sortandpost.photos", self._menu_open, default=True, enabled=self._can_open
+                ),
                 sep,
                 item(
                     lambda _i: "Resume indexing" if self._paused() else "Pause indexing",
@@ -131,12 +133,14 @@ class TrayApp:
                 ),
                 item("Show logs", self._menu_logs),
                 item(
-                    "Restart sortandpost",
+                    "Restart sortandpost.photos",
                     self._menu_restart,
                     visible=lambda _i: self.crashed and not self.quitting,
                 ),
                 sep,
-                item("Quit sortandpost", self._menu_quit, enabled=lambda _i: not self.quitting),
+                item(
+                    "Quit sortandpost.photos", self._menu_quit, enabled=lambda _i: not self.quitting
+                ),
             ),
         )
 
@@ -145,7 +149,7 @@ class TrayApp:
         if self.quitting:
             return "Quitting…"
         if self.crashed:
-            return "sortandpost stopped unexpectedly"
+            return "sortandpost.photos stopped unexpectedly"
         if not self.ready:
             return "Starting…"
         st = self.status or {}
@@ -290,7 +294,7 @@ class TrayApp:
         if n and (st or {}).get("system_trash"):
             move_trash = _ask(
                 f"Move deleted photos to the {TRASH_NAME}?",
-                f"{n} photo(s) you deleted are still in sortandpost's “Recently deleted”, "
+                f"{n} photo(s) you deleted are still in “Recently deleted” in sortandpost.photos, "
                 f"where they can be put back. Move them to the {TRASH_NAME} now? "
                 f"(You can still restore them from the {TRASH_NAME} afterwards.)",
                 yes=f"Move to {TRASH_NAME}",

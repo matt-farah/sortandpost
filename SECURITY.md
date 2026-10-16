@@ -15,7 +15,7 @@ Only the latest release gets security fixes.
 
 ## Threat model in short
 
-sortandpost is a single-user app that runs on your own computer. The things worth
+sortandpost.photos is a single-user app that runs on your own computer. The things worth
 protecting are:
 
 - **Who can reach the web server.** By default it only listens on this computer
