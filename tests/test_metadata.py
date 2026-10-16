@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -13,7 +14,9 @@ from sortandpost.metadata import (
     EmbeddedMetadata,
     ExiftoolClient,
     MetadataError,
+    WriteFailure,
     can_embed_metadata,
+    collect_write_failures,
     is_raw,
     stars_to_rating_percent,
 )
@@ -220,3 +223,54 @@ def test_a_line_break_in_a_keyword_cannot_inject_exiftool_options(
     assert list(elsewhere.iterdir()) == []
     et.write_keywords(jpg, ["sunset"])  # the client is still usable afterwards
     assert et.read(jpg).keywords == ("sunset",)
+
+
+# -- failed writes (Issues.md S3) -------------------------------------------- #
+needs_non_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can write a 0444 file"
+)
+
+
+@needs_non_root
+def test_write_to_read_only_file_raises(et: ExiftoolClient, jpg: Path) -> None:
+    # exiftool says "Error opening ... for writing" (no "Error:" prefix) and
+    # "0 image files updated" -- that must not count as success.
+    before = jpg.read_bytes()
+    jpg.chmod(0o444)
+    try:
+        with pytest.raises(MetadataError, match="for writing"):
+            et.write_rating(jpg, 2)
+        with pytest.raises(MetadataError):
+            et.write_keywords(jpg, ["beach"])
+        with pytest.raises(MetadataError):
+            et.restamp(jpg, 3, ["beach"])
+    finally:
+        jpg.chmod(0o644)
+    assert jpg.read_bytes() == before
+    assert et.read(jpg).rating is None
+
+
+@needs_non_root
+def test_collect_write_failures(et: ExiftoolClient, jpg: Path, tmp_path: Path) -> None:
+    ok = tmp_path / "ok.jpg"
+    shutil.copy(jpg, ok)
+    jpg.chmod(0o444)
+    try:
+        with collect_write_failures() as failures:
+            et.write_rating(ok, 4)
+            with pytest.raises(MetadataError):
+                et.write_rating(jpg, 2)
+        with pytest.raises(MetadataError):  # outside the block: not collected
+            et.write_rating(jpg, 1)
+    finally:
+        jpg.chmod(0o644)
+    assert failures == [WriteFailure(jpg, failures[0].reason)]
+    assert "for writing" in failures[0].reason
+    assert et.read(ok).rating == 4
+
+
+def test_unchanged_write_is_success(et: ExiftoolClient, jpg: Path) -> None:
+    # clearing a rating the file doesn't have: "1 image files unchanged"
+    with collect_write_failures() as failures:
+        et.write_rating(jpg, 0)
+    assert failures == []

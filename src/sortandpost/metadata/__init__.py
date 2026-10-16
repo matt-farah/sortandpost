@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import subprocess
 import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -67,6 +68,43 @@ _READ_ARGS: tuple[str, ...] = (
 
 # How long to wait for exiftool's post-command stderr sentinel (``-echo4``).
 _SENTINEL_TIMEOUT_SEC = 30.0
+
+# exiftool's write summary, e.g. "    1 image files updated" or
+# "    0 image files updated" + "    1 files weren't updated due to errors".
+_SUMMARY_RE = re.compile(
+    r"^\s*(\d+) (image files updated|image files unchanged|files weren't updated due to errors)",
+    re.MULTILINE,
+)
+
+# Per-thread collectors opened by collect_write_failures().
+_COLLECTORS = threading.local()
+
+
+@dataclass(frozen=True)
+class WriteFailure:
+    """One embedded-metadata write that didn't land (the DB change still did)."""
+
+    path: Path
+    reason: str
+
+
+@contextlib.contextmanager
+def collect_write_failures() -> Iterator[list[WriteFailure]]:
+    """Collect every failed file write made by *this thread* inside the block.
+    Callers catch :class:`MetadataError` and carry on (the DB is the source of
+    truth), so this is how a UI action learns its file writes failed."""
+    stack: list[list[WriteFailure]] = _COLLECTORS.__dict__.setdefault("stack", [])
+    failures: list[WriteFailure] = []
+    stack.append(failures)
+    try:
+        yield failures
+    finally:
+        stack.remove(failures)
+
+
+def _note_write_failure(path: Path, reason: str) -> None:
+    for failures in getattr(_COLLECTORS, "stack", ()):
+        failures.append(WriteFailure(path, reason))
 
 
 @dataclass
@@ -277,20 +315,30 @@ class ExiftoolClient:
             raise MetadataError(f"file does not exist: {path}")
 
     def _commit(self, path: Path, tag_args: Sequence[str]) -> None:
-        # In -stay_open mode exiftool prints "N image files updated" to stdout;
-        # warnings/errors go to stderr. Check both.
-        stdout, messages = self._execute(
-            [
-                "-overwrite_original_in_place",
-                "-codedcharacterset=utf8",
-                *tag_args,
-                _arg_path(path),
-            ]
-        )
+        # exiftool prints "N image files updated|unchanged" to stdout; errors go
+        # to stderr, and not always as "Error: ..." (a read-only / locked file
+        # gives "Error opening <path> for writing" + "0 image files updated").
+        # So count: exactly one file must be updated or unchanged, none failed.
+        try:
+            stdout, messages = self._execute(
+                [
+                    "-overwrite_original_in_place",
+                    "-codedcharacterset=utf8",
+                    *tag_args,
+                    _arg_path(path),
+                ]
+            )
+        except MetadataError as exc:
+            _note_write_failure(path, str(exc))
+            raise
         report = "\n".join([stdout, *messages])
-        if "image files updated" in report or "image files unchanged" in report:
+        counts = {kind: int(n) for n, kind in _SUMMARY_RE.findall(report)}
+        ok = counts.get("image files updated", 0) + counts.get("image files unchanged", 0)
+        if ok >= 1 and not counts.get("files weren't updated due to errors", 0):
             return
-        detail = report.strip() or "no changes written"
+        problems = [m for m in messages if not _SUMMARY_RE.match(m)]
+        detail = "; ".join(problems) or report.strip() or "no changes written"
+        _note_write_failure(path, detail)
         raise MetadataError(f"exiftool did not update {path}: {detail}")
 
     def _execute(self, args: Sequence[str]) -> tuple[str, list[str]]:

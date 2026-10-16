@@ -176,7 +176,14 @@ from sortandpost.library_view import (
     resolve_view,
     tag_choices,
 )
-from sortandpost.metadata import ExiftoolClient, MetadataError, can_embed_metadata, is_raw
+from sortandpost.metadata import (
+    ExiftoolClient,
+    MetadataError,
+    WriteFailure,
+    can_embed_metadata,
+    collect_write_failures,
+    is_raw,
+)
 from sortandpost.metadata.shared import EXIFTOOL
 from sortandpost.missing import MissingReason
 from sortandpost.onboarding import (
@@ -1466,7 +1473,7 @@ def build_ui(settings: Settings) -> None:
 
         async def _bulk_rate(stars: int) -> None:
             hashes = list(sel.selected)
-            n = await nicegui_run.io_bound(_apply_bulk_rating, settings, engine, hashes, stars)
+            n = await _io_write(_apply_bulk_rating, settings, engine, hashes, stars)
             ui.notify(f"{stars}★ · {n} photo(s)" if stars else f"rating cleared · {n} photo(s)")
             sel.clear()
 
@@ -1474,7 +1481,7 @@ def build_ui(settings: Settings) -> None:
             if State.write_mode != WriteMode.writable:
                 ui.notify("read-only — a rating change was ignored", type="warning")
                 return
-            await nicegui_run.io_bound(_apply_rating, settings, engine, pixel_hash, stars)
+            await _io_write(_apply_rating, settings, engine, pixel_hash, stars)
             ui.notify(f"{stars}★" if stars else "rating cleared")
 
         async def _flag_one(pixel_hash: str, marked: bool) -> None:
@@ -1490,7 +1497,7 @@ def build_ui(settings: Settings) -> None:
             if not name:
                 return
             hashes = list(sel.selected)
-            n = await nicegui_run.io_bound(_apply_bulk_tag, settings, engine, hashes, name)
+            n = await _io_write(_apply_bulk_tag, settings, engine, hashes, name)
             ui.notify(f'"{name}" · {n} photo(s)')
             box.set_value("")
             sel.clear()
@@ -2190,7 +2197,7 @@ def build_ui(settings: Settings) -> None:
                         new_tag.on("keydown.enter", lambda: _add_typed(new_tag))
 
         async def _tag_action(name: str, action: str) -> None:
-            await nicegui_run.io_bound(_apply_photo_tag, settings, engine, pixel_hash, name, action)
+            await _io_write(_apply_photo_tag, settings, engine, pixel_hash, name, action)
             await _paint_tags()
 
         async def _add_typed(box: ui.input) -> None:
@@ -2424,7 +2431,7 @@ def build_ui(settings: Settings) -> None:
         async def _rate(h: str, stars: int) -> None:
             if not writable:
                 return
-            await nicegui_run.io_bound(_apply_rating, settings, engine, h, stars)
+            await _io_write(_apply_rating, settings, engine, h, stars)
             with client:  # the awaited gap can invalidate the ambient slot
                 with _session() as session:
                     remaining[0] = unrated_count(session)
@@ -3027,9 +3034,7 @@ def build_ui(settings: Settings) -> None:
             return
 
         async def _bulk(tag_name: str, decision: str) -> None:
-            done = await nicegui_run.io_bound(
-                _apply_review_bulk, settings, engine, tag_name, decision
-            )
+            done = await _io_write(_apply_review_bulk, settings, engine, tag_name, decision)
             ui.notify(f"{decision}d {done} · {tag_name}")
             ui.navigate.reload()
 
@@ -3075,7 +3080,7 @@ def build_ui(settings: Settings) -> None:
                 for btn in tile.descendants():
                     if isinstance(btn, ui.button):
                         btn.disable()
-                applied = await nicegui_run.io_bound(
+                applied = await _io_write(
                     _apply_review_one, settings, engine, group.tag_name, pixel_hash, decision
                 )
                 shown.pop(pixel_hash, None)
@@ -3595,6 +3600,38 @@ def _run_hydrate_pass(settings: Settings, engine: Engine) -> str:
     if hy.hydrated == 0:
         return str(hy)
     return f"{hy}  |  {_run_index_pass(settings, engine)}"
+
+
+def _collecting[R](fn: Callable[..., R], *args: Any) -> tuple[R, list[WriteFailure]]:
+    with collect_write_failures() as failures:
+        return fn(*args), failures
+
+
+async def _io_write[R](fn: Callable[..., R], *args: Any) -> R | None:
+    """``run.io_bound(fn, *args)`` for a user action that may write into photo
+    files, and toast when any of those writes failed (read-only / locked file,
+    read-only share): the change is saved in the library either way, but the
+    user shouldn't think it's in the file. ``None`` if io_bound was cancelled."""
+    client = ui.context.client
+    out = await nicegui_run.io_bound(_collecting, fn, *args)
+    if out is None:  # cancelled / app shutting down
+        return None
+    result, failures = out
+    if failures:
+        with client:
+            ui.notify(_write_failure_text(failures), type="warning", multi_line=True)
+    return result
+
+
+def _write_failure_text(failures: list[WriteFailure]) -> str:
+    names = sorted({f.path.name for f in failures})
+    which = names[0] if len(names) == 1 else f"{len(names)} files"
+    locked = any(re.search(r"opening .* for writing", f.reason, re.I) for f in failures)
+    hint = " (the file is read-only or in use)" if locked else ""
+    return (
+        f"Saved in the library, but couldn't write it into {which}{hint}. "
+        "The change isn't in the photo file itself."
+    )
 
 
 def _exif(settings: Settings) -> AbstractContextManager[ExiftoolClient | None]:
@@ -5217,7 +5254,7 @@ def _star_widget(
 
     async def _on_change() -> None:
         new = int(rating.value or 0)
-        changed = await nicegui_run.io_bound(_apply_rating, settings, engine, pixel_hash, new)
+        changed = await _io_write(_apply_rating, settings, engine, pixel_hash, new)
         caption.set_text(_stars_caption(new))
         if changed:
             ui.notify(f"rated {new}★" if new else "rating cleared")
