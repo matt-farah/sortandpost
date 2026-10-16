@@ -93,7 +93,7 @@ rm -rf "$STAGE" "$DMG"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -quiet -volname "sortandpost $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+hdiutil create -quiet -volname "sortandpost.photos $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 
 if [[ -n "${SORTANDPOST_SIGN_ID:-}" && -n "${NOTARY_PROFILE:-}" ]]; then
   echo "==> notarizing"

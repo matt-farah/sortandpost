@@ -748,7 +748,7 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
             with ui.icon(glyph_icon).classes("sp-season-glyph text-lg") as glyph:
                 tip = ui.tooltip(_season_tooltip(State.season))
             _SEASON_GLYPHS[ui.context.client] = (glyph, tip)
-            ui.link("sortandpost", "/").classes("sp-display text-xl font-semibold sp-nav")
+            ui.link("sortandpost.photos", "/").classes("sp-display text-xl font-semibold sp-nav")
             ui.label(__version__).classes("sp-faint text-[11px]")
         if minimal:  # the welcome wizard: nothing else to navigate to yet
             return dark
@@ -4902,7 +4902,7 @@ async def _browse_folder(target: ui.input) -> None:
             listing.clear()
             with listing:
                 if data.get("library"):
-                    ui.label("✓ This folder is a sortandpost library").classes(
+                    ui.label("✓ This folder is a sortandpost.photos library").classes(
                         "text-sm text-primary px-2 pb-1"
                     )
                 if data.get("parent"):
@@ -6538,7 +6538,7 @@ def _restart_app(landing: str, message: str) -> None:
     with ui.dialog().props("persistent") as dlg, ui.card().classes("items-center gap-3 p-6"):
         ui.spinner(size="lg")
         ui.label(message).classes("font-medium")
-        ui.label("sortandpost is restarting — this page reloads on its own.").classes(
+        ui.label("sortandpost.photos is restarting — this page reloads on its own.").classes(
             "text-xs sp-faint"
         )
     dlg.open()
@@ -6642,8 +6642,8 @@ def _shared_folder_intro() -> None:
         "Dropbox folder)"
     ).classes("text-sm sp-muted max-w-2xl")
     ui.label(
-        "If you already use sortandpost, choose the same folder where your database is already "
-        "stored"
+        "If you already use sortandpost.photos, choose the same folder where your database "
+        "is already stored"
     ).classes("text-sm sp-muted max-w-2xl")
 
 
@@ -6830,7 +6830,9 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
                     summary = ui.column().classes("gap-1 text-sm")
                     with ui.stepper_navigation():
                         ui.button(
-                            "Start using sortandpost", icon="play_arrow", on_click=lambda: _finish()
+                            "Start using sortandpost.photos",
+                            icon="play_arrow",
+                            on_click=lambda: _finish(),
                         ).props("color=primary")
                         ui.button("Back", on_click=stepper.previous).props("flat")
 
@@ -7026,7 +7028,7 @@ def run(settings: Settings) -> None:
     ui.run(
         host=settings.env.host,
         port=settings.env.port,
-        title="sortandpost",
+        title="sortandpost.photos",
         reload=False,
         show=False,
         storage_secret=secret,
@@ -7091,7 +7093,7 @@ def run_setup(env: Env, problem: LibraryUnavailable | None = None) -> None:
     ui.run(
         host=env.host,
         port=env.port,
-        title="sortandpost — welcome",
+        title="sortandpost.photos — welcome",
         reload=False,
         show=False,
         storage_secret=setup_secret,

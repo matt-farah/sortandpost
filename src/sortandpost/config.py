@@ -111,7 +111,7 @@ class NoAppDataFolder(RuntimeError):
 
     def __str__(self) -> str:
         return (
-            "sortandpost hasn't been set up on this computer yet -- start the web "
+            "sortandpost.photos hasn't been set up on this computer yet -- start the web "
             "app (python -m sortandpost) and finish the setup wizard, or set APP_DATA."
         )
 

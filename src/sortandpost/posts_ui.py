@@ -354,7 +354,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     ui.label(
                         ("The post to " + doubt if doubt else "The post")
                         + f" may or may not exist in {name}. Check {name}, then tell "
-                        "sortandpost what happened — it never re-sends on its own."
+                        "sortandpost.photos what happened — it never re-sends on its own."
                     ).classes("text-sm")
                     with ui.row().classes("gap-2"):
                         ui.button(
@@ -374,7 +374,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 ).classes("px-4 text-sm text-amber-700 dark:text-amber-400")
             elif p.sent:
                 ui.label(
-                    f"Sent to {name} — edit or cancel it there (sortandpost can't change a "
+                    f"Sent to {name} — edit or cancel it there (sortandpost.photos can't change a "
                     "sent post). Use Duplicate to send it again."
                 ).classes("px-4 text-sm sp-muted")
             if State.write_mode != WriteMode.writable:
@@ -398,7 +398,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             with ui.dialog() as dialog, ui.card().classes("gap-2 max-w-md"):
                 ui.label(f"Delete “{cur().title}”?").classes("font-medium")
                 ui.label(
-                    f"Only this record in sortandpost is removed. Nothing in {prov().name} "
+                    f"Only this record in sortandpost.photos is removed. Nothing in {prov().name} "
                     "changes (delete it there if needed), and no photo files are touched."
                 ).classes("text-xs sp-muted")
                 with ui.row().classes("w-full justify-end gap-2"):

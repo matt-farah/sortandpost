@@ -1,4 +1,4 @@
-# Contributing to sortandpost
+# Contributing to sortandpost.photos
 
 Thanks for helping out! Bug reports, fixes and ideas are all welcome. For anything bigger
 than a small fix, please open an issue first so we can agree on the approach before you

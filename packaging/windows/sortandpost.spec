@@ -87,12 +87,12 @@ version_info = VSVersionInfo(
                 StringTable(
                     "040904B0",
                     [
-                        StringStruct("CompanyName", "sortandpost"),
-                        StringStruct("FileDescription", "sortandpost"),
+                        StringStruct("CompanyName", "sortandpost.photos"),
+                        StringStruct("FileDescription", "sortandpost.photos"),
                         StringStruct("FileVersion", __version__),
                         StringStruct("InternalName", "sortandpost"),
                         StringStruct("OriginalFilename", "sortandpost.exe"),
-                        StringStruct("ProductName", "sortandpost"),
+                        StringStruct("ProductName", "sortandpost.photos"),
                         StringStruct("ProductVersion", __version__),
                     ],
                 )

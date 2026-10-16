@@ -293,7 +293,7 @@ def check_new_root(
     for d in app_keys:
         if key == d or key.is_relative_to(d):
             return RootCheck(
-                error=f"That's sortandpost's own data folder ({d}), not a photo folder."
+                error=f"That's the sortandpost.photos data folder ({d}), not a photo folder."
             )
     replaces: list[str] = []
     for other in existing:

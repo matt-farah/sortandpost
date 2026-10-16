@@ -1,6 +1,6 @@
 # Docker (experimental)
 
-Running sortandpost in Docker on a NAS or an always-on server, browsed from other devices.
+Running sortandpost.photos in Docker on a NAS or an always-on server, browsed from other devices.
 The quick start is in the [README](../README.md#docker-experimental--server--nas--headless).
 This page covers the deeper setup (HTTPS, NAS, bind-mount speed, cloud folders, handing
 editing between Docker and a desktop app) and the checklist of work done to make Docker

@@ -13,12 +13,12 @@
 [Setup]
 ; Never change AppId: it's how upgrades and the uninstaller find this app.
 AppId={{6F1B7C2E-4D3A-4E8B-9A51-2C7D5E0B8F14}
-AppName=sortandpost
+AppName=sortandpost.photos
 AppVersion={#AppVersion}
-AppVerName=sortandpost {#AppVersion}
-AppPublisher=sortandpost
+AppVerName=sortandpost.photos {#AppVersion}
+AppPublisher=sortandpost.photos
 DefaultDirName={autopf}\sortandpost
-DefaultGroupName=sortandpost
+DefaultGroupName=sortandpost.photos
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
@@ -47,10 +47,13 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 ; A new version's bundle replaces the old one wholesale (stale DLLs from an
 ; older torch must not linger).
 Type: filesandordirs; Name: "{app}\_internal"
+; Shortcuts from before the rename to sortandpost.photos.
+Type: files; Name: "{autoprograms}\sortandpost.lnk"
+Type: files; Name: "{autodesktop}\sortandpost.lnk"
 
 [Icons]
-Name: "{autoprograms}\sortandpost"; Filename: "{app}\sortandpost.exe"
-Name: "{autodesktop}\sortandpost"; Filename: "{app}\sortandpost.exe"; Tasks: desktopicon
+Name: "{autoprograms}\sortandpost.photos"; Filename: "{app}\sortandpost.exe"
+Name: "{autodesktop}\sortandpost.photos"; Filename: "{app}\sortandpost.exe"; Tasks: desktopicon
 
 [Registry]
 ; The tray's "Start at login" value (sortandpost.desktop.login_item): never
@@ -58,7 +61,7 @@ Name: "{autodesktop}\sortandpost"; Filename: "{app}\sortandpost.exe"; Tasks: des
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "sortandpost"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
-Filename: "{app}\sortandpost.exe"; Description: "{cm:LaunchProgram,sortandpost}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\sortandpost.exe"; Description: "{cm:LaunchProgram,sortandpost.photos}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 const
@@ -67,7 +70,7 @@ const
   // sortandpost.desktop._windows.WINDOW_TITLE / APP_MUTEX
   TrayWindowTitle = 'sortandpost tray';
   AppMutex = 'sortandpost-app';
-  StillRunning = 'sortandpost is still running. Quit it from its tray icon (right-click, Quit sortandpost), then try again.';
+  StillRunning = 'sortandpost.photos is still running. Quit it from its tray icon (right-click, Quit sortandpost.photos), then try again.';
 
 // Ask a running sortandpost to quit the clean way: the tray stops its server
 // (final publish + write-lock release), then exits. SendMessage returns once
