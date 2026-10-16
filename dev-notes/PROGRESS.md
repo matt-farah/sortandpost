@@ -1,9 +1,13 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-15 (Docker full test; helper shelved; Docker = experimental)._
+_Last updated: 2026-10-15 (pre-release stress-test fixes S1–S5 merged: #70, #71, #72, #73)._
 _Working branch: `main`. V3 through P6a–d merged._
 
-> **▶️ Next:** V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
+> **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session, starting
+> with **S6** (first scan overwrites ratings in duplicate copies) — decide the rule first (never
+> write back during a photo's first index? prefer the newest file mtime? never overwrite `-1`?),
+> then S7 (Add folder validation), S8 (tag overflow), S9 (tag-create race), S10 (small ones).
+> After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
