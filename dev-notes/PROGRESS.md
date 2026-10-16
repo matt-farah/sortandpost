@@ -1,11 +1,13 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S7: #70–#73, #75, S7)._
-_Working branch: `main`. V3 through P6a–d merged._
+_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, #75; S7 committed on its branch, unmerged)._
+_Working branch: `fix/s7-add-folder-validation` (S7+ batch). V3 through P6a–d merged._
 
 > **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session:
 > **S8** (tag overflow), then S9 (tag-create race), S10 (small ones); V3.md #12 (add / remove
 > folders in onboarding) is still open.
+> **One PR for S7 onward:** keep committing each fix on branch `fix/s7-add-folder-validation`
+> (S7 committed, not pushed — no PR yet), and open a single combined PR when the batch is done.
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
