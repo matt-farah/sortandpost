@@ -1,15 +1,31 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, S6)._
+_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S7: #70–#73, #75, S7)._
 _Working branch: `main`. V3 through P6a–d merged._
 
 > **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session:
-> **S7** (Add folder validation — consider V3.md #12, add/remove folders in onboarding, with it),
-> then S8 (tag overflow), S9 (tag-create race), S10 (small ones).
+> **S8** (tag overflow), then S9 (tag-create race), S10 (small ones); V3.md #12 (add / remove
+> folders in onboarding) is still open.
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🛡️ 2026-10-16 — S7: Add folder checks the folder (branch `fix/s7-add-folder-validation`)
+
+- **`library_roots.check_new_root`** → `RootCheck(root, error, warning, replaces)`, used by the
+  Add folder dialog (Settings + wizard share `app._library_roots_editor`) and the "your other
+  computer's folders" suggestions. Normalizes the path (`~`, trailing `/`, `..`, quotes).
+- **Refused** (message in the dialog): relative path, a file, `/` / drive / home / home's
+  parent, anything inside the app's own folders (`app._app_data_dirs`: `local/`, `sync/`, the
+  per-machine folder), a duplicate (`lib` vs `lib/`, a symlink), a folder inside a root.
+- **Warned** (button becomes "Add anyway", reset on edit): a folder that isn't there now
+  (offline drive, constraint #8); one that contains existing roots — they're replaced on save.
+- **Docker**: only the mount point is checked (absolute, not `/`, not under app data, no
+  duplicate / nesting); not mounted yet is normal.
+- **Scanner** (`scanner.walk_roots`): a full walk skips a saved root nested in / equal to
+  another, or inside app data, so older `library.json` files stop double-walking.
+- 9 new tests. Hands-on tested: every refusal / warning / replace case in Settings → Library.
 
 ## 🛡️ 2026-10-16 — S6: first scan never rewrites a file's rating (branch `fix/s6-duplicate-rating-writeback`)
 

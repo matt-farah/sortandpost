@@ -208,6 +208,13 @@ adopts the existing folder. `config.yaml`'s `library_roots` key is now only a
 one-time seed for this file on first boot after upgrading. Edit roots in the
 Settings page. See `sortandpost.library_roots`.
 
+Adding a folder (Settings or the wizard) goes through `library_roots.check_new_root`: the path
+is normalized, and a relative path, a file, `/` / home, anything inside the app's own folders,
+a duplicate or a folder inside an existing root is refused. A folder that isn't there right
+now (offline drive) or that contains existing roots (they're replaced) needs "Add anyway".
+Under Docker only the mount point is checked. The scanner's full walk also skips a root nested
+in another one or inside app data (`scanner.walk_roots`).
+
 ### Opening files under Docker: copy the network path
 
 A container has no host GUI, so under Docker there is no Reveal / Open / folder

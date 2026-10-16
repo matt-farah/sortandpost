@@ -9,6 +9,7 @@ import pytest
 
 from sortandpost.library_roots import (
     LibraryRoot,
+    check_new_root,
     clean_path,
     compose_volume_line,
     container_roots,
@@ -214,3 +215,88 @@ def test_network_path_of_a_photo_in_both_spellings() -> None:
     assert format_network_path(parts, "smb") == "smb://nas/photo/Film%202024/a%20b.jpg"
     assert network_parts("/library/1/scan.tif", roots) is None  # longest prefix, unset
     assert network_parts("/elsewhere/a.jpg", roots) is None
+
+
+# --------------------------------------------------------------------------- #
+# check_new_root (Issues.md S7)
+# --------------------------------------------------------------------------- #
+def _native(path: str | Path) -> LibraryRoot:
+    return LibraryRoot(container=str(path), host=str(path))
+
+
+def test_check_accepts_and_normalizes_an_existing_folder(tmp_path: Path, paths: Paths) -> None:
+    (tmp_path / "lib").mkdir()
+    check = check_new_root(_native(f"  '{tmp_path}/lib/'  "), [], paths.roots(), in_docker=False)
+    assert check.error == "" and check.warning == ""
+    assert check.root == LibraryRoot(container=str(tmp_path / "lib"), host=str(tmp_path / "lib"))
+
+
+@pytest.mark.parametrize("raw", ["lib", "./lib", "", "   "])
+def test_check_refuses_a_relative_path(raw: str, paths: Paths) -> None:
+    assert check_new_root(_native(raw), [], paths.roots(), in_docker=False).error
+
+
+def test_check_refuses_a_file(tmp_path: Path, paths: Paths) -> None:
+    f = tmp_path / "a.jpg"
+    f.write_bytes(b"x")
+    assert "file" in check_new_root(_native(f), [], paths.roots(), in_docker=False).error
+
+
+def test_check_refuses_too_broad_folders(paths: Paths) -> None:
+    for broad in ["/", str(Path.home()), str(Path.home().parent), "~"]:
+        assert check_new_root(_native(broad), [], paths.roots(), in_docker=False).error, broad
+
+
+def test_check_refuses_the_apps_own_folders(paths: Paths) -> None:
+    for d in [paths.sync, paths.local, paths.sync / "thumbnails"]:
+        check = check_new_root(_native(d), [], paths.roots(), in_docker=False)
+        assert "own data" in check.error, d
+
+
+def test_check_warns_for_a_missing_folder(tmp_path: Path, paths: Paths) -> None:
+    check = check_new_root(_native(tmp_path / "offline"), [], paths.roots(), in_docker=False)
+    assert check.error == "" and "isn't there" in check.warning
+    assert check.root is not None
+
+
+def test_check_refuses_duplicates_and_folders_inside_a_root(tmp_path: Path, paths: Paths) -> None:
+    lib = tmp_path / "lib"
+    (lib / "normal").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(lib)
+    existing = [_native(lib)]
+    for dup in [f"{lib}/", tmp_path / "link", tmp_path / "lib" / "normal" / ".."]:
+        assert (
+            "already in the list"
+            in check_new_root(_native(dup), existing, paths.roots(), in_docker=False).error
+        ), dup
+    inner = check_new_root(_native(lib / "normal"), existing, paths.roots(), in_docker=False)
+    assert "inside" in inner.error
+
+
+def test_check_replaces_roots_inside_the_new_one(tmp_path: Path, paths: Paths) -> None:
+    lib = tmp_path / "lib"
+    (lib / "a").mkdir(parents=True)
+    (lib / "b").mkdir()
+    existing = [
+        _native(lib / "a"),
+        LibraryRoot(container=str(lib / "b"), host=str(lib / "b"), label="B"),
+    ]
+    check = check_new_root(_native(lib), existing, paths.roots(), in_docker=False)
+    assert check.error == ""
+    assert check.replaces == (str(lib / "a"), str(lib / "b"))
+    assert "B" in check.warning
+
+
+def test_check_under_docker_checks_the_mount_point(paths: Paths) -> None:
+    app_dirs = [Path("/data/local"), Path("/data/sync")]
+    ok = check_new_root(
+        LibraryRoot(container="/library/1/", host=r"C:\Photos"), [], app_dirs, in_docker=True
+    )
+    assert ok.error == "" and ok.warning == ""  # not mounted yet is normal
+    assert ok.root == LibraryRoot(container="/library/1", host=r"C:\Photos")
+    existing = [LibraryRoot(container="/library", host="/x")]
+    for bad in ["library", "/", "/data/sync", "/data/local/x", "/library", "/library/a"]:
+        check = check_new_root(
+            LibraryRoot(container=bad, host="/y"), existing, app_dirs, in_docker=True
+        )
+        assert check.error, bad

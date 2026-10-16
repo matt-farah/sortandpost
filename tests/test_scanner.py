@@ -113,3 +113,16 @@ def test_collapse_scope(tmp_path: Path) -> None:
     assert collapse_scope([lib / "a", lib], [lib]) is None
     assert collapse_scope([tmp_path], [lib]) is None  # contains a root
     assert collapse_scope([], [lib]) == []
+
+
+def test_nested_duplicate_and_app_data_roots_are_walked_once(tmp_path: Path) -> None:
+    # Issues.md S7: roots saved before the Add-folder checks
+    lib = tmp_path / "lib"
+    _touch_image(lib / "a.jpg")
+    _touch_image(lib / "normal" / "b.jpg")
+    app = tmp_path / "appdata"
+    _touch_image(app / "sync" / "thumbnails" / "t.jpg")
+    roots = [lib / "normal", f"{lib}/", lib, app / "sync"]
+
+    found = list(iter_image_files(roots, exclude=[app]))
+    assert sorted(p.name for p in found) == ["a.jpg", "b.jpg"]

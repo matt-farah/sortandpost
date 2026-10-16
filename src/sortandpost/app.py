@@ -150,6 +150,8 @@ from sortandpost.indexer.service import REBUILD, run_indexer
 from sortandpost.launcher_pref import remember_sync_dir
 from sortandpost.library_roots import (
     LibraryRoot,
+    RootCheck,
+    check_new_root,
     clean_path,
     compose_volume_line,
     container_roots,
@@ -4842,6 +4844,15 @@ async def _browse_app(target: ui.input) -> None:
     dlg.open()
 
 
+def _app_data_dirs(settings: Settings) -> list[Path]:
+    """The app's own folders, never a library folder: ``local/`` + ``sync/`` (or
+    the single app-data folder), plus the per-machine folder of the split layout."""
+    dirs = list(settings.paths.roots())
+    if not running_in_docker():
+        dirs.append(default_local_root())
+    return dirs
+
+
 def _library_roots_editor(
     settings: Settings,
     engine: Engine,
@@ -4883,8 +4894,16 @@ def _library_roots_editor(
         _persist()
         _render()
 
+    def _check(root: LibraryRoot) -> RootCheck:
+        return check_new_root(root, roots, _app_data_dirs(settings), in_docker=in_docker)
+
     def _adopt(root: LibraryRoot) -> None:
-        roots.append(root)
+        check = _check(root)
+        if check.root is None:
+            ui.notify(check.error, type="warning")
+            return
+        roots[:] = [x for x in roots if x.container not in check.replaces]
+        roots.append(check.root)
         _persist()
         _render()
 
@@ -4990,6 +5009,9 @@ def _library_roots_editor(
             net_in.set_visibility(in_docker)
             snippet = ui.code("", language="yaml").classes("w-full text-xs")
             snippet.set_visibility(in_docker)
+            problem = ui.label("").classes("text-sm text-amber-600 dark:text-amber-400")
+            problem.set_visibility(False)
+            confirmed: list[RootCheck] = []  # the warning the user saw before "Add anyway"
 
             def _entry() -> LibraryRoot | None:
                 host = clean_path(host_in.value or "")
@@ -5014,8 +5036,14 @@ def _library_roots_editor(
                     "# then:  docker compose up -d"
                 )
 
-            host_in.on_value_change(lambda _: _refresh())
-            cont_in.on_value_change(lambda _: _refresh())
+            def _edited() -> None:
+                confirmed.clear()
+                problem.set_visibility(False)
+                save_btn.text = "Save"
+                _refresh()
+
+            host_in.on_value_change(lambda _: _edited())
+            cont_in.on_value_change(lambda _: _edited())
             _refresh()
 
             with ui.row().classes("w-full justify-end gap-2"):
@@ -5029,8 +5057,19 @@ def _library_roots_editor(
                     if r.network and parse_network_path(r.network) is None:
                         ui.notify(_NETWORK_HINT, type="warning")
                         return
-                    roots[:] = [x for x in roots if x.container != r.container]
-                    roots.append(r)
+                    check = _check(r)
+                    if check.root is None:
+                        problem.text = check.error
+                        problem.set_visibility(True)
+                        return
+                    if check.warning and check not in confirmed:
+                        problem.text = check.warning
+                        problem.set_visibility(True)
+                        confirmed[:] = [check]
+                        save_btn.text = "Add anyway"
+                        return
+                    roots[:] = [x for x in roots if x.container not in check.replaces]
+                    roots.append(check.root)
                     _persist()
                     _render()
                     dialog.close()
@@ -5042,7 +5081,7 @@ def _library_roots_editor(
                         else "added"
                     )
 
-                ui.button("Save", on_click=_save_entry).props("color=primary")
+                save_btn = ui.button("Save", on_click=_save_entry).props("color=primary")
         dialog.open()
 
     with ui.row().classes("items-center gap-2"):
