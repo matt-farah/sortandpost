@@ -386,6 +386,12 @@ Lightroom/Windows). On re-index, if a file's embedded `XMP:Rating` differs from 
 if the file's mtime is newer than the DB row's `updated_at`, the file wins and we emit a
 `changes` row; otherwise the DB wins and we rewrite the file.
 
+Exceptions (`sortandpost.indexer.reconcile`, Issues.md S6): a path's **first index** (never
+indexed with these pixels) only reads — no write-back, and a file `0` never clears a DB
+rating — and between duplicate copies the **newest file** wins (a file-sourced DB rating is
+beaten only by a copy newer than every other present copy). A file rating **outside 0–5**
+(a Lightroom reject `-1`, a `99`) reads as unrated / 5★ and is never overwritten by reconcile.
+
 ### Deletion (explicit, user-invoked — constraint #1 exception 2)
 
 The "Delete photos" action is the one destructive operation. On the machine that runs it:

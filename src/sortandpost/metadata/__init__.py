@@ -110,6 +110,10 @@ def _note_write_failure(path: Path, reason: str) -> None:
 @dataclass
 class EmbeddedMetadata:
     rating: int | None = None
+    # The file's rating tag holds a value outside 0-5 (a Lightroom reject ``-1``,
+    # another app's own scale). ``rating`` is then None (negative) or 5 (above 5),
+    # and reconcile never writes into the file (Issues.md S6).
+    rating_unsupported: bool = False
     keywords: tuple[str, ...] = ()
     taken_at: datetime | None = None
     orientation: int | None = None
@@ -470,8 +474,9 @@ def _to_metadata(row: dict[str, object]) -> EmbeddedMetadata:
         return None
 
     rating = _as_int(first("XMP:Rating", "EXIF:Rating"))
+    rating_unsupported = rating is not None and not 0 <= rating <= 5
     if rating is not None:
-        rating = max(0, min(5, rating))
+        rating = None if rating < 0 else min(5, rating)
 
     keywords: list[str] = []
     for key in ("XMP:Subject", "IPTC:Keywords"):
@@ -489,6 +494,7 @@ def _to_metadata(row: dict[str, object]) -> EmbeddedMetadata:
 
     return EmbeddedMetadata(
         rating=rating,
+        rating_unsupported=rating_unsupported,
         keywords=tuple(keywords),
         taken_at=_parse_datetime(taken_raw) if isinstance(taken_raw, str) else None,
         orientation=_as_int(first("EXIF:Orientation")),
