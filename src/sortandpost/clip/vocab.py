@@ -25,7 +25,12 @@ from typing import Protocol
 import numpy as np
 import yaml
 
-from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
+from sortandpost.tag_names import (
+    MAX_TAG_NAME_LEN,
+    is_safe_tag_name,
+    is_valid_new_tag_name,
+    normalize_tag_name,
+)
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +80,14 @@ def load_vocab(tags_file: Path) -> Vocab:
                     continue
                 if not is_safe_tag_name(name):
                     log.warning("skipping tag %r in %s: control characters", name, tags_file)
+                    continue
+                if not is_valid_new_tag_name(name):
+                    log.warning(
+                        "skipping tag %.40r… in %s: longer than %d characters",
+                        name,
+                        tags_file,
+                        MAX_TAG_NAME_LEN,
+                    )
                     continue
                 seen.add(name)
                 terms.append(VocabTerm(name=name, facet=str(facet)))

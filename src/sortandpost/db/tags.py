@@ -23,7 +23,12 @@ from sqlmodel import Session, col, select
 from sortandpost.db.models import ChangeOp, PhotoPath, PhotoTag, Tag, TagKind, TagSource
 from sortandpost.metadata import ExiftoolClient, MetadataError, can_embed_metadata, is_raw
 from sortandpost.sync.changelog import record_change
-from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
+from sortandpost.tag_names import (
+    MAX_TAG_NAME_LEN,
+    is_safe_tag_name,
+    is_valid_new_tag_name,
+    normalize_tag_name,
+)
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +71,8 @@ def add_manual_tag(
         raise ValueError("tag name must be non-empty")
     if not is_safe_tag_name(name):
         raise ValueError(f"tag name contains control characters: {name!r}")
+    if not is_valid_new_tag_name(name):
+        raise ValueError(f"tag name is longer than {MAX_TAG_NAME_LEN} characters")
 
     tag = _get_or_create_tag(session, name)
     assert tag.id is not None

@@ -237,7 +237,12 @@ from sortandpost.sync.clock import utcnow
 from sortandpost.sync.online_only import OnlineOnlyReport, find_online_only
 from sortandpost.sync.recovery import RecoveryReport, recover_working_db
 from sortandpost.sync.recovery import read_report as read_recovery
-from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
+from sortandpost.tag_names import (
+    MAX_TAG_NAME_LEN,
+    is_safe_tag_name,
+    is_valid_new_tag_name,
+    normalize_tag_name,
+)
 from sortandpost.themes import (
     PALETTES,
     SEASON_CHOICES,
@@ -543,6 +548,13 @@ body, .q-page, .nicegui-content {
 .sp-tile:hover { transform: none; }
 @media (max-width: 900px) {
   .sp-settings-rail { display: none; }
+}
+
+/* photo page: image beside the info column; on a phone the info goes below the
+   image (side by side, the image shrank to nothing and the page scrolled sideways) */
+@media (max-width: 640px) {
+  .sp-photo-main { flex-direction: column; padding-inline: 1rem !important; }
+  .sp-photo-info { width: 100%; max-width: 100%; }
 }
 
 /* empty states --------------------------------------------------------------- */
@@ -1507,8 +1519,8 @@ def build_ui(settings: Settings) -> None:
             _recount_flags()
 
         async def _bulk_tag(box: ui.input) -> None:
-            name = (box.value or "").strip()
-            if not name:
+            name = _typed_tag_name(box.value)
+            if name is None:
                 return
             hashes = list(sel.selected)
             n = await _io_write(_apply_bulk_tag, settings, engine, hashes, name)
@@ -1665,7 +1677,7 @@ def build_ui(settings: Settings) -> None:
                     ui.button(icon="star_border", on_click=lambda: _bulk_rate(0)).props(
                         "flat dense round"
                     ).tooltip("clear rating")
-                    tag_in = ui.input(placeholder="tag…").props("dense dark").classes("w-28")
+                    tag_in = _tag_input("tag…").props("dense dark").classes("w-28")
                     tag_in.on("keydown.enter", lambda: _bulk_tag(tag_in))
                     ui.button("Tag", on_click=lambda: _bulk_tag(tag_in)).props("flat dense")
                     ui.button(icon="flag", on_click=lambda: _bulk_flag(True)).props(
@@ -2067,7 +2079,11 @@ def build_ui(settings: Settings) -> None:
                     f"position:fixed; {side}:0.5rem; top:50%; transform:translateY(-50%);"
                     " z-index:10; background-color:var(--sp-surface-2); color:var(--sp-text)"
                 ).tooltip(tip)
-        with ui.row().classes("w-full no-wrap gap-6 p-4").style("padding-inline:3.75rem"):
+        with (
+            ui.row()
+            .classes("sp-photo-main w-full no-wrap gap-6 p-4")
+            .style("padding-inline:3.75rem")
+        ):
             # a plain <img>, not ui.image: q-img sizes itself by aspect-ratio
             # padding and ignores max-height, so a portrait photo overflowed the
             # window. This fits whole inside the viewport (minus header, back
@@ -2079,7 +2095,7 @@ def build_ui(settings: Settings) -> None:
                 " max-width:min(100%, 1280px); max-height:calc(100vh - 12rem - 20px);"
                 " object-fit:contain"
             )
-            with ui.column().classes("gap-1 text-sm shrink-0 max-w-sm"):
+            with ui.column().classes("sp-photo-info gap-1 text-sm shrink-0 max-w-sm"):
                 star_widget = _star_widget(settings, engine, pixel_hash, stars or 0)
                 flag_switch = _edit_flag_button(settings, engine, pixel_hash, flagged)
                 ui.label("← → move · 1-5 rate · 0 clear · f flag").classes("text-[11px] sp-faint")
@@ -2125,7 +2141,7 @@ def build_ui(settings: Settings) -> None:
                 if not member_of:
                     ui.label("Not in any collection.").classes("text-xs sp-muted")
                     return
-                with ui.row().classes("items-center gap-1 flex-wrap"):
+                with ui.row().classes("w-full items-center gap-1 flex-wrap"):
                     for c in member_of:
                         with ui.row().classes("items-center gap-0 rounded-lg sp-placeholder pl-2"):
                             ui.button(
@@ -2159,12 +2175,16 @@ def build_ui(settings: Settings) -> None:
                         ui.label("This stack's tags live on its top photo.").classes(
                             "text-xs sp-muted"
                         )
-                    with ui.row().classes("items-center gap-1 flex-wrap"):
-                        for name, source in have:
+                    # w-full: the info column lines items up at the start, so a row
+                    # without it sizes to its content and never wraps (Issues.md S8)
+                    shown = have if show_all_tags else have[:_TAGS_SHOWN]
+                    with ui.row().classes("w-full items-center gap-1 flex-wrap"):
+                        for name, source in shown:
                             with ui.row().classes(
                                 "items-center gap-0 rounded-full sp-placeholder px-2"
+                                " no-wrap max-w-full"
                             ):
-                                ui.label(name).classes("text-sm py-0.5")
+                                _tag_pill_label(name, "text-sm py-0.5")
                                 if tags_writable:
                                     tip = f'remove "{name}"'
                                     if source == TagSource.clip:
@@ -2173,23 +2193,29 @@ def build_ui(settings: Settings) -> None:
                                         icon="close",
                                         on_click=lambda n=name: _tag_action(n, "remove"),
                                     ).props("flat dense round size=xs").tooltip(tip)
+                        if len(have) > len(shown):
+                            ui.button(
+                                f"+{len(have) - len(shown)} more", on_click=_show_all_tags
+                            ).props("flat dense no-caps size=sm")
                         if not have:
                             ui.label("No tags yet.").classes("text-xs sp-muted")
                     if suggested:
                         ui.label("Suggested").classes("text-xs sp-muted mt-1")
-                        with ui.row().classes("items-center gap-1 flex-wrap"):
+                        with ui.row().classes("w-full items-center gap-1 flex-wrap"):
                             for name, score in suggested:
                                 # ghost pill: dashed + faded = "not applied yet"
                                 with (
                                     ui.row()
-                                    .classes("items-center gap-0 rounded-full px-2")
+                                    .classes(
+                                        "items-center gap-0 rounded-full px-2 no-wrap max-w-full"
+                                    )
                                     .style(
                                         "border:1px dashed var(--sp-border); opacity:.75;"
                                         " background:transparent"
                                     )
                                 ):
-                                    ui.label(name).classes("text-sm py-0.5 sp-muted").tooltip(
-                                        f"CLIP score {score:.2f}"
+                                    _tag_pill_label(
+                                        name, "text-sm py-0.5 sp-muted", f"CLIP score {score:.2f}"
                                     )
                                     if tags_writable:
                                         ui.button(
@@ -2204,22 +2230,26 @@ def build_ui(settings: Settings) -> None:
                                         )
                     if tags_writable:
                         new_tag = (
-                            ui.input(placeholder="Add a tag…")
+                            _tag_input("Add a tag…")
                             .props("dense outlined clearable")
                             .classes("w-64")
                         )
                         new_tag.on("keydown.enter", lambda: _add_typed(new_tag))
+
+        show_all_tags = False
+
+        async def _show_all_tags() -> None:
+            nonlocal show_all_tags
+            show_all_tags = True
+            await _paint_tags()
 
         async def _tag_action(name: str, action: str) -> None:
             await _io_write(_apply_photo_tag, settings, engine, pixel_hash, name, action)
             await _paint_tags()
 
         async def _add_typed(box: ui.input) -> None:
-            name = normalize_tag_name(box.value or "")
-            if not name:
-                return
-            if not is_safe_tag_name(name):
-                ui.notify("that tag name has characters that can't be used", type="warning")
+            name = _typed_tag_name(box.value)
+            if name is None:
                 return
             await _tag_action(name, "add")
 
@@ -3985,6 +4015,58 @@ def _apply_bulk_rating(settings: Settings, engine: Engine, hashes: list[str], st
         session.commit()
     achievements_ui.poke()
     return len(hashes)
+
+
+# the photo page lists this many tags, then a "+N more" button (a file can carry hundreds)
+_TAGS_SHOWN = 60
+
+
+def _tag_pill_label(name: str, classes: str, tip: str = "") -> ui.label:
+    """A tag pill's name: one line, cut with an ellipsis when it's wider than
+    the info column -- a long name is repeated in full in the tooltip."""
+    label = ui.label(name).classes(f"{classes} min-w-0 truncate")
+    if len(name) > 30:
+        shown = name if len(name) <= 300 else name[:300] + "…"
+        tip = f"{shown} · {tip}" if tip else shown
+    if tip:
+        with label:
+            ui.tooltip(tip).style("max-width:20rem; overflow-wrap:anywhere")
+    return label
+
+
+# a tag box shows "90/100" from here on, so the length cap never comes as a surprise
+_TAG_COUNT_FROM = 90
+
+
+def _tag_input(placeholder: str) -> ui.input:
+    """A box for typing a tag: stops at :data:`MAX_TAG_NAME_LEN` characters and
+    shows how many are used once the name gets close to it."""
+    box = ui.input(placeholder=placeholder).props(f"maxlength={MAX_TAG_NAME_LEN}")
+
+    def _count() -> None:
+        n = len(box.value or "")
+        if n >= _TAG_COUNT_FROM:
+            box.props(f'hint="{n}/{MAX_TAG_NAME_LEN}"')
+        else:
+            box.props(remove="hint")
+
+    box.on_value_change(_count)
+    return box
+
+
+def _typed_tag_name(raw: str | None) -> str | None:
+    """A tag typed into a box, normalized -- or ``None`` (with a warning toast
+    when it was refused, see :mod:`sortandpost.tag_names`)."""
+    name = normalize_tag_name(raw or "")
+    if not name:
+        return None
+    if not is_safe_tag_name(name):
+        ui.notify("that tag name has characters that can't be used", type="warning")
+        return None
+    if not is_valid_new_tag_name(name):
+        ui.notify(f"tags can be at most {MAX_TAG_NAME_LEN} characters", type="warning")
+        return None
+    return name
 
 
 def _apply_bulk_tag(settings: Settings, engine: Engine, hashes: list[str], tag_name: str) -> int:

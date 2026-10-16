@@ -365,6 +365,24 @@ def test_keyword_import_is_additive(session: Session) -> None:
     assert change.field == "dog"
 
 
+def test_keyword_import_normalizes_and_skips_junk(session: Session) -> None:
+    # Issues.md S8: a file keyword goes through sortandpost.tag_names like a typed tag
+    ph = "k" * 64
+    _photo(session, ph, "/lib/k.jpg")
+    out = reconcile_metadata(
+        session,
+        pixel_hash=ph,
+        path=Path("/lib/k.jpg"),
+        md=_md(keywords=("  red\t car ", "red car", "x" * 3000, "a\x00b", "y" * 100)),
+        exiftool=MockExiftool(),
+        device_id=DEVICE,
+        file_mtime_ns=_ns(NEW),
+        now=NOW,
+    )
+    assert out.keywords_imported == 2
+    assert sorted(session.exec(select(Tag.name)).all()) == ["red car", "y" * 100]
+
+
 # --------------------------------------------------------------------------- #
 # a file's first index only reads (Issues.md S6)
 # --------------------------------------------------------------------------- #

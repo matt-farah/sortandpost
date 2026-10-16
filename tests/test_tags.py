@@ -129,6 +129,19 @@ def test_add_rejects_control_characters(engine: Engine) -> None:
             add_manual_tag(s, pixel_hash=PH, tag_name="sun\x00set", device_id="d1", now=NOW)
 
 
+def test_add_rejects_overlong_names(engine: Engine) -> None:
+    with Session(engine) as s:
+        _photo(s)
+        add_manual_tag(s, pixel_hash=PH, tag_name="x" * 100, device_id="d1", now=NOW)
+        with pytest.raises(ValueError):
+            add_manual_tag(s, pixel_hash=PH, tag_name="x" * 101, device_id="d1", now=NOW)
+
+
+def test_embeddable_keywords_keeps_an_older_long_tag() -> None:
+    # the length cap is for new tags only -- a file keeps a long one it already had
+    assert embeddable_keywords(["y" * 300]) == ["y" * 300]
+
+
 def test_embeddable_keywords_drops_unsafe_names_from_older_or_merged_rows() -> None:
     assert embeddable_keywords(["beach", "x\n-if\n1", "to-edit", "a\u2028b"]) == ["beach"]
 

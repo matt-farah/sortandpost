@@ -545,7 +545,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
 - `-stay_open` reads **one argument per line**: `_execute` refuses any argument containing
   `\n` / `\r` / NUL, since a line break would inject exiftool options (`-Directory=` moves
   the file, `-if` runs Perl — docs/security-review.md C1). Tag names are normalized / validated by
-  `sortandpost.tag_names` wherever they're created.
+  `sortandpost.tag_names` wherever they're created — typed, `tags.yaml`, or a keyword imported
+  from a file. A **new** tag is also capped at `MAX_TAG_NAME_LEN` (100; the tag boxes show
+  `90/100` … from 90 characters); an older, longer tag still goes into files.
 
 ---
 
@@ -612,9 +614,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   the facts and Paths (applied pills; dashed ghost pills for pending CLIP suggestions with
   ✓ approve / ✕ dismiss; ✕ on every applied tag — on an approved CLIP tag it also rejects the
   suggestion so it isn't re-suggested; an add-tag input — in a stack, tags live on its top photo
-  only, see "Stacks write one file"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
+  only, see "Stacks write one file"; pills wrap and truncate, 60 shown then "+N more"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
   prev/next (← / → or the round ‹ › buttons at the screen's edges) walk the same resolved view
-  (`resolve_view`, cached per query for 30 min).
+  (`resolve_view`, cached per query for 30 min). Below 640px wide the info column goes under the image.
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/achievements` — achievement cards + score (see "Achievements"); reached from the header's
   name + 🏆 chip, hidden when the mode is Off.

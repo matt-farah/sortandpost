@@ -1,17 +1,36 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, #75; S7 committed on its branch, unmerged)._
+_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, #75; S7–S8 committed on their branch, unmerged)._
 _Working branch: `fix/s7-add-folder-validation` (S7+ batch). V3 through P6a–d merged._
 
 > **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session:
-> **S8** (tag overflow), then S9 (tag-create race), S10 (small ones); V3.md #12 (add / remove
+> **S9** (tag-create race), then S10 (small ones); V3.md #12 (add / remove
 > folders in onboarding) is still open.
 > **One PR for S7 onward:** keep committing each fix on branch `fix/s7-add-folder-validation`
-> (S7 committed, not pushed — no PR yet), and open a single combined PR when the batch is done.
+> (S7–S8 committed, not pushed — no PR yet), and open a single combined PR when the batch is done.
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🛡️ 2026-10-16 — S8: photo page tags wrap; tag names capped (branch `fix/s7-add-folder-validation`)
+
+- **Overflow**: the info column is `items-start`, so the tag / suggestion / collection rows sized
+  to their content and never wrapped — now `w-full`. A pill's name truncates with "…"
+  (`app._tag_pill_label`; > 30 chars repeats it in a wrapping tooltip, capped at 300). The
+  photo page lists 60 tags, then "+N more" (`_TAGS_SHOWN`).
+- **Phone**: the photo page row was 484px on a 390px screen (image shrank to nothing) for any
+  photo — below 640px the info column now goes under the image (`.sp-photo-main` CSS).
+- **Tag names** (`tag_names.MAX_TAG_NAME_LEN` = 100, `is_valid_new_tag_name`): new tags only —
+  `add_manual_tag`, `tags.yaml`, and **file keywords on import** (`reconcile._reconcile_keywords`
+  normalizes whitespace, skips control chars / > 100 with a log line). An older long tag is
+  still written to files (`embeddable_keywords` checks safety only). Trade-off: a skipped
+  keyword isn't in the DB, so a later tag edit rewrites the file without it.
+- **Typing a tag** (`app._tag_input`, photo page + bulk toolbar; both now go through
+  `_typed_tag_name`, the bulk box had no checks): `maxlength=100` and a `90/100` … `100/100`
+  hint from 90 characters.
+- 4 new tests. Hands-on tested: 300 tags + a 3000-char tag on one photo (desktop + phone width),
+  the counter in both boxes.
 
 ## 🛡️ 2026-10-16 — S7: Add folder checks the folder (branch `fix/s7-add-folder-validation`)
 

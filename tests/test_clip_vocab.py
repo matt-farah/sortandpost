@@ -113,3 +113,9 @@ def test_load_vocab_collapses_line_breaks_and_skips_control_chars(tmp_path: Path
         encoding="utf-8",
     )
     assert load_vocab(f).names == ["sunset -if system(1)", "beach"]
+
+
+def test_load_vocab_skips_overlong_terms(tmp_path: Path) -> None:
+    f = tmp_path / "tags.yaml"
+    f.write_text(f"scene:\n  - {'x' * 101}\n  - beach\n", encoding="utf-8")
+    assert load_vocab(f).names == ["beach"]
