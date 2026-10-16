@@ -208,6 +208,13 @@ adopts the existing folder. `config.yaml`'s `library_roots` key is now only a
 one-time seed for this file on first boot after upgrading. Edit roots in the
 Settings page. See `sortandpost.library_roots`.
 
+Adding a folder (Settings or the wizard) goes through `library_roots.check_new_root`: the path
+is normalized, and a relative path, a file, `/` / home, anything inside the app's own folders,
+a duplicate or a folder inside an existing root is refused. A folder that isn't there right
+now (offline drive) or that contains existing roots (they're replaced) needs "Add anyway".
+Under Docker only the mount point is checked. The scanner's full walk also skips a root nested
+in another one or inside app data (`scanner.walk_roots`).
+
 ### Opening files under Docker: copy the network path
 
 A container has no host GUI, so under Docker there is no Reveal / Open / folder
@@ -365,6 +372,10 @@ Merge algorithm:
    still missing is picked up by the next reconcile scan.
 4. Publish the merged DB, archive the conflict copies, and log a summary to `/settings`.
 
+Merging happens at startup / promotion **and** while writable: the sync tick checks `sync/`
+every 60 s (`SyncManager.merge_arrived_copies`) and merges a copy once it has been unchanged
+for 30 s, into the live working DB (always the base there — it is never swapped out).
+
 A copy may come from a newer or broken app. Rows this version can't apply are skipped and
 counted (`MergeSummary.skipped_rows`), never fatal: a `changes` op it doesn't know, a rate
 value outside 0–5, a row for a photo neither side has. Each source is committed on its own.
@@ -475,7 +486,10 @@ real path in `scan_state`, each stage idempotent and separately resumable:
 8. **finalize** — set `scan_state.indexed_at`, clear dirty flags.
 
 Deletions: file gone ⇒ set `photos.missing_since` and `photo_paths.present = false`. Never purge
-without an explicit user action (see Sync model → Deletion). A pending `tombstones` row is the
+without an explicit user action (see Sync model → Deletion). One cleanup: an absent `photo_paths` row is
+dropped (with its `scan_state`) when the same photo has a present copy elsewhere and the path is
+under one of this machine's roots that is online and non-empty, with nothing there — a renamed
+folder's old paths. A photo with no present copy keeps every row. A pending `tombstones` row is the
 one case the scanner acts on: it skips re-indexing that `pixel_hash` and, on the post-scan
 sweep, trashes the still-present local file and purges the derived rows.
 
@@ -538,7 +552,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
 - `-stay_open` reads **one argument per line**: `_execute` refuses any argument containing
   `\n` / `\r` / NUL, since a line break would inject exiftool options (`-Directory=` moves
   the file, `-if` runs Perl — docs/security-review.md C1). Tag names are normalized / validated by
-  `sortandpost.tag_names` wherever they're created.
+  `sortandpost.tag_names` wherever they're created — typed, `tags.yaml`, or a keyword imported
+  from a file. A **new** tag is also capped at `MAX_TAG_NAME_LEN` (100; the tag boxes show
+  `90/100` … from 90 characters); an older, longer tag still goes into files.
 
 ---
 
@@ -605,9 +621,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   the facts and Paths (applied pills; dashed ghost pills for pending CLIP suggestions with
   ✓ approve / ✕ dismiss; ✕ on every applied tag — on an approved CLIP tag it also rejects the
   suggestion so it isn't re-suggested; an add-tag input — in a stack, tags live on its top photo
-  only, see "Stacks write one file"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
+  only, see "Stacks write one file"; pills wrap and truncate, 60 shown then "+N more"), a Collections row (rounded-square chips), "more like this". Links carry the grid's query string;
   prev/next (← / → or the round ‹ › buttons at the screen's edges) walk the same resolved view
-  (`resolve_view`, cached per query for 30 min).
+  (`resolve_view`, cached per query for 30 min). Below 640px wide the info column goes under the image.
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/achievements` — achievement cards + score (see "Achievements"); reached from the header's
   name + 🏆 chip, hidden when the mode is Off.

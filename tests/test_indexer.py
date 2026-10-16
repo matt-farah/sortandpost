@@ -110,7 +110,49 @@ def test_move_repoints_paths_and_keeps_identity(settings: Settings) -> None:
         assert photo.missing_since is None
         assert photo.primary_path.endswith("after.jpg")
         by_path = {Path(p.path).name: p.present for p in s.exec(select(PhotoPath)).all()}
-        assert by_path == {"before.jpg": False, "after.jpg": True}
+        # the old path's row is dropped: the photo lives on at the new one
+        assert by_path == {"after.jpg": True}
+        assert s.get(ScanState, str(lib / "before.jpg")) is None
+
+
+def test_renamed_folder_forgets_its_old_paths(settings: Settings) -> None:
+    lib = _lib(settings)
+    _jpeg(lib / "trip" / "a.jpg", (5, 10, 15))
+    _jpeg(lib / "trip" / "b.jpg", (15, 10, 5))
+    scan_once(settings)
+
+    (lib / "trip").rename(lib / "Trip 2026")
+    stats = scan_once(settings)
+    assert stats.paths_pruned == 2
+    assert stats.marked_missing == 0
+    with _session(settings) as s:
+        paths = {pp.path: pp.present for pp in s.exec(select(PhotoPath))}
+        states = {st.path for st in s.exec(select(ScanState))}
+    assert paths == {str(lib / "Trip 2026" / "a.jpg"): True, str(lib / "Trip 2026" / "b.jpg"): True}
+    assert states == set(paths)
+
+
+def test_offline_folder_keeps_its_rows_even_with_a_copy_elsewhere(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """A duplicate on a drive that's unplugged looks absent, but it isn't gone:
+    its row is kept (it's still a duplicate once the drive is back)."""
+    lib = _lib(settings)
+    backup = tmp_path / "backup"
+    _jpeg(lib / "a.jpg", (5, 10, 15))
+    _jpeg(backup / "a.jpg", (5, 10, 15))
+    settings.set_library_roots([lib, backup])
+    scan_once(settings)
+
+    shutil.rmtree(backup)  # the drive's mount point is gone
+    stats = scan_once(settings)
+    assert stats.paths_pruned == 0
+    with _session(settings) as s:
+        paths = {pp.path: pp.present for pp in s.exec(select(PhotoPath))}
+    assert paths == {str(lib / "a.jpg"): True, str(backup / "a.jpg"): False}
+
+    backup.mkdir()  # an empty mount point (Docker bind mount of a missing folder)
+    assert scan_once(settings).paths_pruned == 0
 
 
 def test_deleted_file_marked_missing_not_purged(settings: Settings) -> None:
@@ -128,6 +170,8 @@ def test_deleted_file_marked_missing_not_purged(settings: Settings) -> None:
         assert len(photos) == 2  # nothing purged
         assert photos["keep.jpg"].missing_since is None
         assert photos["drop.jpg"].missing_since is not None
+        # no copy left anywhere: its row stays too (constraint #8)
+        assert len(s.exec(select(PhotoPath)).all()) == 2
 
 
 def test_corrupt_file_records_error_and_no_photo(settings: Settings) -> None:
@@ -507,7 +551,7 @@ def test_scoped_scan_resolves_a_move_between_folders(settings: Settings) -> None
         assert photo.primary_path == str(lib / "b" / "one.jpg")
         assert photo.missing_since is None
         present = {pp.path: pp.present for pp in s.exec(select(PhotoPath))}
-    assert present == {str(lib / "a" / "one.jpg"): False, str(lib / "b" / "one.jpg"): True}
+    assert present == {str(lib / "b" / "one.jpg"): True}
 
 
 def test_scoped_scan_rechecks_the_old_photo_when_a_file_is_edited(settings: Settings) -> None:

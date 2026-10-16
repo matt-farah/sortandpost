@@ -116,7 +116,7 @@ from sortandpost.db.browse import (
     unrated_count,
     unrated_photo_ids,
 )
-from sortandpost.db.deletion import DeleteResult, delete_photos
+from sortandpost.db.deletion import DeleteResult, delete_photos, files_to_move
 from sortandpost.db.flags import (
     clear_all_edit_flags,
     edit_flag_count,
@@ -150,6 +150,8 @@ from sortandpost.indexer.service import REBUILD, run_indexer
 from sortandpost.launcher_pref import remember_sync_dir
 from sortandpost.library_roots import (
     LibraryRoot,
+    RootCheck,
+    check_new_root,
     clean_path,
     compose_volume_line,
     container_roots,
@@ -235,7 +237,12 @@ from sortandpost.sync.clock import utcnow
 from sortandpost.sync.online_only import OnlineOnlyReport, find_online_only
 from sortandpost.sync.recovery import RecoveryReport, recover_working_db
 from sortandpost.sync.recovery import read_report as read_recovery
-from sortandpost.tag_names import is_safe_tag_name, normalize_tag_name
+from sortandpost.tag_names import (
+    MAX_TAG_NAME_LEN,
+    is_safe_tag_name,
+    is_valid_new_tag_name,
+    normalize_tag_name,
+)
 from sortandpost.themes import (
     PALETTES,
     SEASON_CHOICES,
@@ -541,6 +548,13 @@ body, .q-page, .nicegui-content {
 .sp-tile:hover { transform: none; }
 @media (max-width: 900px) {
   .sp-settings-rail { display: none; }
+}
+
+/* photo page: image beside the info column; on a phone the info goes below the
+   image (side by side, the image shrank to nothing and the page scrolled sideways) */
+@media (max-width: 640px) {
+  .sp-photo-main { flex-direction: column; padding-inline: 1rem !important; }
+  .sp-photo-info { width: 100%; max-width: 100%; }
 }
 
 /* empty states --------------------------------------------------------------- */
@@ -887,6 +901,15 @@ def _notify_read_only_edit(e: Exception) -> None:
         ui.notify(f"Not saved: {State.lock_holder} is editing this library now", type="warning")
 
 
+def _notify_late(message: Any, **kwargs: Any) -> None:
+    """``ui.notify`` after an ``await``: by then the page -- and the slot the
+    handler ran in -- may be gone (← / → moved on while the write ran, the tab
+    closed). There's nobody left to tell, and NiceGUI would log the "parent
+    element this slot belongs to has been deleted" RuntimeError as an ERROR."""
+    with suppress(RuntimeError):
+        ui.notify(message, **kwargs)
+
+
 def _status_bar() -> None:
     """Persistent footer: index progress, CLIP queue, write-lock state. Polls
     every 5s; a transient DB lock just shows 'status unavailable' for one tick."""
@@ -967,13 +990,19 @@ async def _undo_last_delete(client: Any) -> None:
     if last is None or settings is None or engine is None:
         return
     State.last_delete = None  # one click; a failed put-back stays on /settings
+    with client:
+        ui.notify(f"Putting back {last[1]} photo(s)… progress is in the status bar")
     result = await nicegui_run.io_bound(put_back_batch, settings, engine, last[0])
     if result is None:
         return
     with client:
         ui.notify(_undelete_summary(result), type="warning" if result.failed else None)
         if result.photos_restored:
-            ui.navigate.reload()
+            # reload once the toast has been read: reloading at once wiped it
+            ui.timer(_UNDO_RELOAD_DELAY_SEC, ui.navigate.reload, once=True)
+
+
+_UNDO_RELOAD_DELAY_SEC = 3.0
 
 
 def _undelete_summary(result: UndeleteResult) -> str:
@@ -1339,7 +1368,7 @@ def build_ui(settings: Settings) -> None:
             n = await nicegui_run.io_bound(_apply_clear_flags, settings, engine)
             _repaint_all_flags(False)
             _recount_flags()
-            ui.notify(f"cleared {n} flag(s)")
+            _notify_late(f"cleared {n} flag(s)")
 
         def _confirm_clear_flags() -> None:
             with ui.dialog() as dialog, ui.card().classes("gap-2"):
@@ -1384,7 +1413,7 @@ def build_ui(settings: Settings) -> None:
                 async def _download_cloud() -> None:
                     ui.notify("downloading online-only files…")
                     result = await nicegui_run.io_bound(_run_hydrate_pass, settings, engine)
-                    ui.notify(result)
+                    _notify_late(result)
                     ui.navigate.reload()
 
                 if writable and not running_in_docker():
@@ -1486,7 +1515,7 @@ def build_ui(settings: Settings) -> None:
         async def _bulk_rate(stars: int) -> None:
             hashes = list(sel.selected)
             n = await _io_write(_apply_bulk_rating, settings, engine, hashes, stars)
-            ui.notify(f"{stars}★ · {n} photo(s)" if stars else f"rating cleared · {n} photo(s)")
+            _notify_late(f"{stars}★ · {n} photo(s)" if stars else f"rating cleared · {n} photo(s)")
             sel.clear()
 
         async def _rate_one(pixel_hash: str, stars: int) -> None:
@@ -1494,23 +1523,23 @@ def build_ui(settings: Settings) -> None:
                 ui.notify("read-only — a rating change was ignored", type="warning")
                 return
             await _io_write(_apply_rating, settings, engine, pixel_hash, stars)
-            ui.notify(f"{stars}★" if stars else "rating cleared")
+            _notify_late(f"{stars}★" if stars else "rating cleared")
 
         async def _flag_one(pixel_hash: str, marked: bool) -> None:
             if State.write_mode != WriteMode.writable:
                 ui.notify("read-only — the change was ignored", type="warning")
                 return
             await nicegui_run.io_bound(_apply_flag, settings, engine, pixel_hash, marked)
-            ui.notify("added to edit list" if marked else "removed from edit list")
+            _notify_late("added to edit list" if marked else "removed from edit list")
             _recount_flags()
 
         async def _bulk_tag(box: ui.input) -> None:
-            name = (box.value or "").strip()
-            if not name:
+            name = _typed_tag_name(box.value)
+            if name is None:
                 return
             hashes = list(sel.selected)
             n = await _io_write(_apply_bulk_tag, settings, engine, hashes, name)
-            ui.notify(f'"{name}" · {n} photo(s)')
+            _notify_late(f'"{name}" · {n} photo(s)')
             box.set_value("")
             sel.clear()
 
@@ -1518,7 +1547,7 @@ def build_ui(settings: Settings) -> None:
             hashes = list(sel.selected)
             n = await nicegui_run.io_bound(_apply_bulk_flag, settings, engine, hashes, marked)
             verb = "marked for editing" if marked else "unmarked"
-            ui.notify(f"{verb} · {n} photo(s)")
+            _notify_late(f"{verb} · {n} photo(s)")
             for h in hashes:
                 setter = flag_setters.get(h)
                 if setter is not None:
@@ -1551,12 +1580,18 @@ def build_ui(settings: Settings) -> None:
                 _recount_flags()
                 ui.notify(_delete_summary(result))
 
-        def _confirm_bulk_delete() -> None:
+        async def _confirm_bulk_delete() -> None:
             count = len(sel.selected)
             if not count:
                 return
-            with ui.dialog() as dialog, ui.card().classes("gap-2"):
+            files = await nicegui_run.io_bound(
+                _delete_preview, settings, engine, list(sel.selected)
+            )
+            if files is None:  # io_bound cancelled / app shutting down
+                return
+            with client, ui.dialog() as dialog, ui.card().classes("gap-2"):
                 ui.label(f"Delete {count} selected photo(s)?").classes("font-medium")
+                _delete_files_note(files)
                 ui.label(f"The photo files will be {_delete_where_note()}.").classes(
                     "text-xs sp-muted"
                 )
@@ -1594,7 +1629,7 @@ def build_ui(settings: Settings) -> None:
             host_paths = [to_host_path(p, roots) for p in resolved.values() if p]
             missing = len(hashes) - len(host_paths)
             if not host_paths:
-                ui.notify("No present copies to open on this machine.", type="warning")
+                _notify_late("No present copies to open on this machine.", type="warning")
                 return
             app_for = app if open_mode else None
             if reveal_supported():
@@ -1606,10 +1641,10 @@ def build_ui(settings: Settings) -> None:
                 else:
                     open_multiple_in_default_app(path_objs)
             else:
-                ui.notify("Reveal/open isn't available in this environment.", type="warning")
+                _notify_late("Reveal/open isn't available in this environment.", type="warning")
                 return
             if missing:
-                ui.notify(
+                _notify_late(
                     f"{missing} photo(s) have no present copy on this machine.", type="warning"
                 )
 
@@ -1619,7 +1654,7 @@ def build_ui(settings: Settings) -> None:
             hashes = list(sel.ordered())
             resolved = await nicegui_run.io_bound(resolve_sources, engine, hashes)
             if not resolved:
-                ui.notify("No present copies of these photos.", type="warning")
+                _notify_late("No present copies of these photos.", type="warning")
                 return
             await _copy_paths([p for p in resolved.values() if p], settings.library_roots)
 
@@ -1663,7 +1698,7 @@ def build_ui(settings: Settings) -> None:
                     ui.button(icon="star_border", on_click=lambda: _bulk_rate(0)).props(
                         "flat dense round"
                     ).tooltip("clear rating")
-                    tag_in = ui.input(placeholder="tag…").props("dense dark").classes("w-28")
+                    tag_in = _tag_input("tag…").props("dense dark").classes("w-28")
                     tag_in.on("keydown.enter", lambda: _bulk_tag(tag_in))
                     ui.button("Tag", on_click=lambda: _bulk_tag(tag_in)).props("flat dense")
                     ui.button(icon="flag", on_click=lambda: _bulk_flag(True)).props(
@@ -2065,7 +2100,11 @@ def build_ui(settings: Settings) -> None:
                     f"position:fixed; {side}:0.5rem; top:50%; transform:translateY(-50%);"
                     " z-index:10; background-color:var(--sp-surface-2); color:var(--sp-text)"
                 ).tooltip(tip)
-        with ui.row().classes("w-full no-wrap gap-6 p-4").style("padding-inline:3.75rem"):
+        with (
+            ui.row()
+            .classes("sp-photo-main w-full no-wrap gap-6 p-4")
+            .style("padding-inline:3.75rem")
+        ):
             # a plain <img>, not ui.image: q-img sizes itself by aspect-ratio
             # padding and ignores max-height, so a portrait photo overflowed the
             # window. This fits whole inside the viewport (minus header, back
@@ -2077,7 +2116,7 @@ def build_ui(settings: Settings) -> None:
                 " max-width:min(100%, 1280px); max-height:calc(100vh - 12rem - 20px);"
                 " object-fit:contain"
             )
-            with ui.column().classes("gap-1 text-sm shrink-0 max-w-sm"):
+            with ui.column().classes("sp-photo-info gap-1 text-sm shrink-0 max-w-sm"):
                 star_widget = _star_widget(settings, engine, pixel_hash, stars or 0)
                 flag_switch = _edit_flag_button(settings, engine, pixel_hash, flagged)
                 ui.label("← → move · 1-5 rate · 0 clear · f flag").classes("text-[11px] sp-faint")
@@ -2123,7 +2162,7 @@ def build_ui(settings: Settings) -> None:
                 if not member_of:
                     ui.label("Not in any collection.").classes("text-xs sp-muted")
                     return
-                with ui.row().classes("items-center gap-1 flex-wrap"):
+                with ui.row().classes("w-full items-center gap-1 flex-wrap"):
                     for c in member_of:
                         with ui.row().classes("items-center gap-0 rounded-lg sp-placeholder pl-2"):
                             ui.button(
@@ -2157,12 +2196,16 @@ def build_ui(settings: Settings) -> None:
                         ui.label("This stack's tags live on its top photo.").classes(
                             "text-xs sp-muted"
                         )
-                    with ui.row().classes("items-center gap-1 flex-wrap"):
-                        for name, source in have:
+                    # w-full: the info column lines items up at the start, so a row
+                    # without it sizes to its content and never wraps (Issues.md S8)
+                    shown = have if show_all_tags else have[:_TAGS_SHOWN]
+                    with ui.row().classes("w-full items-center gap-1 flex-wrap"):
+                        for name, source in shown:
                             with ui.row().classes(
                                 "items-center gap-0 rounded-full sp-placeholder px-2"
+                                " no-wrap max-w-full"
                             ):
-                                ui.label(name).classes("text-sm py-0.5")
+                                _tag_pill_label(name, "text-sm py-0.5")
                                 if tags_writable:
                                     tip = f'remove "{name}"'
                                     if source == TagSource.clip:
@@ -2171,23 +2214,29 @@ def build_ui(settings: Settings) -> None:
                                         icon="close",
                                         on_click=lambda n=name: _tag_action(n, "remove"),
                                     ).props("flat dense round size=xs").tooltip(tip)
+                        if len(have) > len(shown):
+                            ui.button(
+                                f"+{len(have) - len(shown)} more", on_click=_show_all_tags
+                            ).props("flat dense no-caps size=sm")
                         if not have:
                             ui.label("No tags yet.").classes("text-xs sp-muted")
                     if suggested:
                         ui.label("Suggested").classes("text-xs sp-muted mt-1")
-                        with ui.row().classes("items-center gap-1 flex-wrap"):
+                        with ui.row().classes("w-full items-center gap-1 flex-wrap"):
                             for name, score in suggested:
                                 # ghost pill: dashed + faded = "not applied yet"
                                 with (
                                     ui.row()
-                                    .classes("items-center gap-0 rounded-full px-2")
+                                    .classes(
+                                        "items-center gap-0 rounded-full px-2 no-wrap max-w-full"
+                                    )
                                     .style(
                                         "border:1px dashed var(--sp-border); opacity:.75;"
                                         " background:transparent"
                                     )
                                 ):
-                                    ui.label(name).classes("text-sm py-0.5 sp-muted").tooltip(
-                                        f"CLIP score {score:.2f}"
+                                    _tag_pill_label(
+                                        name, "text-sm py-0.5 sp-muted", f"CLIP score {score:.2f}"
                                     )
                                     if tags_writable:
                                         ui.button(
@@ -2202,22 +2251,26 @@ def build_ui(settings: Settings) -> None:
                                         )
                     if tags_writable:
                         new_tag = (
-                            ui.input(placeholder="Add a tag…")
+                            _tag_input("Add a tag…")
                             .props("dense outlined clearable")
                             .classes("w-64")
                         )
                         new_tag.on("keydown.enter", lambda: _add_typed(new_tag))
+
+        show_all_tags = False
+
+        async def _show_all_tags() -> None:
+            nonlocal show_all_tags
+            show_all_tags = True
+            await _paint_tags()
 
         async def _tag_action(name: str, action: str) -> None:
             await _io_write(_apply_photo_tag, settings, engine, pixel_hash, name, action)
             await _paint_tags()
 
         async def _add_typed(box: ui.input) -> None:
-            name = normalize_tag_name(box.value or "")
-            if not name:
-                return
-            if not is_safe_tag_name(name):
-                ui.notify("that tag name has characters that can't be used", type="warning")
+            name = _typed_tag_name(box.value)
+            if name is None:
                 return
             await _tag_action(name, "add")
 
@@ -2266,13 +2319,19 @@ def build_ui(settings: Settings) -> None:
                         ui.notify(_delete_summary(result))
                         ui.navigate.to(lq.url())
 
-                def _confirm_delete() -> None:
-                    with ui.dialog() as dialog, ui.card().classes("gap-2"):
+                async def _confirm_delete() -> None:
+                    files = await nicegui_run.io_bound(
+                        _delete_preview, settings, engine, [pixel_hash]
+                    )
+                    if files is None:
+                        return
+                    with client, ui.dialog() as dialog, ui.card().classes("gap-2"):
                         ui.label(
                             f"Delete this stack ({len(members)} photos)?"
                             if whole_stack
                             else "Delete this photo?"
                         ).classes("font-medium")
+                        _delete_files_note(files)
                         ui.label(f"The file(s) will be {_delete_where_note()}.").classes(
                             "text-xs sp-muted"
                         )
@@ -2301,10 +2360,16 @@ def build_ui(settings: Settings) -> None:
                 _go(prev_hash)
             elif (key == "ArrowRight" or key == "j") and next_hash:
                 _go(next_hash)
-            elif star_widget is not None and key.number is not None and 0 <= key.number <= 5:
-                star_widget.set_value(key.number)  # fires the same write path as a click
-            elif flag_switch is not None and key == "f":
-                flag_switch.set_value(not flag_switch.value)
+            elif key.number is not None and 0 <= key.number <= 5:
+                if star_widget is not None:
+                    star_widget.set_value(key.number)  # fires the same write path as a click
+                else:
+                    ui.notify("read-only — a rating change was ignored", type="warning")
+            elif key == "f":
+                if flag_switch is not None:
+                    flag_switch.set_value(not flag_switch.value)
+                else:
+                    ui.notify("read-only — the change was ignored", type="warning")
 
         ui.keyboard(on_key=_on_key)
         ui.run_javascript(_KEY_FOCUS_GUARD_JS)  # keep shortcuts alive after Esc
@@ -2465,7 +2530,10 @@ def build_ui(settings: Settings) -> None:
                 _step(-1)
             elif key == "ArrowRight" or key == "s" or key == " ":
                 _step(1)
-            elif writable and key.number is not None and 1 <= key.number <= 5:
+            elif key.number is not None and 1 <= key.number <= 5:
+                if not writable:
+                    ui.notify("read-only — a rating change was ignored", type="warning")
+                    return
                 h = _current()
                 if h is not None:
                     await _rate(h, key.number)
@@ -2473,6 +2541,8 @@ def build_ui(settings: Settings) -> None:
                 switch = flag_holder[0]
                 if switch is not None:
                     switch.set_value(not switch.value)
+                elif not writable:
+                    ui.notify("read-only — the change was ignored", type="warning")
 
         ui.keyboard(on_key=_on_key)
         ui.run_javascript(_KEY_FOCUS_GUARD_JS)  # keep shortcuts alive after Esc
@@ -3047,7 +3117,7 @@ def build_ui(settings: Settings) -> None:
 
         async def _bulk(tag_name: str, decision: str) -> None:
             done = await _io_write(_apply_review_bulk, settings, engine, tag_name, decision)
-            ui.notify(f"{decision}d {done} · {tag_name}")
+            _notify_late(f"{decision}d {done} · {tag_name}")
             ui.navigate.reload()
 
         def _tag_panel(group: ReviewGroup) -> None:
@@ -3350,11 +3420,11 @@ def build_ui(settings: Settings) -> None:
                                     snap = await nicegui_run.io_bound(manager.snapshot)
                                 except Exception as exc:
                                     log.exception("manual backup failed")
-                                    ui.notify(f"Backup failed: {exc}", type="negative")
+                                    _notify_late(f"Backup failed: {exc}", type="negative")
                                     return
                                 if snap is None:  # io_bound cancelled / shutting down
                                     return
-                                ui.notify(f"Backed up to snapshots/{snap.name}", type="positive")
+                                _notify_late(f"Backed up to snapshots/{snap.name}", type="positive")
 
                             ui.button("Back up now", icon="backup", on_click=_back_up_now).props(
                                 "flat dense no-caps"
@@ -3985,6 +4055,58 @@ def _apply_bulk_rating(settings: Settings, engine: Engine, hashes: list[str], st
     return len(hashes)
 
 
+# the photo page lists this many tags, then a "+N more" button (a file can carry hundreds)
+_TAGS_SHOWN = 60
+
+
+def _tag_pill_label(name: str, classes: str, tip: str = "") -> ui.label:
+    """A tag pill's name: one line, cut with an ellipsis when it's wider than
+    the info column -- a long name is repeated in full in the tooltip."""
+    label = ui.label(name).classes(f"{classes} min-w-0 truncate")
+    if len(name) > 30:
+        shown = name if len(name) <= 300 else name[:300] + "…"
+        tip = f"{shown} · {tip}" if tip else shown
+    if tip:
+        with label:
+            ui.tooltip(tip).style("max-width:20rem; overflow-wrap:anywhere")
+    return label
+
+
+# a tag box shows "90/100" from here on, so the length cap never comes as a surprise
+_TAG_COUNT_FROM = 90
+
+
+def _tag_input(placeholder: str) -> ui.input:
+    """A box for typing a tag: stops at :data:`MAX_TAG_NAME_LEN` characters and
+    shows how many are used once the name gets close to it."""
+    box = ui.input(placeholder=placeholder).props(f"maxlength={MAX_TAG_NAME_LEN}")
+
+    def _count() -> None:
+        n = len(box.value or "")
+        if n >= _TAG_COUNT_FROM:
+            box.props(f'hint="{n}/{MAX_TAG_NAME_LEN}"')
+        else:
+            box.props(remove="hint")
+
+    box.on_value_change(_count)
+    return box
+
+
+def _typed_tag_name(raw: str | None) -> str | None:
+    """A tag typed into a box, normalized -- or ``None`` (with a warning toast
+    when it was refused, see :mod:`sortandpost.tag_names`)."""
+    name = normalize_tag_name(raw or "")
+    if not name:
+        return None
+    if not is_safe_tag_name(name):
+        ui.notify("that tag name has characters that can't be used", type="warning")
+        return None
+    if not is_valid_new_tag_name(name):
+        ui.notify(f"tags can be at most {MAX_TAG_NAME_LEN} characters", type="warning")
+        return None
+    return name
+
+
 def _apply_bulk_tag(settings: Settings, engine: Engine, hashes: list[str], tag_name: str) -> int:
     """Off the event loop: add *tag_name* to every selected photo -- in a stack,
     to its top photo only (:func:`_tag_home`)."""
@@ -4086,6 +4208,39 @@ def _delete_summary(result: DeleteResult) -> str:
     if result.files_trashed:
         msg += " — Undo is in the status bar"
     return msg
+
+
+def _delete_preview(settings: Settings, engine: Engine, hashes: list[str]) -> list[str]:
+    """Off the event loop: the files a delete of *hashes* would move here (host
+    spelling), for the confirm dialog."""
+    with Session(engine) as session:
+        targets = _delete_targets(session, settings, hashes)
+        files = files_to_move(session, targets, container_roots(settings.library_roots))
+    return [to_host_path(f, settings.library_roots) for f in files]
+
+
+_DELETE_FOLDERS_SHOWN = 4
+
+
+def _delete_files_note(files: list[str]) -> None:
+    """Confirm-dialog lines: how many files move, out of which folders. One
+    photo can be many copies (duplicates in several folders), and all of them go."""
+    if not files:
+        ui.label(
+            "None of its files are on this computer, so no file is moved — only its "
+            "library entry is removed."
+        ).classes("text-xs sp-muted")
+        return
+    folders = sorted({str(Path(f).parent) for f in files})
+    n_files = f"{len(files)} file" + ("" if len(files) == 1 else "s")
+    n_folders = f"{len(folders)} folder" + ("" if len(folders) == 1 else "s")
+    ui.label(f"This moves {n_files} out of {n_folders}:").classes("text-xs font-medium")
+    with ui.column().classes("gap-0 pl-2 max-w-md"):
+        for folder in folders[:_DELETE_FOLDERS_SHOWN]:
+            ui.label(folder).classes("text-xs sp-muted truncate w-full").tooltip(folder)
+        if len(folders) > _DELETE_FOLDERS_SHOWN:
+            more = len(folders) - _DELETE_FOLDERS_SHOWN
+            ui.label(f"… and {more} more").classes("text-xs sp-faint")
 
 
 def _delete_where_note() -> str:
@@ -4356,6 +4511,7 @@ def _trash_panel(settings: Settings, engine: Engine) -> None:
             ui.label(names + more).classes("text-xs sp-faint")
 
     async def _put_back(b: TrashBatch) -> None:
+        ui.notify("Putting back… progress is in the status bar")
         result = await nicegui_run.io_bound(put_back_batch, settings, engine, b.id)
         if result is None:
             return
@@ -4523,7 +4679,7 @@ def _clip_toggle_editor(settings: Settings, *, autosave: bool = False) -> None:
                             )
                             or 0
                         )
-                    ui.notify(
+                    _notify_late(
                         "AI search & tagging turned off"
                         + (f" · freed {freed / 1e6:,.0f} MB" if freed else "")
                     )
@@ -4842,6 +4998,15 @@ async def _browse_app(target: ui.input) -> None:
     dlg.open()
 
 
+def _app_data_dirs(settings: Settings) -> list[Path]:
+    """The app's own folders, never a library folder: ``local/`` + ``sync/`` (or
+    the single app-data folder), plus the per-machine folder of the split layout."""
+    dirs = list(settings.paths.roots())
+    if not running_in_docker():
+        dirs.append(default_local_root())
+    return dirs
+
+
 def _library_roots_editor(
     settings: Settings,
     engine: Engine,
@@ -4883,8 +5048,16 @@ def _library_roots_editor(
         _persist()
         _render()
 
+    def _check(root: LibraryRoot) -> RootCheck:
+        return check_new_root(root, roots, _app_data_dirs(settings), in_docker=in_docker)
+
     def _adopt(root: LibraryRoot) -> None:
-        roots.append(root)
+        check = _check(root)
+        if check.root is None:
+            ui.notify(check.error, type="warning")
+            return
+        roots[:] = [x for x in roots if x.container not in check.replaces]
+        roots.append(check.root)
         _persist()
         _render()
 
@@ -4990,6 +5163,9 @@ def _library_roots_editor(
             net_in.set_visibility(in_docker)
             snippet = ui.code("", language="yaml").classes("w-full text-xs")
             snippet.set_visibility(in_docker)
+            problem = ui.label("").classes("text-sm text-amber-600 dark:text-amber-400")
+            problem.set_visibility(False)
+            confirmed: list[RootCheck] = []  # the warning the user saw before "Add anyway"
 
             def _entry() -> LibraryRoot | None:
                 host = clean_path(host_in.value or "")
@@ -5014,8 +5190,14 @@ def _library_roots_editor(
                     "# then:  docker compose up -d"
                 )
 
-            host_in.on_value_change(lambda _: _refresh())
-            cont_in.on_value_change(lambda _: _refresh())
+            def _edited() -> None:
+                confirmed.clear()
+                problem.set_visibility(False)
+                save_btn.text = "Save"
+                _refresh()
+
+            host_in.on_value_change(lambda _: _edited())
+            cont_in.on_value_change(lambda _: _edited())
             _refresh()
 
             with ui.row().classes("w-full justify-end gap-2"):
@@ -5029,8 +5211,19 @@ def _library_roots_editor(
                     if r.network and parse_network_path(r.network) is None:
                         ui.notify(_NETWORK_HINT, type="warning")
                         return
-                    roots[:] = [x for x in roots if x.container != r.container]
-                    roots.append(r)
+                    check = _check(r)
+                    if check.root is None:
+                        problem.text = check.error
+                        problem.set_visibility(True)
+                        return
+                    if check.warning and check not in confirmed:
+                        problem.text = check.warning
+                        problem.set_visibility(True)
+                        confirmed[:] = [check]
+                        save_btn.text = "Add anyway"
+                        return
+                    roots[:] = [x for x in roots if x.container not in check.replaces]
+                    roots.append(check.root)
                     _persist()
                     _render()
                     dialog.close()
@@ -5042,7 +5235,7 @@ def _library_roots_editor(
                         else "added"
                     )
 
-                ui.button("Save", on_click=_save_entry).props("color=primary")
+                save_btn = ui.button("Save", on_click=_save_entry).props("color=primary")
         dialog.open()
 
     with ui.row().classes("items-center gap-2"):
@@ -5270,7 +5463,7 @@ def _star_widget(
         changed = await _io_write(_apply_rating, settings, engine, pixel_hash, new)
         caption.set_text(_stars_caption(new))
         if changed:
-            ui.notify(f"rated {new}★" if new else "rating cleared")
+            _notify_late(f"rated {new}★" if new else "rating cleared")
 
     rating.on_value_change(_on_change)
     return rating
@@ -5292,7 +5485,7 @@ def _edit_flag_button(
 
     async def _toggle(e: Any) -> None:
         await nicegui_run.io_bound(_apply_flag, settings, engine, pixel_hash, bool(e.value))
-        ui.notify("added to edit list" if e.value else "removed from edit list")
+        _notify_late("added to edit list" if e.value else "removed from edit list")
 
     return ui.switch("Mark for editing", value=flagged, on_change=_toggle).props("color=amber")
 
@@ -5717,7 +5910,7 @@ async def _copy_text(windows: str, other: str | None = None, *, what: str = "pat
     except TimeoutError:
         res = None
     if isinstance(res, dict) and res.get("ok"):
-        ui.notify(f"{what} copied")
+        _notify_late(f"{what} copied")
         return
     text = res.get("text") if isinstance(res, dict) else None
     with ui.dialog() as dlg, ui.card().classes("w-[40rem] max-w-full gap-2"):

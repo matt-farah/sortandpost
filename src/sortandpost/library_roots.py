@@ -29,9 +29,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import posixpath
 import re
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Literal
 from urllib.parse import quote, unquote, urlsplit
 
@@ -193,6 +194,128 @@ def other_device_roots(paths: Paths, device_id: str) -> list[str]:
 def container_roots(roots: list[LibraryRoot]) -> list[Path]:
     """Just the ``container`` paths -- what the indexer scans."""
     return [Path(r.container) for r in roots]
+
+
+@dataclass(frozen=True)
+class RootCheck:
+    """What :func:`check_new_root` decided about a folder the user is adding.
+
+    ``error`` refuses it. ``warning`` lets it through after the user confirms.
+    ``root`` is the entry to save (its paths normalized). ``replaces`` lists the
+    ``container`` of each existing root inside the new one: they are dropped on
+    save, so no file is walked twice.
+    """
+
+    root: LibraryRoot | None = None
+    error: str = ""
+    warning: str = ""
+    replaces: tuple[str, ...] = ()
+
+
+def _name(root: LibraryRoot) -> str:
+    return root.label or root.host
+
+
+def check_new_root(
+    root: LibraryRoot,
+    existing: list[LibraryRoot],
+    app_dirs: list[Path],
+    *,
+    in_docker: bool,
+) -> RootCheck:
+    """Validate a library folder before it is saved (Issues.md S7).
+
+    Native, the folder itself is checked: a full path, not a file, not ``/``, a
+    drive, the home folder or the folder holding every user's home, not inside
+    the app's own data (*app_dirs*: ``local/``, ``sync/``, the per-machine
+    folder). A folder that doesn't exist only warns -- it may be an unplugged
+    drive or an unmounted share (constraint #8). Under Docker only the
+    ``container`` path can be checked (the host path may be another OS's), and a
+    path that isn't mounted yet is normal.
+
+    Against *existing*: the same folder (``lib`` vs ``lib/``, or a symlink to it)
+    or one inside an existing root is refused; an existing root inside the new
+    one is replaced.
+    """
+    if in_docker:
+        raw = clean_path(root.container)
+        if not raw or not PurePosixPath(raw).is_absolute():
+            return RootCheck(error="The mount point must be a full path, like /library.")
+        norm = posixpath.normpath(raw)
+        if norm.startswith("//"):  # normpath keeps a leading "//"
+            norm = "/" + norm.lstrip("/")
+        key: PurePath = PurePosixPath(norm)
+        if norm == "/":
+            return RootCheck(error="The mount point can't be / -- use e.g. /library.")
+
+        def keyof(r: LibraryRoot) -> PurePath:
+            return PurePosixPath(posixpath.normpath(r.container))
+
+        app_keys: list[PurePath] = [PurePosixPath(posixpath.normpath(str(d))) for d in app_dirs]
+        saved = LibraryRoot(container=norm, host=root.host, label=root.label, network=root.network)
+        warning = ""
+    else:
+        raw = os.path.expanduser(clean_path(root.host))
+        if not raw or not os.path.isabs(raw):
+            return RootCheck(
+                error="Enter the folder's full path (e.g. ~/Pictures or /Volumes/Photos), "
+                "not a relative one."
+            )
+        norm = os.path.normpath(raw)
+        path = Path(norm)
+        try:
+            exists = path.exists()
+            is_dir = path.is_dir()
+        except OSError:
+            exists = is_dir = False
+        if exists and not is_dir:
+            return RootCheck(error="That's a file -- pick the folder your photos are in.")
+        key = _resolved(path)
+        home = _resolved(Path.home())
+        if key == Path(key.anchor) or key in (home, home.parent):
+            return RootCheck(
+                error="That folder is too broad (a whole disk or every home folder) -- "
+                "pick the folder your photos are in."
+            )
+
+        def keyof(r: LibraryRoot) -> PurePath:
+            return _resolved(Path(r.container))
+
+        app_keys = [_resolved(d) for d in app_dirs]
+        saved = LibraryRoot(container=norm, host=norm, label=root.label, network=root.network)
+        warning = (
+            ""
+            if exists
+            else "This folder isn't there right now. If it's on a drive or network share "
+            "that isn't connected, add it anyway -- it's scanned once it's back."
+        )
+
+    for d in app_keys:
+        if key == d or key.is_relative_to(d):
+            return RootCheck(
+                error=f"That's sortandpost's own data folder ({d}), not a photo folder."
+            )
+    replaces: list[str] = []
+    for other in existing:
+        okey = keyof(other)
+        if key == okey:
+            return RootCheck(error=f"That folder is already in the list ({_name(other)}).")
+        if key.is_relative_to(okey):
+            return RootCheck(error=f"That folder is already scanned: it's inside {_name(other)}.")
+        if okey.is_relative_to(key):
+            replaces.append(other.container)
+    if replaces:
+        names = ", ".join(_name(r) for r in existing if r.container in replaces)
+        note = f"It contains {names}, which will be replaced by this folder."
+        warning = f"{warning} {note}".strip()
+    return RootCheck(root=saved, warning=warning, replaces=tuple(replaces))
+
+
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
 
 
 def _is_windows_path(p: str) -> bool:

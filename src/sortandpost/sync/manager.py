@@ -90,6 +90,11 @@ log = logging.getLogger(__name__)
 
 # After a failed takeover (see _become_writer), wait this long before trying again.
 _PROMOTE_RETRY_SEC = 60
+# While writable, look for conflict copies that arrived after we took the lock
+# this often, and leave one alone until it has been still this long (the sync
+# tool may still be writing it).
+_LIVE_MERGE_EVERY_SEC = 60
+_LIVE_MERGE_SETTLE_SEC = 30
 
 
 class WriteMode(StrEnum):
@@ -144,6 +149,7 @@ class SyncManager:
         self._publish_count = 0
         self._last_publish_hash: str | None = None
         self._last_publish_at: datetime | None = None
+        self._next_live_merge: datetime | None = None
 
         # editing checkout -- requester side
         self.my_request: EditRequest | None = None
@@ -416,6 +422,32 @@ class SyncManager:
             return True
         return (now - last[1]).total_seconds() >= hours * 3600
 
+    @_locked
+    def merge_arrived_copies(self) -> MergeSummary | None:
+        """While writable, fold in conflict copies that showed up after we took
+        the lock. Startup / promotion merge only once, so an always-on writer
+        (Docker) would otherwise sit on another machine's edits until a restart.
+        Called from the background tick, at most every ``_LIVE_MERGE_EVERY_SEC``.
+
+        Unlike the startup merge the working DB is always the base: it's live
+        (the indexer and the UI write to it), so it is never swapped out. The
+        merge replays the unioned ``changes`` log last-writer-wins, so the
+        result doesn't depend on which copy is the base."""
+        if not self.writes_open:
+            return None
+        now = self._clock()
+        if self._next_live_merge is not None and now < self._next_live_merge:
+            return None
+        self._next_live_merge = now + timedelta(seconds=_LIVE_MERGE_EVERY_SEC)
+        cutoff = now.timestamp() - _LIVE_MERGE_SETTLE_SEC
+        copies = [c for c in find_conflict_copies(self.paths.sync) if _mtime(c) <= cutoff]
+        if not copies:
+            return None
+        summary = self._merge_conflicts(copies, live=True)
+        if summary is not None:
+            self.last_merge = summary
+        return summary
+
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
@@ -528,8 +560,15 @@ class SyncManager:
         self.mode = WriteMode.read_only
         self.lost_lock_to = name
 
-    def _merge_conflicts(self) -> MergeSummary | None:
-        copies = find_conflict_copies(self.paths.sync)
+    def _merge_conflicts(
+        self, copies: list[Path] | None = None, *, live: bool = False
+    ) -> MergeSummary | None:
+        """Merge *copies* (default: every conflict copy in ``sync/``) into the
+        working DB. At startup the highest generation is the base; *live* (we're
+        already the writer) always keeps the working DB as the base and leaves
+        the published DB out -- it's our own last publish."""
+        if copies is None:
+            copies = find_conflict_copies(self.paths.sync)
         broken = [c for c in copies if not quick_check(c)]  # not a database / damaged
         if broken:
             self._quarantine(broken)
@@ -539,10 +578,10 @@ class SyncManager:
 
         wdb = self.paths.working_db
         pdb = self.paths.published_db
-        candidates = [p for p in (wdb, pdb, *copies) if p.exists()]
+        candidates = [p for p in (wdb, *(() if live else (pdb,)), *copies) if p.exists()]
         gens = {p: read_generation(p) for p in candidates}
         # highest generation wins; keep the working copy on a tie
-        base = max(candidates, key=lambda p: (gens[p], p == wdb))
+        base = wdb if live else max(candidates, key=lambda p: (gens[p], p == wdb))
         if base != wdb:
             self._reset_working_engine()  # Windows can't replace a file SQLite holds open
             atomic_replace(base, wdb, tag=self.device_id)
@@ -627,6 +666,7 @@ class SyncManager:
             try:
                 self.heartbeat()
                 self.publish(force=False)
+                self.merge_arrived_copies()
             except Exception:  # a bad tick must not kill the heartbeat
                 log.exception("sync tick failed")
 
@@ -715,3 +755,10 @@ class SyncManager:
         if lock.device_id == self.device_id:
             return f"this machine ({self.hostname})"
         return machine_name(lock.hostname, lock.device_id)
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return float("inf")  # gone (or unreadable) since the listing: not settled

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
 import threading
 from collections.abc import Callable, Generator, Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
@@ -34,7 +35,7 @@ from sortandpost.clip.store import EmbeddingStore, check_compatible, ensure_meta
 from sortandpost.clip.tagging import pick_terms, upsert_prediction
 from sortandpost.clip.vocab import Vocab, ensure_text_matrix, load_vocab
 from sortandpost.config import Settings, TaggingConfig
-from sortandpost.cpu import clip_profile, lower_process_priority, set_thread_priority
+from sortandpost.cpu import clip_profile, set_thread_priority
 from sortandpost.db import init_db, make_engine
 from sortandpost.db.deletion import apply_pending_tombstones
 from sortandpost.db.models import (
@@ -60,6 +61,7 @@ from sortandpost.indexer.workers import DecodedFile, DecodeJob, decode_file, dec
 from sortandpost.library_roots import container_roots, running_in_docker
 from sortandpost.metadata import ExiftoolClient
 from sortandpost.paths import Paths
+from sortandpost.procwatch import pool_worker_init
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +94,7 @@ class ScanStats:
     errors: int = 0
     marked_absent: int = 0
     marked_missing: int = 0
+    paths_pruned: int = 0  # stale rows of photos that moved (see sweep_presence)
     ratings_imported: int = 0
     ratings_written: int = 0
     keywords_imported: int = 0
@@ -112,13 +115,14 @@ class ScanStats:
                 f"{self.tombstones_applied} tombstone(s) applied"
             )
         online = f"; {self.online_only} online-only (skipped)" if self.online_only else ""
+        pruned = f"; {self.paths_pruned} moved path(s) forgotten" if self.paths_pruned else ""
         scope = f"scoped to {self.scoped} path(s): " if self.scoped is not None else ""
         return (
             f"{scope}{self.seen} files seen, {self.indexed} indexed "
             f"({self.new_photos} new, {self.thumbnails} thumbnails), "
             f"{self.skipped} unchanged, {self.errors} errors; "
             f"{self.marked_absent} paths now absent, {self.marked_missing} photos now missing"
-            f"{reconciled}{tomb}{online}" + (" (interrupted)" if self.interrupted else "")
+            f"{reconciled}{tomb}{online}{pruned}" + (" (interrupted)" if self.interrupted else "")
         )
 
 
@@ -288,10 +292,18 @@ def _scan_once_locked(
         # only this computer's paths: the other devices' copies are in the
         # shared photo_paths too, and never under these roots (V3 P9)
         judged = missing.for_settings(settings).judged
-        result = sweep_presence(session, seen_paths, now=_utcnow(), scope=scoped, judged=judged)
+        result = sweep_presence(
+            session,
+            seen_paths,
+            now=_utcnow(),
+            scope=scoped,
+            judged=judged,
+            prunable=_really_gone(roots),
+        )
         session.commit()
         stats.marked_absent = result.marked_absent
         stats.marked_missing = result.marked_missing
+        stats.paths_pruned = result.pruned
 
         # Apply any not-yet-applied tombstones (from a user delete on this
         # machine, or one that arrived via merge): purge the derived rows and
@@ -310,6 +322,29 @@ def _scan_once_locked(
 
     log.info("scan complete: %s", stats)
     return stats
+
+
+def _really_gone(roots: list[Path]) -> Callable[[str], bool]:
+    """For the presence sweep's pruning: is *path* under one of this machine's
+    library folders that is online right now, with nothing at that path? An
+    offline drive's paths look absent too, but must never be pruned -- nor an
+    empty root (a Docker bind mount of a host folder that isn't there)."""
+    online = [os.path.normcase(str(r)) for r in roots if _has_entries(r)]
+
+    def _check(path: str) -> bool:
+        p = os.path.normcase(path)
+        under = any(p.startswith(r.rstrip(os.sep) + os.sep) for r in online)
+        return under and not os.path.lexists(path)
+
+    return _check
+
+
+def _has_entries(root: Path) -> bool:
+    try:
+        with os.scandir(root) as it:
+            return next(it, None) is not None
+    except OSError:
+        return False
 
 
 def _decode_stream(
@@ -374,7 +409,8 @@ def _decode_stream(
         with ProcessPoolExecutor(
             max_workers=n_workers,
             mp_context=ctx,
-            initializer=lower_process_priority if lower_priority else None,
+            initializer=pool_worker_init,
+            initargs=(lower_priority,),
         ) as pool:
             stream = iter(paths_to_do)
             for key in islice(stream, max_inflight):
@@ -442,7 +478,8 @@ def _decode_isolated(
         with ProcessPoolExecutor(
             max_workers=1,
             mp_context=ctx,
-            initializer=lower_process_priority if lower_priority else None,
+            initializer=pool_worker_init,
+            initargs=(lower_priority,),
         ) as pool:
             return pool.submit(decode_file, job, key).result()
     except Exception as exc:  # BrokenProcessPool included

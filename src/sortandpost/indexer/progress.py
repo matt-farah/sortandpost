@@ -1,8 +1,9 @@
 """Live progress of the running scan / CLIP pass, for the status bar and ``/settings``.
 
-An in-memory, thread-safe struct that ``scan_once`` / ``scan_clip_once`` write and
-the UI polls. ``_INDEX_LOCK`` already serializes passes, so there is at most one
-in-flight stage to report. It only exists in the process that is indexing: with
+An in-memory, thread-safe struct that ``scan_once`` / ``scan_clip_once`` (and an
+undo's re-index, ``undelete.put_back_batch``) write and the UI polls.
+``_INDEX_LOCK`` already serializes passes, so there is at most one in-flight
+stage to report. It only exists in the process that is indexing: with
 the indexer running in the app (the default) the UI sees it; a separate
 ``python -m sortandpost.indexer`` process has its own copy, and the UI falls back
 to the DB totals.
@@ -15,7 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
-Stage = Literal["idle", "discovering", "indexing", "downloading_model", "embedding"]
+Stage = Literal["idle", "discovering", "indexing", "downloading_model", "embedding", "restoring"]
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,8 @@ class ProgressSnapshot:
             return "Downloading the AI model (~600 MB, one time)…"
         if self.stage == "embedding":
             return f"Embedding {self.done:,}/{self.total:,}"
+        if self.stage == "restoring":
+            return f"Putting back {self.done:,}/{self.total:,}"
         return ""
 
 

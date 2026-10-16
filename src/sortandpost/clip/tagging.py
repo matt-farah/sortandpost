@@ -42,7 +42,7 @@ from sortandpost.db.models import (
     TagKind,
     TagSource,
 )
-from sortandpost.db.tags import embeddable_keywords
+from sortandpost.db.tags import embeddable_keywords, get_or_create_tag
 from sortandpost.metadata import ExiftoolClient, MetadataError, can_embed_metadata, is_raw
 from sortandpost.sync.changelog import record_change
 
@@ -333,12 +333,8 @@ def unapprove(
 # helpers
 # --------------------------------------------------------------------------- #
 def _get_or_create_tag(session: Session, name: str, facet: str | None) -> Tag:
-    tag = session.exec(select(Tag).where(Tag.name == name)).first()
-    if tag is None:
-        tag = Tag(name=name, facet=facet, kind=TagKind.clip_approved)
-        session.add(tag)
-        session.flush()
-    elif facet and tag.facet is None:
+    tag = get_or_create_tag(session, name, kind=TagKind.clip_approved, facet=facet)
+    if facet and tag.facet is None:
         tag.facet = facet
     return tag
 

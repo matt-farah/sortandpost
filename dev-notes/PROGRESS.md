@@ -1,15 +1,91 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S6 merged: #70–#73, S6)._
+_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S10 done: S1–S6 #70–#73, #75; S7–S10 one combined PR)._
 _Working branch: `main`. V3 through P6a–d merged._
 
-> **▶️ Next:** the remaining pre-release stress-test items in `Issues.md`, one per session:
-> **S7** (Add folder validation — consider V3.md #12, add/remove folders in onboarding, with it),
-> then S8 (tag overflow), S9 (tag-create race), S10 (small ones).
+> **▶️ Next:** the pre-release stress-test list in `Issues.md` is done. V3.md #12 (add / remove
+> folders in onboarding) is still open.
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🛡️ 2026-10-16 — S10: the small ones (branch `fix/s7-add-folder-validation`)
+
+- **Live conflict merge** — `SyncManager.merge_arrived_copies` on the sync tick (every
+  `_LIVE_MERGE_EVERY_SEC` = 60 s while `writes_open`): conflict copies unchanged for
+  `_LIVE_MERGE_SETTLE_SEC` (30 s) are merged with `_merge_conflicts(copies, live=True)` — the
+  working DB is always the base (never swapped under the running app), the published DB is
+  left out. An always-on writer no longer sits on another machine's edits until a restart.
+- **Delete dialogs** (photo page + bulk) say "This moves N files out of M folders" and list up
+  to 4 folders (host spelling) — `deletion.files_to_move` via `app._delete_preview`, off the
+  event loop.
+- **Put back** — progress stage `restoring` ("Putting back n/N" in the status bar, cleared in a
+  `finally`), a "Putting back…" toast, and the grid reload waits 3 s so the summary toast is
+  readable (the instant reload wiped it — why it "never appeared").
+- **Read-only keys** — 1-5 / 0 / `f` on the photo page and `/rate` toast "read-only — … ignored".
+- **Orphaned workers** — `procwatch.pool_worker_init` (every `ProcessPoolExecutor`: decode,
+  isolated decode, post export) watches the parent (`parent_alive_check`, moved from
+  `desktop.control`) and `os._exit`s ~2 s after it dies; the resource tracker then exits too.
+- **Late toasts** — `app._notify_late` for 18 after-await `ui.notify` calls: no more
+  "parent element this slot belongs to has been deleted" ERRORs.
+- **Stale paths** — `sweep_presence(prunable=…)` deletes an absent `photo_paths` row (+ its
+  `scan_state`) when the photo has a present copy elsewhere and `scan._really_gone` says the
+  path is under an online, non-empty root with nothing there. Missing photos keep every row
+  (constraint #8); an unplugged drive's duplicates are kept.
+- Tests: live merge + read-only no-op, SIGKILL'd parent's worker exits (failed without the fix),
+  rename prunes / offline + empty root don't, put-back progress, `files_to_move`. Hands-on:
+  delete dialog + undo signed off; live merge / read-only keys / kill -9 trusted to tests.
+
+## 🛡️ 2026-10-16 — S9: tag-create race (branch `fix/s7-add-folder-validation`)
+
+- **`db.tags.get_or_create_tag(session, name, *, kind, facet)`**: select, else
+  `INSERT … ON CONFLICT(name) DO NOTHING` + re-select — two sessions (two tabs, or the indexer
+  importing file keywords while the user tags) both creating a tag no longer lose one action to
+  `UNIQUE constraint failed: tags.name`. Replaces the select-then-add in `db.tags`,
+  `clip.tagging` (keeps its facet back-fill), `indexer.reconcile` and `db.deletion` put back.
+  `sync.merge` left alone (its target DB has no concurrent writer).
+- **`add_manual_tag`** inserts the `photo_tags` row insert-or-ignore on `uq_photo_tag`: a lost
+  race returns `False` with no `changes` row. The indexer-vs-user race on one photo + one tag
+  is accepted.
+- 3 new tests (`_RacedSession` commits a second session between the check and the insert; both
+  race tests failed with the S9 `IntegrityError` before the fix). Hands-on: app booted for
+  two-tab flagging; signed off.
+
+## 🛡️ 2026-10-16 — S8: photo page tags wrap; tag names capped (branch `fix/s7-add-folder-validation`)
+
+- **Overflow**: the info column is `items-start`, so the tag / suggestion / collection rows sized
+  to their content and never wrapped — now `w-full`. A pill's name truncates with "…"
+  (`app._tag_pill_label`; > 30 chars repeats it in a wrapping tooltip, capped at 300). The
+  photo page lists 60 tags, then "+N more" (`_TAGS_SHOWN`).
+- **Phone**: the photo page row was 484px on a 390px screen (image shrank to nothing) for any
+  photo — below 640px the info column now goes under the image (`.sp-photo-main` CSS).
+- **Tag names** (`tag_names.MAX_TAG_NAME_LEN` = 100, `is_valid_new_tag_name`): new tags only —
+  `add_manual_tag`, `tags.yaml`, and **file keywords on import** (`reconcile._reconcile_keywords`
+  normalizes whitespace, skips control chars / > 100 with a log line). An older long tag is
+  still written to files (`embeddable_keywords` checks safety only). Trade-off: a skipped
+  keyword isn't in the DB, so a later tag edit rewrites the file without it.
+- **Typing a tag** (`app._tag_input`, photo page + bulk toolbar; both now go through
+  `_typed_tag_name`, the bulk box had no checks): `maxlength=100` and a `90/100` … `100/100`
+  hint from 90 characters.
+- 4 new tests. Hands-on tested: 300 tags + a 3000-char tag on one photo (desktop + phone width),
+  the counter in both boxes.
+
+## 🛡️ 2026-10-16 — S7: Add folder checks the folder (branch `fix/s7-add-folder-validation`)
+
+- **`library_roots.check_new_root`** → `RootCheck(root, error, warning, replaces)`, used by the
+  Add folder dialog (Settings + wizard share `app._library_roots_editor`) and the "your other
+  computer's folders" suggestions. Normalizes the path (`~`, trailing `/`, `..`, quotes).
+- **Refused** (message in the dialog): relative path, a file, `/` / drive / home / home's
+  parent, anything inside the app's own folders (`app._app_data_dirs`: `local/`, `sync/`, the
+  per-machine folder), a duplicate (`lib` vs `lib/`, a symlink), a folder inside a root.
+- **Warned** (button becomes "Add anyway", reset on edit): a folder that isn't there now
+  (offline drive, constraint #8); one that contains existing roots — they're replaced on save.
+- **Docker**: only the mount point is checked (absolute, not `/`, not under app data, no
+  duplicate / nesting); not mounted yet is normal.
+- **Scanner** (`scanner.walk_roots`): a full walk skips a saved root nested in / equal to
+  another, or inside app data, so older `library.json` files stop double-walking.
+- 9 new tests. Hands-on tested: every refusal / warning / replace case in Settings → Library.
 
 ## 🛡️ 2026-10-16 — S6: first scan never rewrites a file's rating (branch `fix/s6-duplicate-rating-writeback`)
 

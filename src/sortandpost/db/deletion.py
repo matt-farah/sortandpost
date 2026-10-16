@@ -49,6 +49,7 @@ from sortandpost.db.models import (
     TagSource,
     Tombstone,
 )
+from sortandpost.db.tags import get_or_create_tag
 from sortandpost.hashing import pixel_hash_of_image
 from sortandpost.paths import Paths
 from sortandpost.sync.changelog import ensure_writable, record_change
@@ -284,11 +285,9 @@ def restore_photo_state(session: Session, pixel_hash: str, state: dict[str, Any]
         row.source = RatingSource(r.get("source", "app"))
 
     for t in state.get("tags", []):
-        tag = session.exec(select(Tag).where(Tag.name == t["name"])).first()
-        if tag is None:
-            tag = Tag(name=t["name"], facet=t.get("facet"), kind=TagKind(t.get("kind", "manual")))
-            session.add(tag)
-            session.flush()
+        tag = get_or_create_tag(
+            session, t["name"], kind=TagKind(t.get("kind", "manual")), facet=t.get("facet")
+        )
         assert tag.id is not None
         have = session.exec(
             select(PhotoTag).where(PhotoTag.pixel_hash == pixel_hash, PhotoTag.tag_id == tag.id)
@@ -333,6 +332,23 @@ def restore_photo_state(session: Session, pixel_hash: str, state: dict[str, Any]
 # --------------------------------------------------------------------------- #
 # Internals
 # --------------------------------------------------------------------------- #
+def files_to_move(
+    session: Session, pixel_hashes: Sequence[str], roots: Sequence[Path]
+) -> list[str]:
+    """The file copies a delete of *pixel_hashes* would move on this machine:
+    present, on disk and inside one of *roots*. A preview for the confirm
+    dialog -- the delete itself also re-checks each file's pixels."""
+    rows = session.exec(
+        select(PhotoPath).where(
+            col(PhotoPath.pixel_hash).in_(list(pixel_hashes)),
+            col(PhotoPath.present).is_(True),
+        )
+    ).all()
+    return sorted(
+        r.path for r in rows if Path(r.path).exists() and _under_roots(Path(r.path), roots)
+    )
+
+
 def _under_roots(path: Path, roots: Sequence[Path]) -> bool:
     """Is *path* inside one of *roots*? Both sides are resolved, so a symlinked
     root (stored under its own spelling by the scanner) still matches."""

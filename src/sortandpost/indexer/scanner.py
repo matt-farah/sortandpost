@@ -33,10 +33,37 @@ def iter_image_files(
     """
     pruned = {Path(e).resolve() for e in exclude}
     pruned_names = {n.strip().casefold() for n in exclude_names if n.strip()}
-    for root in roots:
-        root_path = Path(root)
+    for root_path in walk_roots(roots, pruned):
         if root_path.is_dir():
             yield from _walk(root_path, pruned, pruned_names)
+
+
+def walk_roots(roots: Iterable[Path | str], pruned: Iterable[Path] = ()) -> list[Path]:
+    """The roots a full walk visits: one inside (or the same as) another root is
+    dropped -- its files are walked from the outer one -- and so is one inside a
+    pruned folder (the app's own data). Saved roots predating the Add-folder
+    checks (Issues.md S7: ``lib`` + ``lib/normal`` walked twice) can be like that."""
+    blocked = list(pruned)
+    entries: list[tuple[Path, Path]] = []
+    for root in roots:
+        path = Path(root)
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        entries.append((path, resolved))
+    kept: list[Path] = []
+    for i, (path, resolved) in enumerate(entries):
+        if any(resolved.is_relative_to(p) for p in blocked):
+            continue
+        if any(
+            resolved.is_relative_to(other) and (resolved != other or j < i)
+            for j, (_, other) in enumerate(entries)
+            if j != i
+        ):
+            continue
+        kept.append(path)
+    return kept
 
 
 def collapse_scope(scope: Iterable[Path | str], roots: Iterable[Path | str]) -> list[Path] | None:

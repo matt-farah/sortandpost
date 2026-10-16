@@ -20,6 +20,9 @@ When a re-index reads a file whose embedded metadata disagrees with the DB:
 * **Keywords** -- any ``XMP:Subject`` / ``IPTC:Keywords`` value not already a tag
   on the photo is imported as a ``manual`` tag (+ a ``tag_add`` change row).
   Import is additive only; we never delete a tag because a file lacks it.
+  Keywords go through :mod:`sortandpost.tag_names` like a typed tag: whitespace
+  is normalized, and one with control characters or longer than
+  ``MAX_TAG_NAME_LEN`` is skipped (logged), so a junk keyword can't become a tag.
 
 RAW files are never touched or read back here (hard constraint #2) -- their
 ratings and tags live only in the DB. CLIP predictions are never written to files
@@ -43,9 +46,9 @@ from sortandpost.db.models import (
     Rating,
     RatingSource,
     Tag,
-    TagKind,
     TagSource,
 )
+from sortandpost.db.tags import get_or_create_tag
 from sortandpost.metadata import (
     EmbeddedMetadata,
     ExiftoolClient,
@@ -54,6 +57,7 @@ from sortandpost.metadata import (
     is_raw,
 )
 from sortandpost.sync.changelog import record_change
+from sortandpost.tag_names import MAX_TAG_NAME_LEN, is_valid_new_tag_name, normalize_tag_name
 
 log = logging.getLogger(__name__)
 
@@ -241,7 +245,20 @@ def _reconcile_keywords(
     device_id: str,
     now: datetime,
 ) -> None:
-    file_keywords = [k.strip() for k in md.keywords if k.strip()]
+    file_keywords: list[str] = []
+    for raw in md.keywords:
+        keyword = normalize_tag_name(raw)
+        if not keyword or keyword in file_keywords:
+            continue
+        if not is_valid_new_tag_name(keyword):
+            log.warning(
+                "not importing keyword %.40r… from %s: control characters or longer than %d",
+                keyword,
+                pixel_hash[:12],
+                MAX_TAG_NAME_LEN,
+            )
+            continue
+        file_keywords.append(keyword)
     if not file_keywords:
         return
 
@@ -255,11 +272,7 @@ def _reconcile_keywords(
     for keyword in file_keywords:
         if keyword in have:
             continue
-        tag = session.exec(select(Tag).where(Tag.name == keyword)).first()
-        if tag is None:
-            tag = Tag(name=keyword, kind=TagKind.manual)
-            session.add(tag)
-            session.flush()
+        tag = get_or_create_tag(session, keyword)
         assert tag.id is not None
         session.add(
             PhotoTag(
