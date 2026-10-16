@@ -37,3 +37,10 @@ def test_read_remembered_app_data_tolerates_corrupt_file(_isolated_pref_dir: Pat
     _isolated_pref_dir.mkdir(parents=True, exist_ok=True)
     (_isolated_pref_dir / "app_data_path.json").write_text("not json", encoding="utf-8")
     assert launcher_pref.read_remembered_app_data() is None
+
+
+def test_forget_pointer(tmp_path: Path) -> None:
+    launcher_pref.forget_pointer()  # nothing saved: no-op
+    launcher_pref.remember_sync_dir(tmp_path / "shared")
+    launcher_pref.forget_pointer()
+    assert launcher_pref.read_pointer() is None

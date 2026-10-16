@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from sortandpost.launcher_pref import forget_pointer
 from sortandpost.library_roots import LibraryRoot, clean_path
 from sortandpost.paths import Paths
 
@@ -58,6 +59,18 @@ def mark_complete(paths: Paths, *, how: str) -> None:
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp.replace(path)
     (paths.local / _STARTED).unlink(missing_ok=True)
+
+
+def reset_this_machine(paths: Paths) -> None:
+    """ "Start setup over" (/settings): forget this machine's shared-folder
+    choice and its finished-wizard marker, so the next launch runs setup from
+    the first step. Nothing else is touched -- ``device.json`` (same device id
+    if it rejoins), the working DB and everything in ``sync/`` stay as they are.
+    The marker has to go too: re-picking the same folder reopens this same
+    ``local/`` and would otherwise skip the wizard."""
+    marker_file(paths).unlink(missing_ok=True)
+    (paths.local / _STARTED).unlink(missing_ok=True)
+    forget_pointer()
 
 
 @dataclass(frozen=True)

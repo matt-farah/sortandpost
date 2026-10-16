@@ -193,6 +193,7 @@ from sortandpost.onboarding import (
     cloud_folder_candidates,
     inspect_folder,
     mark_complete,
+    reset_this_machine,
     suggested_roots,
 )
 from sortandpost.paths import default_local_root
@@ -538,7 +539,7 @@ body, .q-page, .nicegui-content {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
 }
 .sp-settings-grid > .sp-wide { grid-column: 1 / -1; }
-.sp-settings-card { padding: 1rem 1.1rem; min-width: 0; }
+.sp-settings-card { padding: 1rem 1.1rem; min-width: 0; scroll-margin-top: 5rem; }
 .sp-settings-card:hover { transform: none; box-shadow: var(--sp-shadow); }
 .sp-tiles {
   grid-column: 1 / -1; display: grid; gap: .75rem;
@@ -3318,6 +3319,12 @@ def build_ui(settings: Settings) -> None:
                             ui.icon(icon).classes("text-lg text-primary")
                             ui.label(value).classes("sp-display text-2xl font-semibold")
                             ui.label(caption).classes("text-xs sp-muted")
+                    with ui.row().classes("sp-wide items-baseline gap-2 text-sm no-wrap min-w-0"):
+                        ui.label("Library").classes("sp-faint shrink-0")
+                        ui.label(str(settings.paths.sync)).classes("truncate min-w-0").tooltip(
+                            str(settings.paths.sync)
+                        )
+                        ui.link("Change", f"#{_SHARED_FOLDER_ANCHOR}").classes("shrink-0")
                     with _settings_card("Indexing", "sync", wide=True):
                         _progress_panel()
                         if writable:
@@ -3338,6 +3345,13 @@ def build_ui(settings: Settings) -> None:
                             )
 
                 with _settings_section("library"):
+                    with _settings_card(
+                        "Shared library folder",
+                        "folder_shared",
+                        wide=True,
+                        anchor=_SHARED_FOLDER_ANCHOR,
+                    ):
+                        _app_data_editor(settings)
                     with _settings_card("Library folders", "folder_open", wide=True):
                         _library_roots_editor(settings, engine)
                     with _settings_card("Excluded folders", "folder_off"):
@@ -3407,33 +3421,33 @@ def build_ui(settings: Settings) -> None:
                         else:
                             _needs_lock()
 
-                with _settings_section("sync"):
-                    with _settings_card("Sync status", "cloud_sync"):
-                        with ui.grid(columns="auto 1fr").classes("gap-x-6 gap-y-1 text-sm"):
-                            for key, value in rows:
-                                ui.label(key).classes("sp-faint")
-                                ui.label(value).classes("break-all")
-                        if writable:
+                with (
+                    _settings_section("sync"),
+                    _settings_card("Sync status", "cloud_sync", wide=True),
+                ):
+                    with ui.grid(columns="auto 1fr").classes("gap-x-6 gap-y-1 text-sm"):
+                        for key, value in rows:
+                            ui.label(key).classes("sp-faint")
+                            ui.label(value).classes("break-all")
+                    if writable:
 
-                            async def _back_up_now() -> None:
-                                try:
-                                    snap = await nicegui_run.io_bound(manager.snapshot)
-                                except Exception as exc:
-                                    log.exception("manual backup failed")
-                                    _notify_late(f"Backup failed: {exc}", type="negative")
-                                    return
-                                if snap is None:  # io_bound cancelled / shutting down
-                                    return
-                                _notify_late(f"Backed up to snapshots/{snap.name}", type="positive")
+                        async def _back_up_now() -> None:
+                            try:
+                                snap = await nicegui_run.io_bound(manager.snapshot)
+                            except Exception as exc:
+                                log.exception("manual backup failed")
+                                _notify_late(f"Backup failed: {exc}", type="negative")
+                                return
+                            if snap is None:  # io_bound cancelled / shutting down
+                                return
+                            _notify_late(f"Backed up to snapshots/{snap.name}", type="positive")
 
-                            ui.button("Back up now", icon="backup", on_click=_back_up_now).props(
-                                "flat dense no-caps"
-                            ).tooltip(
-                                "Save a compressed copy of the database in the shared "
-                                "folder's snapshots/ -- it syncs with everything else"
-                            )
-                    with _settings_card("Shared library folder", "folder_shared"):
-                        _app_data_editor(settings)
+                        ui.button("Back up now", icon="backup", on_click=_back_up_now).props(
+                            "flat dense no-caps"
+                        ).tooltip(
+                            "Save a compressed copy of the database in the shared "
+                            "folder's snapshots/ -- it syncs with everything else"
+                        )
 
 
 def _local_when(iso: str) -> str:
@@ -3479,9 +3493,15 @@ def _settings_section(key: str) -> Iterator[None]:
 
 
 @contextmanager
-def _settings_card(title: str, icon: str, *, wide: bool = False) -> Iterator[None]:
-    """A titled `/settings` panel; ``wide`` spans both grid columns."""
-    with ui.column().classes("sp-card sp-settings-card gap-2" + (" sp-wide" if wide else "")):
+def _settings_card(
+    title: str, icon: str, *, wide: bool = False, anchor: str | None = None
+) -> Iterator[None]:
+    """A titled `/settings` panel; ``wide`` spans both grid columns, ``anchor``
+    gives it an id to link to (``#<anchor>``)."""
+    card = ui.column().classes("sp-card sp-settings-card gap-2" + (" sp-wide" if wide else ""))
+    if anchor:
+        card.props(f"id={anchor}")
+    with card:
         with ui.row().classes("items-center gap-2 no-wrap"):
             ui.icon(icon).classes("text-lg sp-muted")
             ui.label(title).classes("font-semibold")
@@ -4561,6 +4581,9 @@ def _fmt_trash_time(iso: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
+_SHARED_FOLDER_ANCHOR = "sp-shared-folder"
+
+
 def _app_data_editor(settings: Settings) -> None:
     """`/settings` control for the shared folder -- where the database,
     thumbnails and CLIP embeddings are kept and synced (docs/architecture.md "App-data
@@ -4615,6 +4638,50 @@ def _app_data_editor(settings: Settings) -> None:
 
     with ui.expansion("Change folder", icon="swap_horiz").classes("w-full"):
         _shared_folder_picker(str(paths.sync), on_use=_use, button="Save & restart")
+
+    # Only a saved pointer can be forgotten. A .env folder would just reopen
+    # (and an older single-folder install skips the wizard), so no button there.
+    if source in ("shared", "remembered"):
+        _start_setup_over_button(settings)
+
+
+def _start_setup_over_button(settings: Settings) -> None:
+    """ "Start setup over" (V3 #9): forget this computer's shared-folder choice
+    and run the welcome wizard again from its first step
+    (:func:`onboarding.reset_this_machine`). The shared library, other
+    computers and the photos are never touched."""
+
+    def _go() -> None:
+        dlg.close()
+        try:
+            reset_this_machine(settings.paths)
+        except OSError as exc:
+            log.warning("could not reset this machine's setup: %s", exc)
+            ui.notify(
+                f"Couldn't start setup over: {exc.strerror or exc}",
+                type="negative",
+                multi_line=True,
+            )
+            return
+        _restart_app(_WELCOME_URL, "Starting setup over…")
+
+    with ui.dialog() as dlg, ui.card().classes("w-[32rem] max-w-full gap-2"):
+        ui.label("Start setup over on this computer?").classes("font-semibold")
+        ui.label(
+            "This computer forgets which shared folder it uses and runs the setup wizard "
+            "again from the first step. You can pick the same folder or a different one."
+        ).classes("text-sm sp-muted")
+        ui.label(
+            "Nothing in the shared folder is changed or deleted: your photos, ratings, tags "
+            "and other computers stay as they are."
+        ).classes("text-xs sp-faint")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dlg.close).props("flat")
+            ui.button("Start over", on_click=_go).props("color=primary")
+
+    ui.button("Start setup over", icon="restart_alt", on_click=dlg.open).props(
+        "flat dense no-caps"
+    ).tooltip("Run the setup wizard again on this computer")
 
 
 def _clip_toggle_editor(settings: Settings, *, autosave: bool = False) -> None:
@@ -6403,7 +6470,16 @@ def _facts(photo: Photo) -> None:
 _WELCOME_URL = "/welcome"
 # Pages that wait for the wizard; everything else (NiceGUI's own assets,
 # thumbnails, the prebuilt CSS) is served as usual.
-_GATED_PREFIXES = ("/photo", "/rate", "/collections", "/search", "/review", "/settings", "/posts")
+_GATED_PREFIXES = (
+    "/photo",
+    "/rate",
+    "/collections",
+    "/search",
+    "/review",
+    "/settings",
+    "/posts",
+    "/achievements",
+)
 _RESTART = threading.Event()
 
 
@@ -6939,6 +7015,15 @@ def run_setup(env: Env, problem: LibraryUnavailable | None = None) -> None:
     @ui.page("/")
     def _root() -> RedirectResponse:
         return RedirectResponse(_WELCOME_URL)
+
+    @nicegui_app.middleware("http")
+    async def _to_welcome(request: Request, call_next: Callable[[Request], Any]) -> Any:
+        # Only /welcome exists here. A tab left open on another page (e.g.
+        # /settings after "Start setup over") reloads itself when it reconnects
+        # to the restarted server -- send it to /welcome, not a 404.
+        if request.method == "GET" and _is_gated(request.url.path):
+            return RedirectResponse(_WELCOME_URL)
+        return await call_next(request)
 
     @ui.page(_WELCOME_URL)
     def _setup_welcome() -> None:
