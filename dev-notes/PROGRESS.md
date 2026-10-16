@@ -8,6 +8,21 @@ _Working branch: `main`. V3 through P6a–d merged._
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🛡️ 2026-10-15 — S4 + S5: startup never bricks, folder picks are checked (branch `fix/s4-startup-bricks`)
+
+- **Saved folder unavailable** (`config.LibraryUnavailable`): missing -> never recreated as an
+  empty library; an `OSError` while opening it -> same. The web app starts in setup mode with
+  "Your library folder isn't available" (path, reason, Try again, auto-reopen when a missing
+  folder comes back, another-folder picker unless `APP_DATA` set it); the CLIs print and exit 1.
+- **Broken `config.yaml`** (`AppConfig.load_lenient`): bad YAML -> defaults; a bad value ->
+  that setting's default only; copy in `sync/snapshots/config-broken-<sha8>.yaml`; banner on
+  `/` + Settings → Sync & storage row.
+- **Folder picker** (`onboarding.inspect_folder`): resolves `..`, refuses a target this user
+  can't create / write (`/etc`, `/`, `/Users/sortandpost`) or a path through a file;
+  `app._adopt_sync_dir` turns a late `mkdir` failure into a toast (S5).
+- 11 new tests. Hands-on tested: missing NAS folder (picker messages, Try again, auto-reopen
+  on mkdir) and a config.yaml with two bad values.
+
 ## 🛡️ 2026-10-15 — S3: failed exiftool writes are failures (branch `fix/s3-exiftool-write-failures`)
 
 - `ExiftoolClient._commit` counts exiftool's summary instead of substring-matching

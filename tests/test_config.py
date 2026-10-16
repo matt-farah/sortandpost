@@ -130,3 +130,48 @@ def test_nothing_set_means_first_run(tmp_path: Path) -> None:
     assert env.resolve_paths() is None
     with pytest.raises(NoAppDataFolder):
         _ = env.paths
+
+
+# --------------------------------------------------------------------------- #
+# a broken config.yaml never stops the app (Issues.md S4)
+# --------------------------------------------------------------------------- #
+def test_lenient_load_of_a_good_file(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("clip: {model: ViT-L-14}\n")
+    config, problem = AppConfig.load_lenient(path)
+    assert problem is None and config.clip.model == "ViT-L-14"
+    path.write_text("")
+    assert AppConfig.load_lenient(path) == (AppConfig(), None)
+
+
+def test_lenient_load_drops_only_the_bad_values(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "clip: {model: ViT-L-14, batch_size: lots}\n"
+        "sync: {publish_interval_sec: soon, snapshot_keep: 3}\n"
+        "server: not-a-mapping\n"
+        "indexer: {full_scan_interval_min: many}\n"
+    )
+    config, problem = AppConfig.load_lenient(path)
+    assert config.clip.model == "ViT-L-14"  # kept
+    assert config.sync.snapshot_keep == 3  # kept
+    assert config.clip.batch_size == AppConfig().clip.batch_size
+    assert config.sync.publish_interval_sec == AppConfig().sync.publish_interval_sec
+    assert config.indexer.full_scan_interval_min == 15
+    assert problem is not None
+    for name in (
+        "clip.batch_size",
+        "sync.publish_interval_sec",
+        "server",
+        "indexer.full_scan_interval_min",
+    ):
+        assert name in problem
+
+
+@pytest.mark.parametrize("text", ["clip: [unclosed\n", "- a\n- list\n", "just a string\n"])
+def test_lenient_load_of_garbage_is_all_defaults(tmp_path: Path, text: str) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(text)
+    config, problem = AppConfig.load_lenient(path)
+    assert config == AppConfig()
+    assert problem is not None

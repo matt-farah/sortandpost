@@ -14,7 +14,7 @@ from pathlib import Path
 
 from sqlmodel import Session
 
-from sortandpost.config import NoAppDataFolder, Settings
+from sortandpost.config import LibraryUnavailable, NoAppDataFolder, Settings
 from sortandpost.db import make_engine
 from sortandpost.db.meta import get_generation
 from sortandpost.logging_setup import configure
@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         settings = Settings.resolve()
-    except NoAppDataFolder as exc:
+    except (NoAppDataFolder, LibraryUnavailable) as exc:
         print(exc, file=sys.stderr)
         return 1
     configure(settings.paths.logs_dir)

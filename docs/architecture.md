@@ -147,7 +147,13 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
 3. **Upgrades** — a single-folder install whose `local/device.json` already exists is marked
    finished silently, so existing installs never see the wizard. A brand-new native machine
    doesn't get the template's Docker `/library` seeded as a library folder.
-4. `/` reloads itself while the first scan fills an under-one-page library
+4. **Saved folder unavailable** — a saved shared folder (or legacy single folder) that is
+   missing at boot is never recreated: `Settings.resolve` raises `LibraryUnavailable` (also
+   for an `OSError` while opening it) and the app runs setup mode with an explanation card —
+   Try again, an automatic reopen when a missing folder reappears (5 s check), and a picker
+   for another folder (not when a real `APP_DATA` set it). The CLIs print it and exit.
+   `inspect_folder` resolves the typed path and refuses one this user can't create / write.
+5. `/` reloads itself while the first scan fills an under-one-page library
    (`_reload_as_photos_arrive`), so photos appear without a manual refresh.
 
 ```
@@ -214,7 +220,10 @@ Server). Without one it copies the host path. Copying works over plain-http LAN 
 dialog to copy by hand). The host file-manager helper agent (V3 P6c) was **shelved
 2026-10-15** as too much setup for a first release — it's in git history before that.
 
-`config.yaml` (created from a template on first boot):
+`config.yaml` (created from a template on first boot). It syncs, so a broken one must never stop the app:
+`AppConfig.load_lenient` falls back to defaults for unparseable YAML, or to the default of
+just each wrong-typed setting; the bad file is copied to `sync/snapshots/config-broken-<sha8>.yaml`
+and flagged on `/` and in Settings (the next settings save rewrites it):
 
 ```yaml
 library_roots: ["/library"]        # one-time PER-DEVICE seed only (see above)
