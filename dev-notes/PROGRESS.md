@@ -8,6 +8,16 @@ _Working branch: `main`. V3 through P6a–d merged._
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🛡️ 2026-10-15 — S2: one undecodable file no longer aborts a scan (branch `fix/s2-undecodable-file-scan`)
+
+- `DecompressionBombError` (not an `OSError`) is a `DecodeError` in `load_image` / RAW previews;
+  the inline decode (small + watchdog passes) catches any exception per file, so the rest of
+  the pass, the presence sweep and tombstones still run.
+- **Worker deaths:** in-flight files are recorded `decode: worker crashed` (never retried in the
+  app process), finished ones kept, the pass continues on a fresh pool; later passes decode a
+  suspect only in a one-worker throwaway pool (`scan._decode_isolated`).
+- 3 regression tests (fail before, pass after). Not hands-on tested (indexer-only).
+
 ## 🛡️ 2026-10-15 — S1: unmergeable conflict copies (branch `fix/s1-unmergeable-conflict-copy`)
 
 - **Merge tolerates newer / broken copies:** unknown `changes` ops (filtered in SQL — the ORM
