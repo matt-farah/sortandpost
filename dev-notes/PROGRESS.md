@@ -1,14 +1,31 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (pre-release stress-test fixes S1–S10 done: S1–S6 #70–#73, #75; S7–S10 one combined PR)._
+_Last updated: 2026-10-16 (V3.md #9 Start setup over done; stress-test fixes S1–S10 done)._
 _Working branch: `main`. V3 through P6a–d merged._
 
-> **▶️ Next:** the pre-release stress-test list in `Issues.md` is done. V3.md #12 (add / remove
-> folders in onboarding) is still open.
+> **▶️ Next:** the pre-release stress-test list in `Issues.md` is done, and V3.md #9 (Start setup
+> over). Still open: V3.md #12 (add / remove folders in onboarding) and #10 (compose a post from
+> the photo page).
 > After that: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
 > untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🔄 2026-10-16 — V3.md #9: Start setup over (branch `feat/reset-onboarding`)
+
+- **Start setup over** (Settings → Library → Shared library folder, behind a confirm):
+  `onboarding.reset_this_machine` deletes `local/onboarding.json` + `onboarding_started.json`
+  and the pointer (`launcher_pref.forget_pointer`), then `_restart_app("/welcome")`. Keeps
+  `device.json` (same device id if it rejoins), the working DB and all of `sync/`; re-picking
+  the same folder runs the wizard as a joined library. Offered only for a `shared` /
+  `remembered` pointer source (not a real `APP_DATA` or `.env`).
+- The Shared library folder card moved from Sync & storage to the top of **Library**
+  (`_settings_card(anchor=…)`); Overview shows "Library <path> · Change" linking to it.
+- **Fix found in the click-through:** after the restart, the old tab's NiceGUI reconnect
+  reloaded `/settings`, which setup mode didn't serve (404). `run_setup` now redirects every
+  app page (`_is_gated`) to `/welcome`; `/achievements` joined `_GATED_PREFIXES`.
+- Tests: `test_forget_pointer`, `test_start_setup_over_forgets_only_this_machines_choice`.
+  Tested hands-on as a fresh machine (scratch `SORTANDPOST_PREF_DIR` / `LOCAL_DIR`).
 
 ## 🛡️ 2026-10-16 — S10: the small ones (branch `fix/s7-add-folder-validation`)
 

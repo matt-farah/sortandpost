@@ -94,3 +94,9 @@ def remember_app_data(app_data: Path) -> None:
 def remember_sync_dir(sync_dir: Path) -> None:
     """Persist the shared folder future launches use (split layout)."""
     _write({"sync_dir": str(sync_dir)})
+
+
+def forget_pointer() -> None:
+    """Forget the saved folder ("Start setup over" in /settings): the next
+    launch has no folder chosen and runs first-run setup again."""
+    _pointer_file().unlink(missing_ok=True)

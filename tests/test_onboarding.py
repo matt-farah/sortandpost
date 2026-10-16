@@ -18,6 +18,7 @@ from sortandpost.onboarding import (
     inspect_folder,
     is_complete,
     mark_complete,
+    reset_this_machine,
     settle_on_startup,
     suggested_roots,
 )
@@ -87,6 +88,27 @@ def test_new_vs_joined_survives_a_restart_mid_wizard(tmp_path: Path) -> None:
     assert not settle_on_startup(paths).joined_existing
     mark_complete(paths, how="new")
     assert not (paths.local / "onboarding_started.json").exists()
+
+
+def test_start_setup_over_forgets_only_this_machines_choice(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    launcher_pref.remember_sync_dir(shared)
+    paths = Paths.for_sync_dir(shared)
+    settle_on_startup(paths)
+    bootstrap(paths)
+    mark_complete(paths, how="new")
+    device = paths.device_file.read_bytes()
+    config = paths.config_file.read_bytes()
+
+    reset_this_machine(paths)
+
+    assert launcher_pref.read_pointer() is None
+    assert not is_complete(paths)
+    assert paths.device_file.read_bytes() == device  # same device id if it rejoins
+    assert paths.config_file.read_bytes() == config  # the shared library is untouched
+    state = settle_on_startup(paths)  # picking the same folder again
+    assert state.pending and state.joined_existing and not state.fresh_device
+    reset_this_machine(paths)  # nothing left to forget: still fine
 
 
 def test_joining_an_existing_library(tmp_path: Path) -> None:
@@ -252,6 +274,7 @@ def test_gated_pages() -> None:
     from sortandpost.app import _is_gated
 
     assert _is_gated("/") and _is_gated("/settings") and _is_gated("/photo/abc")
+    assert _is_gated("/achievements")
     assert not _is_gated("/welcome")
     assert not _is_gated("/_nicegui/3.16.0/static/quasar.js")
     assert not _is_gated("/thumbs/ab/abc_320.webp")

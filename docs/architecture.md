@@ -117,7 +117,7 @@ one of two ways (`sortandpost.paths.Paths`):
 **Which folders?** In order (`Env.resolve_paths()` / `Env.paths_source()`,
 `sortandpost.config`): a genuine process/shell `APP_DATA` env var (Docker's fixed container
 mount, or `APP_DATA=... command`) — always wins, can't be changed from the UI; else the
-shared folder picked in the wizard or **Settings → Shared library folder**, recorded outside
+shared folder picked in the wizard or **Settings → Library → Shared library folder**, recorded outside
 any data tree in `~/.sortandpost/app_data_path.json` as `{"sync_dir": …}` (see
 `sortandpost.launcher_pref`; `SORTANDPOST_PREF_DIR` overrides the folder); else a legacy
 `{"app_data": …}` pointer (single folder); else a bare value left in a `.env` file (a soft
@@ -155,6 +155,12 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
    `inspect_folder` resolves the typed path and refuses one this user can't create / write.
 5. `/` reloads itself while the first scan fills an under-one-page library
    (`_reload_as_photos_arrive`), so photos appear without a manual refresh.
+6. **Start setup over** (Settings → Library → Shared library folder, behind a confirm;
+   `onboarding.reset_this_machine`): deletes this machine's pointer and its
+   `onboarding.json` / `onboarding_started.json`, then restarts into setup mode. Everything
+   else is kept: `device.json` (same device id if it rejoins), the working DB and all of
+   `sync/`. Re-picking the same folder runs the wizard as a joined library. Not offered when
+   the folder comes from a real `APP_DATA` or a `.env` (nothing to forget).
 
 ```
 <APP_DATA>/                    # single-folder layout; in the split layout local/ and sync/ live apart
@@ -636,7 +642,7 @@ The **only** module allowed to write under a library root. Wraps a persistent
   Appearance & apps, Posting, Deleting, Sync & storage. Lock-gated panels still render in
   read-only mode with a note instead of disappearing. Contents: CLIP model & thresholds, re-index / re-embed actions, sync status (lock holder,
   last publish, `db_generation`, backups + Back up now, this computer's files folder, any move
-  out of a sync folder / boot recovery, last merge summary), the shared-folder picker with Save & restart (see
+  out of a sync folder / boot recovery, last merge summary); under Library, the shared-folder picker with Save & restart and Start setup over (see
   "App-data layout" above), and a CLIP-weights cache check / force-download control (`Check if
   downloaded` / `Download / verify CLIP model`, `sortandpost.clip.model.check_cached` /
   `ensure_downloaded` — toggles `HF_HUB_OFFLINE` around the probe so it works even when the app
