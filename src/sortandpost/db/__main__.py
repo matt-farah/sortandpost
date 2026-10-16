@@ -70,6 +70,9 @@ def _cmd_merge(settings: Settings, incoming: Path) -> int:
     finally:
         src_engine.dispose()
         target_engine.dispose()
+    if summary.failed:
+        print(f"could not merge {incoming.name} (see the log); left it in place", file=sys.stderr)
+        return 1
 
     archive = paths.merged_snapshots_dir / incoming.name
     paths.merged_snapshots_dir.mkdir(parents=True, exist_ok=True)
@@ -84,6 +87,8 @@ def _cmd_merge(settings: Settings, incoming: Path) -> int:
         f"+{summary.photo_paths_added} paths, {summary.ratings_updated} ratings, "
         f"{summary.changes_unioned} change rows; generation {base_gen} -> {merged_gen}"
     )
+    if summary.skipped_rows:
+        print(f"skipped {summary.skipped_rows} row(s) this version can't apply")
     print(f"archived the conflict copy to {archive}")
     return 0
 

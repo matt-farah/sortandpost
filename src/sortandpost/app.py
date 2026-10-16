@@ -629,6 +629,8 @@ class State:
     waiting_for: tuple[int, int] | None = None  # handed to us, DB still syncing
     denied_by: str | None = None  # read-only: the writer answered Keep editing
     lost_lock_to: str | None = None
+    # Taking the lock failed part-way (e.g. a broken sync/ DB): stayed read-only.
+    writer_error: str | None = None
     # Under Docker: files in sync/ the sync client turned online-only, which
     # the container can't read (sortandpost.sync.online_only). None = fine.
     sync_online_only: OnlineOnlyReport | None = None
@@ -644,6 +646,7 @@ class State:
         cls.waiting_for = manager.waiting_for
         cls.denied_by = manager.denied_by
         cls.lost_lock_to = manager.lost_lock_to
+        cls.writer_error = manager.writer_error
 
     @classmethod
     def get_clip_model(cls, settings: Settings) -> ClipModel:
@@ -799,6 +802,7 @@ def _edit_lock_controls() -> None:
             State.my_request,
             State.waiting_for,
             State.denied_by,
+            State.writer_error,
         )
         if sig == last[0]:
             return
@@ -834,6 +838,11 @@ def _edit_lock_controls() -> None:
                 return
             if State.denied_by:
                 ui.label(f"read-only · {State.denied_by} kept editing").classes(amber)
+            elif State.writer_error:
+                ui.label("read-only · couldn't open the library for editing").classes(
+                    amber
+                ).tooltip(f"{State.writer_error} — retrying every minute; see Settings")
+                return
             else:
                 ui.label(f"read-only · {holder}").classes(amber)
             if holder != "nobody":
@@ -3168,6 +3177,16 @@ def build_ui(settings: Settings) -> None:
             rows.append(("Moved out of sync folder", note))
         if manager.last_merge is not None:
             rows.append(("Last merge", str(manager.last_merge)))
+        if manager.quarantined:
+            rows.append(
+                (
+                    "⚠ Couldn't merge",
+                    f"{', '.join(q.name for q in manager.quarantined)} "
+                    f"(kept in {manager.quarantined[0].parent})",
+                )
+            )
+        if manager.writer_error is not None:
+            rows.append(("⚠ Can't edit", manager.writer_error))
         if manager.restored_from_snapshot is not None:
             rows.append(("Restored from", manager.restored_from_snapshot.name))
         recovered = State.recovery or read_recovery(settings.paths)

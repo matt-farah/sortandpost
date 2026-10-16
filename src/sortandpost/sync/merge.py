@@ -15,16 +15,24 @@ Two machines can both edit if the sync tool is slow to propagate, leaving a
    still missing is picked up by the next reconcile scan.
 
 Thumbnails and embeddings need no merge (content-addressed / append-only).
+
+A copy may come from a newer (or broken) app: rows this version can't apply --
+a ``changes`` op it doesn't know, a rating outside 0-5, a row for a photo
+neither side has -- are skipped and counted, never fatal. A copy that still
+can't be folded in (not a database, a schema this version can't read) is rolled
+back on its own and reported in :attr:`MergeSummary.failed`, so the caller can
+quarantine it instead of retrying it on every start.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, func, select
 
 from sortandpost.db.meta import get_generation, set_generation
 from sortandpost.db.models import (
@@ -41,7 +49,10 @@ from sortandpost.db.models import (
 )
 from sortandpost.sync.changelog import change_key, sort_key
 
+log = logging.getLogger(__name__)
+
 _CANONICAL = "sortandpost.db"
+_KNOWN_OPS = list(ChangeOp)
 _CONFLICT_RE = re.compile(
     r"(conflict|conflicted copy|\(\d+\)|-\d+ \(|\.sync-conflict)",
     re.IGNORECASE,
@@ -70,6 +81,8 @@ class MergeSummary:
     predictions_updated: int = 0
     photos_added: int = 0
     photo_paths_added: int = 0
+    skipped_rows: int = 0  # rows this version couldn't apply (unknown op, bad value, ...)
+    failed: list[str] = field(default_factory=list)  # sources that couldn't be merged at all
 
     def add(self, other: MergeSummary) -> None:
         self.changes_unioned += other.changes_unioned
@@ -78,6 +91,7 @@ class MergeSummary:
         self.predictions_updated += other.predictions_updated
         self.photos_added += other.photos_added
         self.photo_paths_added += other.photo_paths_added
+        self.skipped_rows += other.skipped_rows
 
 
 # --------------------------------------------------------------------------- #
@@ -87,13 +101,37 @@ def merge_session(target: Session, source: Session, *, now: datetime) -> MergeSu
     """Fold everything in *source* into *target*. Caller commits."""
     s = MergeSummary()
     s.photos_added = _union_photos(target, source)
-    s.photo_paths_added = _union_photo_paths(target, source)
-    s.predictions_updated = _union_predictions(target, source)
-    s.ratings_updated = _merge_ratings(target, source)
-    s.tags_updated = _merge_tags(target, source)
-    s.changes_unioned = _union_changes(target, source)
+    target.flush()
+    known = set(target.exec(select(Photo.pixel_hash)).all())
+    s.photo_paths_added = _union_photo_paths(target, source, known, s)
+    s.predictions_updated = _union_predictions(target, source, known, s)
+    s.ratings_updated = _merge_ratings(target, source, known, s)
+    s.tags_updated = _merge_tags(target, source, known, s)
+    s.changes_unioned = _union_changes(target, source, s)
     _replay_state_changes(target, source)
     return s
+
+
+def _changes(session: Session) -> list[Change]:
+    """The ``changes`` rows whose op this version knows. Filtered in SQL: loading
+    an unknown op (a newer app's) through the ORM raises ``LookupError``."""
+    return list(session.exec(select(Change).where(col(Change.op).in_(_KNOWN_OPS))).all())
+
+
+def _unknown_ops(session: Session) -> int:
+    stmt = select(func.count()).select_from(Change).where(col(Change.op).not_in(_KNOWN_OPS))
+    return int(session.exec(stmt).one())
+
+
+def _valid_stars(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 5
+
+
+def _valid_rate_value(value: str | None) -> bool:
+    try:
+        return value is None or 0 <= int(value) <= 5
+    except ValueError:
+        return False
 
 
 def _union_photos(target: Session, source: Session) -> int:
@@ -112,11 +150,14 @@ def _union_photos(target: Session, source: Session) -> int:
     return added
 
 
-def _union_photo_paths(target: Session, source: Session) -> int:
+def _union_photo_paths(target: Session, source: Session, known: set[str], s: MergeSummary) -> int:
     existing = {pp.path for pp in target.exec(select(PhotoPath)).all()}
     added = 0
     for sp in source.exec(select(PhotoPath)).all():
         if sp.path in existing:
+            continue
+        if sp.pixel_hash not in known:
+            s.skipped_rows += 1
             continue
         target.add(
             PhotoPath(
@@ -127,15 +168,19 @@ def _union_photo_paths(target: Session, source: Session) -> int:
                 present=sp.present,
             )
         )
+        existing.add(sp.path)
         added += 1
     return added
 
 
-def _union_predictions(target: Session, source: Session) -> int:
+def _union_predictions(target: Session, source: Session, known: set[str], s: MergeSummary) -> int:
     existing = {(p.pixel_hash, p.tag_name, p.model) for p in target.exec(select(Prediction)).all()}
     added = 0
     for sp in source.exec(select(Prediction)).all():
         if (sp.pixel_hash, sp.tag_name, sp.model) in existing:
+            continue
+        if sp.pixel_hash not in known:
+            s.skipped_rows += 1
             continue
         target.add(
             Prediction(
@@ -151,10 +196,13 @@ def _union_predictions(target: Session, source: Session) -> int:
     return added
 
 
-def _merge_ratings(target: Session, source: Session) -> int:
+def _merge_ratings(target: Session, source: Session, known: set[str], s: MergeSummary) -> int:
     existing = {r.pixel_hash: r for r in target.exec(select(Rating)).all()}
     updated = 0
     for sr in source.exec(select(Rating)).all():
+        if sr.pixel_hash not in known or not _valid_stars(sr.stars):
+            s.skipped_rows += 1
+            continue
         tr = existing.get(sr.pixel_hash)
         if tr is None:
             target.add(_clone(sr, Rating))
@@ -168,7 +216,7 @@ def _merge_ratings(target: Session, source: Session) -> int:
     return updated
 
 
-def _merge_tags(target: Session, source: Session) -> int:
+def _merge_tags(target: Session, source: Session, known: set[str], s: MergeSummary) -> int:
     """Union the vocabulary + manual ``photo_tags``; removals come from replay."""
     tag_ids: dict[str, int] = {}
     for t in target.exec(select(Tag)).all():
@@ -192,6 +240,9 @@ def _merge_tags(target: Session, source: Session) -> int:
         tid = tag_ids[name]
         if (spt.pixel_hash, tid) in have:
             continue
+        if spt.pixel_hash not in known:
+            s.skipped_rows += 1
+            continue
         target.add(
             PhotoTag(
                 pixel_hash=spt.pixel_hash,
@@ -208,11 +259,15 @@ def _merge_tags(target: Session, source: Session) -> int:
     return updated
 
 
-def _union_changes(target: Session, source: Session) -> int:
-    seen = {change_key(c) for c in target.exec(select(Change)).all()}
+def _union_changes(target: Session, source: Session, s: MergeSummary) -> int:
+    seen = {change_key(c) for c in _changes(target)}
+    s.skipped_rows += _unknown_ops(source)
     added = 0
-    for sc in source.exec(select(Change)).all():
+    for sc in _changes(source):
         if change_key(sc) in seen:
+            continue
+        if sc.op is ChangeOp.rate and not _valid_rate_value(sc.new_value):
+            s.skipped_rows += 1
             continue
         target.add(
             Change(
@@ -237,7 +292,7 @@ def _replay_state_changes(target: Session, source: Session) -> None:
     this only handles the mutations a union cannot represent (a row going away
     or changing state), last-writer-wins by change timestamp.
     """
-    rows = sorted(source.exec(select(Change)).all(), key=sort_key)
+    rows = sorted(_changes(source), key=sort_key)
     tag_id_by_name = {t.name: t.id for t in target.exec(select(Tag)).all()}
     for c in rows:
         if c.op is ChangeOp.tag_remove:
@@ -321,11 +376,28 @@ def merge_all(
     base_generation: int,
     source_generations: list[int],
 ) -> MergeSummary:
+    """Fold each source into *target*, committing after each one so a source
+    that fails is rolled back alone (and listed in ``failed``) without undoing
+    the others. Sets the merged generation; the caller commits that."""
     total = MergeSummary(base_generation=base_generation)
-    for label, sess in sources:
+    merged_gens: list[int] = []
+    for (label, sess), gen in zip(sources, source_generations, strict=True):
+        try:
+            one = merge_session(target, sess, now=now)
+            target.commit()
+        except Exception:
+            target.rollback()
+            log.exception("could not merge %s; leaving it out", label)
+            total.failed.append(label)
+            continue
+        if one.skipped_rows:
+            log.warning(
+                "merging %s: skipped %d row(s) this version can't apply", label, one.skipped_rows
+            )
         total.sources.append(label)
-        total.add(merge_session(target, sess, now=now))
-    merged_gen = max([base_generation, *source_generations], default=base_generation) + 1
+        total.add(one)
+        merged_gens.append(gen)
+    merged_gen = max([base_generation, *merged_gens], default=base_generation) + 1
     set_generation(target, merged_gen)
     total.merged_generation = merged_gen
     return total

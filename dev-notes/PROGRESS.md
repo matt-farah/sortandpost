@@ -8,6 +8,18 @@ _Working branch: `main`. V3 through P6a–d merged._
 > The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
 > decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
 
+## 🛡️ 2026-10-15 — S1: unmergeable conflict copies (branch `fix/s1-unmergeable-conflict-copy`)
+
+- **Merge tolerates newer / broken copies:** unknown `changes` ops (filtered in SQL — the ORM
+  raised `LookupError`), rate values outside 0–5, rows for photos neither side has are skipped
+  and counted (`MergeSummary.skipped_rows`). Each source commits on its own; one that still
+  fails is rolled back alone (`failed`) and moved to `sync/snapshots/unmergeable/`, as is a
+  copy that fails `quick_check`. `/settings` lists them ("⚠ Couldn't merge").
+- **No zombie writer:** `SyncManager._become_writer` — if merge / reconcile / verify fails after
+  the lock is written, release it, stay read-only (header: "couldn't open the library for
+  editing", reason in `/settings`), retry after 60 s. Writable ⇒ heartbeat thread running.
+- `db merge` CLI exits 1 and leaves the copy in place on failure. Hands-on tested.
+
 ## 🖱️ 2026-10-15 — Photo page: prev / next buttons (branch `feat/photo-side-arrows`)
 
 - Round ‹ / › buttons pinned to the screen's left and right edges on `/photo/{hash}` move like

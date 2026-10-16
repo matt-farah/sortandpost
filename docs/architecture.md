@@ -356,6 +356,16 @@ Merge algorithm:
    still missing is picked up by the next reconcile scan.
 4. Publish the merged DB, archive the conflict copies, and log a summary to `/settings`.
 
+A copy may come from a newer or broken app. Rows this version can't apply are skipped and
+counted (`MergeSummary.skipped_rows`), never fatal: a `changes` op it doesn't know, a rate
+value outside 0–5, a row for a photo neither side has. Each source is committed on its own.
+A source that still fails (not a database, a foreign schema) is rolled back alone and
+**quarantined** in `sync/snapshots/unmergeable/`, kept and listed in `/settings`, so it isn't
+retried on every start. Taking the lock is exception-safe (`SyncManager._become_writer`): if
+merge / reconcile / verify fails after the lock is written, the lock is released, the machine
+stays read-only ("couldn't open the library for editing", reason in `/settings`), and it
+retries a minute later. *Writable* therefore always means a running heartbeat.
+
 Thumbnails and embeddings need no merge: thumbnails are content-addressed and write-once (two
 machines generate byte-identical files), and the embeddings matrix is append-only with the row
 count tracked in the DB.

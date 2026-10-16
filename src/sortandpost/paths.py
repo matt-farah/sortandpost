@@ -216,6 +216,11 @@ class Paths:
         return self.snapshots_dir / "merged"
 
     @property
+    def unmergeable_dir(self) -> Path:
+        """Conflict copies that couldn't be merged, kept aside (never deleted)."""
+        return self.snapshots_dir / "unmergeable"
+
+    @property
     def thumbnails_dir(self) -> Path:
         return self.sync / "thumbnails"
 
