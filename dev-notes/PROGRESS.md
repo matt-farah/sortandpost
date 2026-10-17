@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-17 (profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
 _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 
 > **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
@@ -9,6 +9,22 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 > (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
 > installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
 > Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🙂 2026-10-17 — Profile picture (branch `feat/profile-picture`)
+
+- New `profiles` module (the profile moved out of `achievements`): `profile.json` gains a stable
+  `id` (uuid, written on first save) and `avatar` (a digest). **SaaS seam**: everything goes
+  through `ProfileStore` / `profile_store(...)`; `FileProfileStore` is the only implementation,
+  a hosted build swaps in an account-keyed one. Still one profile per library (user's call).
+- Pictures: `sync/profile/avatars/<sha256>.webp`, content-addressed + write-once, pruned to the
+  current + 4 newest. Always a fresh 512×512 WebP (upright, sRGB, no EXIF/GPS/ICC) rendered in a
+  one-shot worker process; uploads capped at 25 MB / 100 MP. `post_export.upright_srgb` shared.
+- UI (`profile_ui`): Settings / wizard "You" step — picture beside the name box, Upload… /
+  Choose from library (best-rated first) / Remove; photo page **Use as profile picture**; crop
+  dialog with drag-to-move + zoom (user asked for drag instead of sliders). Header chip shows
+  the picture (avatar-only chip when achievements are Off). Served at `/profile-avatar/<digest>.webp`.
+- Gate: full suite green (13 new in `test_profiles.py`); ruff, format, mypy, `uv audit` clean;
+  Tailwind rebuilt. User click-through: OK.
 
 ## ♿ 2026-10-16 — Alt text on posts (branch `feat/alt-text`)
 

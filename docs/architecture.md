@@ -192,7 +192,8 @@ in-place re-exec (`app._restart_app` / `_reexec_if_requested`).
     devices/<slug(hostname)>-<device_id[:8]>/library.json # PER-DEVICE library folders (see below)
     devices/<…>/achievements.json                         # PER-DEVICE achievement unlocks (union = truth)
     posts/<post_id>.json       # posts, one file each (see "Posting" below)
-    profile.json               # achievements profile: {name, mode} (last-writer-wins; see "Achievements")
+    profile.json               # the profile: {id, name, mode, avatar, …} (last-writer-wins; see "Profile")
+    profile/avatars/<sha256>.webp                         # profile pictures, content-addressed, write-once
     tags.yaml                  # user-editable zero-shot vocabulary (facet-grouped)
     snapshots/sortandpost-YYYYMMDD-HHMMSS.db.zst          # last N clean snapshots (corruption recovery)
     thumbnails/<hh>/<pixel_hash>_<size>.webp              # content-addressed, write-once, conflict-free
@@ -729,9 +730,8 @@ How they're applied:
   nothing needs a merge and nothing is dropped. Unlocks are sticky. Written even in read-only
   mode (own file only, like `library.json`). Like collections/posts, a deliberate exception to
   constraint #4.
-- **Profile** (`sync/profile.json`, last-writer-wins): name + mode Angel / Devil / Off. Off hides
-  the header chip, toasts and the page, but unlocks keep counting. Edited in Settings → Profile
-  & achievements and the wizard's "You" step (new library, or a joined one with no profile yet).
+- **Profile** (see "Profile" below): name + mode Angel / Devil / Off. Off hides the score chip,
+  toasts and the page, but unlocks keep counting.
 - **Runtime**: one background thread re-checks every 10 s (`achievements_ui.poke()` after a
   rating / new collection runs it sooner); each tab's header chip polls the tracker's in-memory
   feed every 2 s and toasts new unlocks **without naming them** ("Achievement unlocked!" +
@@ -740,6 +740,36 @@ How they're applied:
   at a time, so a batch can each be read. **The score only counts revealed unlocks** —
   a sealed one adds its points when it's clicked open. Reveals union across devices like unlocks. Konami listener lives on
   `/achievements`; the "github" hook is the `/` search (`q`).
+
+## Profile (`sortandpost.profiles`, `profile_ui`)
+
+- **One profile per library** in `sync/profile.json`, last-writer-wins on the whole file (like
+  collections, a deliberate exception to constraint #4): `{id, name, mode, avatar,
+  avatar_updated_at, updated_at, updated_by_device}`. `id` is a uuid4 written on the first save;
+  a file from an older version loads with no id and nothing is written on load (read-only
+  machines). Every write re-reads the file, so setting a picture keeps a name saved elsewhere.
+- **Store seam (SaaS-ready)**: callers go only through `profiles.ProfileStore`
+  (`get` / `save` / `set_avatar` / `clear_avatar` / `avatar_url`), obtained from
+  `profiles.profile_store(...)`. `FileProfileStore` is the only implementation. A hosted,
+  multi-account build swaps in its own store keyed by account (`Profile.id`), with avatars as
+  blob objects under the same digest; the UI doesn't change. Multiple profiles per library are
+  not built yet.
+- **Profile picture**: `sync/profile/avatars/<sha256>.webp`, content-addressed and write-once
+  (two machines picking the same picture write the same file); `profile.json` names the digest.
+  On a set, all but the current one and the 4 newest others are pruned; a digest whose file
+  hasn't synced yet shows the placeholder (initials, else a person icon). Always a fresh
+  512×512 WebP from `profiles.render_avatar` (decoded like the indexer, upright, sRGB, square
+  crop `Crop(cx, cy, zoom)`, no EXIF / GPS / ICC), rendered in a one-shot worker process
+  (constraint #7). Never the uploaded bytes or the library file, which is only read.
+  Uploads are capped at 25 MB / 100 MP.
+- **UI**: Settings → Profile & achievements and the wizard's "You" step (new library, or a
+  joined one with no profile yet) — Upload picture… / Choose from library (best-rated first) /
+  Remove; the photo page's **Use as profile picture**. All open the same crop dialog: drag the picture to move it
+  (a delegated pointer listener in the browser, `profile_ui._DRAG_JS`, reports where the drag
+  ended), zoom with the slider; the numbers match CSS `object-position` + `transform-origin`.
+  The name box sits beside the picture. Writes need the write lock (`ensure_writable`). The header chip shows
+  the picture before the name; with achievements Off, an avatar-only chip linking to Settings.
+  Served at `/profile-avatar/<digest>.webp` (behind the server guard; immutable cache).
 
 ## Posting (robopost.app, Postiz, …)
 

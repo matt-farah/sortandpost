@@ -25,8 +25,8 @@ later never takes one away. Like collections and posts this is a deliberate
 exception to docs/architecture.md constraint #4 -- it is not ``pixel_hash`` state and does
 not go in the ``changes`` log.
 
-**Profile** -- the display name and the mode (Angel / Devil / Off) -- is one
-small shared file, ``sync/profile.json``, last-writer-wins like collections.
+**Profile** -- the display name, the mode (Angel / Devil / Off) and the
+profile picture -- lives in :mod:`sortandpost.profiles`.
 Mode Off hides achievements in the UI but they keep unlocking underneath.
 """
 
@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 from collections.abc import Iterable
@@ -50,16 +49,12 @@ from sortandpost.config import StackingConfig
 from sortandpost.db.models import Photo, Rating
 from sortandpost.library_roots import device_dir
 from sortandpost.paths import Paths
+from sortandpost.profiles import Mode
+from sortandpost.profiles import write_json as _write_json
 from sortandpost.stacks import build_stacks
 from sortandpost.sync.clock import Clock, utcnow
 
 log = logging.getLogger(__name__)
-
-Mode = Literal["angel", "devil", "off"]
-MODES: tuple[Mode, ...] = ("angel", "devil", "off")
-MODE_LABELS: dict[Mode, str] = {"angel": "Angel", "devil": "Devil", "off": "Off"}
-DEFAULT_MODE: Mode = "angel"
-NAME_MAX_LEN = 40
 
 Metric = Literal["indexed", "rated", "posts", "collections"]
 METRICS: tuple[Metric, ...] = ("indexed", "rated", "posts", "collections")
@@ -71,7 +66,6 @@ EVENT_GITHUB_SEARCH = "github_search"
 
 _DEFINITIONS = "achievements/achievements.md"
 _FILE = "achievements.json"
-_PROFILE = "profile.json"
 
 # "Index 69 photos", "Rate 1 photo", "Post 1 post", "Create 10 collections"
 _COUNT_RE = re.compile(
@@ -214,78 +208,6 @@ def resource_path(name: str) -> Path:
     """A file in ``resources/achievements/`` (the Angel / Devil art). Bundled as
     a real file -- also under PyInstaller -- so it can be served statically."""
     return Path(str(resources.files("sortandpost.resources").joinpath("achievements", name)))
-
-
-# --------------------------------------------------------------------------- #
-# profile -- sync/profile.json, last-writer-wins
-# --------------------------------------------------------------------------- #
-@dataclass
-class Profile:
-    name: str = ""
-    mode: Mode = DEFAULT_MODE
-    updated_at: str = ""
-    updated_by_device: str = ""
-
-
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-
-
-def clean_profile_name(raw: str) -> str:
-    if not isinstance(raw, str):
-        return ""
-    return re.sub(r"\s+", " ", _CONTROL_CHARS.sub(" ", raw)).strip()[:NAME_MAX_LEN].strip()
-
-
-def profile_file(paths: Paths) -> Path:
-    return paths.sync / _PROFILE
-
-
-def load_profile(paths: Paths) -> Profile:
-    path = profile_file(paths)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return Profile()
-    except (OSError, ValueError) as exc:
-        log.warning("could not read %s: %s", path, exc)
-        return Profile()
-    if not isinstance(data, dict):
-        return Profile()
-    mode = data.get("mode")
-    return Profile(
-        name=clean_profile_name(data.get("name", "")),
-        mode=mode if mode in MODES else DEFAULT_MODE,
-        updated_at=str(data.get("updated_at") or ""),
-        updated_by_device=str(data.get("updated_by_device") or ""),
-    )
-
-
-def save_profile(
-    paths: Paths, *, name: str, mode: Mode, device_id: str, clock: Clock = utcnow
-) -> Profile:
-    profile = Profile(
-        name=clean_profile_name(name),
-        mode=mode if mode in MODES else DEFAULT_MODE,
-        updated_at=clock().isoformat(),
-        updated_by_device=device_id,
-    )
-    _write_json(
-        profile_file(paths),
-        {
-            "name": profile.name,
-            "mode": profile.mode,
-            "updated_at": profile.updated_at,
-            "updated_by_device": profile.updated_by_device,
-        },
-    )
-    return profile
-
-
-def _write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 # --------------------------------------------------------------------------- #

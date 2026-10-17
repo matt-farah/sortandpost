@@ -19,18 +19,17 @@ from sortandpost.achievements import (
     compute_metrics,
     definitions,
     due,
-    load_profile,
     parse_definitions,
     parse_trigger,
     rated_count,
     resource_path,
-    save_profile,
 )
 from sortandpost.collections import create_collection
 from sortandpost.config import StackingConfig
 from sortandpost.db.models import Photo, PhotoPath, Rating
 from sortandpost.paths import Paths
 from sortandpost.posts import create_post, save_post
+from sortandpost.profiles import load_profile, save_profile
 
 DEV_A = "aaaaaaaa" * 4
 DEV_B = "bbbbbbbb" * 4

@@ -105,20 +105,25 @@ def _to_srgb(img: Image.Image, icc: bytes | None) -> Image.Image:
     return img.convert("RGB")
 
 
-def export_jpeg(
-    src: str, dest: str, long_edge: int, quality: int, ig: IgSpec | None = None
-) -> tuple[int, int]:
-    """Write a clean JPEG of *src* to *dest*; returns its ``(width, height)``.
-    ``long_edge <= 0`` keeps full resolution. With *ig*, the photo is fitted and
-    padded onto that Instagram canvas instead. Worker-safe (no handles)."""
-    img = load_image(Path(src))
+def upright_srgb(img: Image.Image) -> Image.Image:
+    """A decoded image rotated upright, transparency flattened onto white, as
+    sRGB RGB pixels. Shared by post exports and profile pictures."""
     icc = img.info.get("icc_profile")
     img = ImageOps.exif_transpose(img) or img
     if img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info):
         rgba = img.convert("RGBA")
         img = Image.new("RGB", rgba.size, (255, 255, 255))
         img.paste(rgba, mask=rgba.getchannel("A"))
-    img = _to_srgb(img, icc if isinstance(icc, bytes) else None)
+    return _to_srgb(img, icc if isinstance(icc, bytes) else None)
+
+
+def export_jpeg(
+    src: str, dest: str, long_edge: int, quality: int, ig: IgSpec | None = None
+) -> tuple[int, int]:
+    """Write a clean JPEG of *src* to *dest*; returns its ``(width, height)``.
+    ``long_edge <= 0`` keeps full resolution. With *ig*, the photo is fitted and
+    padded onto that Instagram canvas instead. Worker-safe (no handles)."""
+    img = upright_srgb(load_image(Path(src)))
     if ig is not None:
         img = fit_and_pad(img, ig.width, ig.height, ig.border, ig.rgb)
     elif long_edge > 0 and max(img.size) > long_edge:
