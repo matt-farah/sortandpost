@@ -123,6 +123,7 @@ class TrayApp:
         self._shutdown_lock = threading.Lock()
         self._quit_started = threading.Event()
         self.icon: Any
+        self.headless = headless
         if headless:
             from sortandpost.desktop._linux import HeadlessIcon
 
@@ -196,7 +197,7 @@ class TrayApp:
         self._on_main(self.icon.update_menu)
 
     def _on_main(self, fn: Any) -> None:
-        if sys.platform == "darwin":
+        if sys.platform == "darwin" and not self.headless:  # no AppKit loop when headless
             from sortandpost.desktop import _macos
 
             _macos.call_on_main(fn)
