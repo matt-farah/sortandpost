@@ -24,6 +24,7 @@ from nicegui import run as nicegui_run
 from nicegui import ui
 from sqlalchemy.engine import Engine
 
+from sortandpost import post_queue
 from sortandpost.collections import get_collection, load_collections
 from sortandpost.config import PostingConfig, Settings
 from sortandpost.library_roots import running_in_docker
@@ -32,7 +33,7 @@ from sortandpost.post_export import (
     resolve_sources,
     upright_sizes,
 )
-from sortandpost.post_send import is_in_flight, resolve_interrupted, send_post
+from sortandpost.post_send import is_in_flight, resolve_interrupted
 from sortandpost.posting import (
     PROVIDERS,
     active_provider,
@@ -86,17 +87,24 @@ _HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
 _STATUS_LABEL = {
     "draft": ("Draft", "sp-muted"),
+    "queued": ("Queued", "text-sky-600 dark:text-sky-400"),
     "sending": ("Sending…", "text-sky-600 dark:text-sky-400"),
     "sent_draft": ("Draft in {provider}", "text-emerald-600 dark:text-emerald-400"),
     "scheduled": ("Scheduled", "text-emerald-600 dark:text-emerald-400"),
     "failed": ("Failed", "text-red-600 dark:text-red-400"),
 }
 _PARTLY_SENT = ("Partly sent", "text-amber-600 dark:text-amber-400")
+_NEEDS_TIME = ("Needs a new time", "text-amber-600 dark:text-amber-400")
+_WAITING = ("Waiting to go online", "text-sky-600 dark:text-sky-400")
 
 
 def _status_label(p: Post, settings: Settings) -> tuple[str, str]:
     if p.status == "failed" and p.partly_sent:
         return _PARTLY_SENT
+    if p.queued and p.queue_note == post_queue.NOTE_TIME_PASSED:
+        return _NEEDS_TIME
+    if p.queued and p.queue_note == post_queue.NOTE_OFFLINE:
+        return _WAITING
     label, color = _STATUS_LABEL.get(p.status, (p.status, ""))
     return label.format(provider=provider_for(p, settings).name), color
 
@@ -276,7 +284,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             A._empty_state("search_off", "Post not found")
             ui.link("← All posts", "/posts").classes("mx-auto")
             return
-        state: dict[str, Any] = {"post": post, "names": {}}
+        state: dict[str, Any] = {"post": post, "names": {}, "in_flight": is_in_flight(post_id)}
 
         def cur() -> Post:
             p: Post = state["post"]
@@ -339,7 +347,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 )
             chans, _ = channels()
             names = {c.id: c.name for c in chans}
-            if p.status == "sending" and not is_in_flight(p.id):
+            if p.queued:
+                _queued_banner(p, name)
+            elif p.status == "sending" and is_in_flight(p.id):
+                ui.label(f"Sending to {name} in the background — you can leave this page.").classes(
+                    "px-4 text-sm text-sky-700 dark:text-sky-400"
+                )
+            elif p.status == "sending" and not is_in_flight(p.id):
                 part = p.sending_part()
                 doubt = ", ".join(names.get(c, c) for c in part["channel_ids"]) if part else ""
                 with ui.card().classes(
@@ -384,6 +398,52 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     f"Read-only — {State.lock_holder} holds the write lock, so posts can't be "
                     "sent from this machine right now."
                 ).classes("px-4 text-sm text-amber-600")
+
+        def _queued_banner(p: Post, name: str) -> None:
+            what = "draft" if p.queued_mode == "draft" else "scheduled post"
+            note = p.queue_note
+            if note == post_queue.NOTE_TIME_PASSED:
+                head = "Its scheduled time passed while it waited, so it wasn't sent."
+                body = "Cancel the queue, pick a new time and send it again."
+            elif note == post_queue.NOTE_OFFLINE:
+                head = f"Waiting for {name} — it couldn't be reached."
+                body = f"It goes as a {what} as soon as {name} can be reached again."
+            elif note:
+                head = f"Queued as a {what}, not sent yet: {note}."
+                body = "It's tried again every half minute."
+            else:
+                head = f"Queued to go to {name} as a {what}."
+                body = (
+                    "It goes as soon as you're online."
+                    if p.queue_wait_online
+                    else "It's being sent in the background — you can leave this page."
+                )
+            if State.write_mode != WriteMode.writable:
+                body += f" It's sent by the computer that's editing ({State.lock_holder})."
+            held = note == post_queue.NOTE_TIME_PASSED
+            with ui.card().classes(
+                "mx-4 bg-amber-50 dark:bg-amber-950 border border-amber-400 gap-1"
+                if held
+                else "mx-4 bg-sky-50 dark:bg-sky-950 border border-sky-400 gap-1"
+            ):
+                ui.label(head).classes("font-medium")
+                ui.label(body).classes("text-sm")
+                with ui.row().classes("gap-2"):
+                    if not held:
+                        ui.button("Try now", icon="send", on_click=post_queue.kick).props(
+                            "flat no-caps"
+                        )
+                    ui.button("Cancel queue", icon="edit", on_click=_unqueue).props(
+                        "flat no-caps"
+                    ).tooltip("Stop waiting and edit the post again")
+
+        def _unqueue() -> None:
+            fresh = post_queue.unqueue_post(settings, cur().id)
+            if fresh is not None:
+                state["post"] = fresh
+                if fresh.queued:
+                    ui.notify("It's being sent right now and can't be cancelled.")
+            _refresh_all()
 
         def _resolve(was_sent: bool) -> None:
             fresh = resolve_interrupted(settings, cur().id, was_sent=was_sent)
@@ -1045,22 +1105,34 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 ui.label(
                     f"After sending, this post can only be edited or cancelled inside {name}."
                 ).classes("text-xs sp-muted")
+                ui.label(
+                    "It's sent in the background. “Send when online” waits for a connection "
+                    f"instead of failing when {name} can't be reached."
+                ).classes("text-xs sp-muted")
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
+                    later = ui.button("Send when online", icon="cloud_queue")
+                    later.props("flat no-caps")
+                    later.on_click(lambda: _do_send(mode, dialog, later, wait_online=True))
                     go: ui.button = ui.button("Send draft" if mode == "draft" else "Schedule")
                     go.props("color=primary")
-                    go.on_click(lambda: _do_send(mode, dialog, go))
+                    go.on_click(lambda: _do_send(mode, dialog, go, wait_online=False))
             dialog.open()
 
-        async def _do_send(mode: SendMode, dialog: ui.dialog, go: ui.button) -> None:
+        async def _do_send(
+            mode: SendMode, dialog: ui.dialog, go: ui.button, *, wait_online: bool
+        ) -> None:
+            """Queue the confirmed send; the background sender does the rest
+            (sortandpost.post_queue) and the status bar toasts the outcome."""
             go.props("loading")
             go.disable()
             res = await nicegui_run.io_bound(
-                send_post,
+                post_queue.queue_post,
                 settings,
                 engine,
                 cur().id,
                 mode,
+                wait_online=wait_online,
                 writable=State.write_mode == WriteMode.writable,
             )
             if res is None:  # app shutting down
@@ -1069,12 +1141,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 dialog.close()
                 if res.post is not None:
                     state["post"] = res.post
-                ui.notify(
-                    res.message,
-                    type="positive" if res.ok else "negative",
-                    multi_line=True,
-                    timeout=8000,
-                )
+                ui.notify(res.message, type=None if res.ok else "negative", multi_line=True)
                 _refresh_all()
 
         # -- history ----------------------------------------------------------- #
@@ -1109,6 +1176,20 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             _checks.refresh()
             _history.refresh()
 
+        def _follow() -> None:
+            """While the post waits or sends, pick up the background sender's
+            writes (and another machine's, through sync)."""
+            p = cur()
+            if not (p.queued or p.status == "sending"):
+                return
+            fresh = get_post(settings.paths, p.id)
+            if fresh is not None and (
+                fresh.updated_at != p.updated_at or is_in_flight(p.id) != state.get("in_flight")
+            ):
+                state["post"] = fresh
+                state["in_flight"] = is_in_flight(p.id)
+                _refresh_all()
+
         _top()
         _photos()
         _text()
@@ -1116,6 +1197,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         _when()
         _checks()
         _history()
+        ui.timer(2.0, _follow)
         ui.element("div").classes("h-8")
         await _load_names()
         if cached_key(prov()) is None:
