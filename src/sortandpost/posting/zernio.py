@@ -7,6 +7,9 @@ presigned: ``POST /v1/media/presign`` then a ``PUT`` to storage; the returned
 (``platforms[]``); with no ``scheduledFor`` / ``publishNow`` it is a draft, and
 a draft may omit ``platforms``. A first comment is a per-network setting inside
 ``platformSpecificData``. The free plan is limited to 60 requests a minute.
+
+Alt text is ``altText`` on each ``mediaItems`` entry (OpenAPI checked
+2026-10-16): one value per image, sent to every platform that takes it.
 """
 
 from __future__ import annotations
@@ -37,7 +40,14 @@ def build_payload(req: CreateRequest) -> dict[str, Any]:
         platforms.append(entry)
     body: dict[str, Any] = {
         "content": req.caption,
-        "mediaItems": [{"type": "image", "url": m.path} for m in req.media],
+        "mediaItems": [
+            {
+                "type": "image",
+                "url": m.path,
+                **({"altText": alt} if (alt := req.alt_for(i)) else {}),
+            }
+            for i, m in enumerate(req.media)
+        ],
         "platforms": platforms,
     }
     if req.mode == "draft":
@@ -89,6 +99,12 @@ SPEC = ProviderSpec(
     idempotency_header="Idempotency-Key",
     channelless_drafts=True,
     first_comment=True,
+    alt_text=True,
+    # "Instagram (feed images only, not Reels/Stories), Facebook, Threads, X, LinkedIn,
+    # Bluesky, and Pinterest"; ignored elsewhere
+    alt_text_networks=frozenset(
+        {"instagram", "facebook", "threads", "x", "linkedin", "bluesky", "pinterest"}
+    ),
     network_fields={
         "instagram": (
             FieldSpec(

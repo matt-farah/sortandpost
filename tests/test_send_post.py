@@ -18,7 +18,7 @@ from sortandpost.config import AppConfig, Env, Settings
 from sortandpost.db.models import Photo, PhotoPath
 from sortandpost.paths import Paths
 from sortandpost.post_export import IgSpec, export_jpeg
-from sortandpost.post_send import resolve_interrupted, send_post
+from sortandpost.post_send import refused_alt_text, resolve_interrupted, send_post
 from sortandpost.posting import limiter
 from sortandpost.posting.client import ApiClient, PostingClient
 from sortandpost.posting.model import Channel
@@ -738,3 +738,47 @@ def test_legacy_post_file_loads_as_robopost(settings: Settings, post: P.Post) ->
     from sortandpost.posting import provider_for
 
     assert provider_for(old, settings).key == "robopost"  # a sent post keeps its provider
+
+
+# --- alt text --------------------------------------------------------------------
+
+PZ_BSKY = Channel(id="pz-bs", name="Sky (Postiz)", social_network="bluesky")
+
+
+def test_alt_text_refused_then_sent_without(
+    settings: Settings, engine: Engine, post: P.Post
+) -> None:
+    post = _use_postiz(settings, post)
+    P.save_channel_cache(settings.paths, "postiz", [PZ_BSKY])
+    post.channel_ids = ["pz-bs"]
+    post.alt_texts = {post.photos[0]: "A red door"}
+    P.save_post(settings.paths, post)
+    pz = FakePostiz()
+    pz.outcomes = [400]
+    res = _send_with(settings, engine, post, pz, "schedule")
+    assert not res.ok and "send it again without" in res.message, res.message
+    assert pz.creates[0]["posts"][0]["value"][0]["image"][0]["alt"] == "A red door"  # type: ignore[index]
+    saved = _saved(settings, post)
+    assert saved.status == "failed" and saved.log[-1]["alt_text"] is True
+    assert refused_alt_text(saved) == "schedule"
+
+    saved.omit_alt = True
+    P.save_post(settings.paths, saved)
+    assert refused_alt_text(saved) is None
+    res = _send_with(settings, engine, saved, pz, "schedule")
+    assert res.ok, res.message
+    images = pz.creates[1]["posts"][0]["value"][0]["image"]  # type: ignore[index]
+    assert all("alt" not in i for i in images)
+    assert pz.uploads == ["pz1", "pz2", "pz3"]  # the retry reused the uploads
+
+
+def test_a_4xx_without_alt_text_offers_nothing(
+    settings: Settings, engine: Engine, post: P.Post
+) -> None:
+    post = _use_postiz(settings, post)
+    pz = FakePostiz()
+    pz.outcomes = [400]
+    res = _send_with(settings, engine, post, pz, "schedule")
+    assert not res.ok and "alt text" not in res.message
+    saved = _saved(settings, post)
+    assert "alt_text" not in saved.log[-1] and refused_alt_text(saved) is None

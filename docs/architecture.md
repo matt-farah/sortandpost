@@ -838,6 +838,15 @@ How they're applied:
   a failed / unknown first part stops the send, a retry only goes to channels no `sent` part
   reached, and "It was sent / wasn't" settles only the part in doubt. `failed` with a sent part
   = **Partly sent** (still editable; its sent channels are locked).
+- **Alt text** (per photo, `Post.alt_texts` by `pixel_hash`; composer "Alt text" panel): a spec
+  capability (`alt_text`, `alt_text_networks` = the networks it reaches); `make_request` fills
+  `CreateRequest.alt_texts` only when a chosen channel gets it. Zernio: `mediaItems[].altText`
+  (Instagram feed, Facebook, Threads, X, LinkedIn, Bluesky, Pinterest). Upload-Post:
+  `<network>_alt_text`, each network its own list spelling (`upload_post._ALT_STYLE`). Postiz:
+  `alt` on each image (from its source, PR #851, 2025; only Bluesky / Mastodon / Tumblr read it;
+  not verified live). robopost: none (the panel is disabled). A 4xx create that carried alt text
+  is logged `alt_text=True`; the post page then offers **Send again without alt text**
+  (`Post.omit_alt`). Network limits (X / Instagram 1000, Pinterest 500, Mastodon 1500) are warnings.
 - **Schedule quick-pick**: the composer's "When" grid offers today + 6 days ×
   `posts.SLOT_HOURS` (9 / 12 / 17 / 19 local), one stable random minute per post + day
   (`slot_minute`); "Pick a date & time" opens free-form inputs.

@@ -178,6 +178,10 @@ class ProviderSpec:
     single_account: bool = False
     first_comment: bool = True
     idempotency_header: str = ""  # header that carries CreateRequest.idempotency_key
+    # Per-photo alt text (CreateRequest.alt_texts). ``alt_text_networks`` = the networks
+    # it reaches through this provider; a chosen channel on another network gets none.
+    alt_text: bool = False
+    alt_text_networks: frozenset[str] = frozenset()
     can_delete_remote: bool = False  # (future: cancel a sent post)
 
     # -- per-network post settings --------------------------------------------------------
@@ -189,3 +193,7 @@ class ProviderSpec:
 
     def fields_for(self, network: str) -> tuple[FieldSpec, ...]:
         return tuple(self.network_fields.get(network, ()))
+
+    def alt_text_for(self, network: str) -> bool:
+        """Does alt text reach *network* through this provider?"""
+        return self.alt_text and network in self.alt_text_networks

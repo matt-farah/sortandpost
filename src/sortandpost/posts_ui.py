@@ -33,7 +33,7 @@ from sortandpost.post_export import (
     resolve_sources,
     upright_sizes,
 )
-from sortandpost.post_send import is_in_flight, resolve_interrupted
+from sortandpost.post_send import is_in_flight, refused_alt_text, resolve_interrupted
 from sortandpost.posting import (
     PROVIDERS,
     active_provider,
@@ -43,9 +43,10 @@ from sortandpost.posting import (
     provider_for,
 )
 from sortandpost.posting.client import check_base_url, normalize_base_url
-from sortandpost.posting.model import Channel, PostingError
+from sortandpost.posting.model import Channel, PostingError, network_name
 from sortandpost.posting.spec import FieldSpec, ProviderSpec
 from sortandpost.posts import (
+    ALT_TEXT_MAX,
     IG_MAX_BORDER,
     MIN_LEAD,
     SLOT_HOURS,
@@ -393,6 +394,25 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     f"Sent to {name} — edit or cancel it there (sortandpost.photos can't change a "
                     "sent post). Use Duplicate to send it again."
                 ).classes("px-4 text-sm sp-muted")
+            refused = refused_alt_text(p)
+            if refused is not None:
+                with ui.card().classes(
+                    "mx-4 bg-amber-50 dark:bg-amber-950 border border-amber-400 gap-1"
+                ):
+                    ui.label(f"{name} refused the post, and it had alt text.").classes(
+                        "font-medium"
+                    )
+                    if err := p.log[-1].get("error"):
+                        ui.label(str(err)).classes("text-sm")
+                    ui.label(
+                        f"If {name} can't take alt text (an older server, say), send the post "
+                        "again without it. Otherwise fix the problem and send it as it is."
+                    ).classes("text-sm")
+                    ui.button(
+                        "Send again without alt text",
+                        icon="send",
+                        on_click=lambda m=refused: _resend_without_alt(m),
+                    ).props("flat no-caps")
             if State.write_mode != WriteMode.writable:
                 ui.label(
                     f"Read-only — {State.lock_holder} holds the write lock, so posts can't be "
@@ -445,6 +465,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     ui.notify("It's being sent right now and can't be cancelled.")
             _refresh_all()
 
+        async def _resend_without_alt(mode: str) -> None:
+            cur().omit_alt = True
+            _save()
+            _top.refresh()
+            _alt.refresh()
+            await _confirm("schedule" if mode == "schedule" else "draft")
+
         def _resolve(was_sent: bool) -> None:
             fresh = resolve_interrupted(settings, cur().id, was_sent=was_sent)
             if fresh is not None:
@@ -483,11 +510,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 order[i], order[j] = order[j], order[i]
                 _save()
                 _photos.refresh()
+                _alt.refresh()
 
         def _remove(h: str) -> None:
             cur().photos.remove(h)
             _save()
             _photos.refresh()
+            _alt.refresh()
 
         def _add_from_collection(coll_id: str) -> None:
             c = get_collection(settings.paths, coll_id)
@@ -501,6 +530,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 _text.refresh()
             _save()
             ui.notify(f"added {len(new)} photo(s) from “{c.name}”")
+            _alt.refresh()
             ui.timer(0.01, _load_names, once=True)
 
         @ui.refreshable
@@ -568,6 +598,82 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                                 ui.button(icon="close", on_click=lambda h=h: _remove(h)).props(
                                     "flat dense round size=xs color=white"
                                 ).classes("bg-black/55").tooltip("remove from post")
+
+        # -- alt text ---------------------------------------------------------- #
+        def _alt_title(p: Post) -> str:
+            n = sum(1 for h in p.photos if p.alt_text(h))
+            return f"Alt text · {n} of {len(p.photos)} photo{'s' if len(p.photos) != 1 else ''}"
+
+        def _save_alt(h: str, value: str, exp: ui.expansion) -> None:
+            value = value.strip()
+            if value == cur().alt_text(h):
+                return
+            if value:
+                cur().alt_texts[h] = value
+            else:
+                cur().alt_texts.pop(h, None)
+            _save()
+            exp.set_text(_alt_title(cur()))
+
+        def _set_omit_alt(on: bool) -> None:
+            cur().omit_alt = on
+            _save()
+            _top.refresh()
+            _alt.refresh()
+
+        @ui.refreshable
+        def _alt() -> None:
+            p = cur()
+            sp = prov()
+            if not p.photos:
+                return
+            if "alt_open" not in state:
+                state["alt_open"] = sp.alt_text and p.has_alt_text()
+            with (
+                ui.column().classes("w-full max-w-2xl gap-1 px-4 pt-4"),
+                ui.expansion(
+                    _alt_title(p),
+                    icon="accessibility_new",
+                    value=state["alt_open"],
+                    on_value_change=lambda e: state.__setitem__("alt_open", bool(e.value)),
+                ).classes("w-full sp-card") as exp,
+            ):
+                if sp.alt_text:
+                    reach = ", ".join(network_name(n) for n in sorted(sp.alt_text_networks))
+                    ui.label(
+                        "Describes each photo for people who use a screen reader. "
+                        f"Through {sp.name} it reaches {reach}."
+                    ).classes("text-xs sp-muted")
+                else:
+                    ui.label(
+                        f"{sp.name} can't send alt text. Pick another posting service in "
+                        "Settings → Posting to use it."
+                    ).classes("text-sm sp-muted")
+                if p.omit_alt and p.has_alt_text():
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label("Left out of the next send.").classes("text-sm text-amber-600")
+                        if p.editable:
+                            ui.button(
+                                "Include it again", on_click=lambda: _set_omit_alt(False)
+                            ).props("flat dense no-caps")
+                for i, h in enumerate(p.photos):
+                    with ui.row().classes("w-full items-start gap-2 no-wrap"):
+                        ui.image(A._thumb_src(h, thumb_small)).classes(
+                            "w-14 h-14 shrink-0 rounded object-cover sp-placeholder"
+                        )
+                        ta = (
+                            ui.textarea(
+                                value=p.alt_texts.get(h, ""),
+                                placeholder=f"Describe photo {i + 1}",
+                            )
+                            .props(f"outlined dense autogrow counter maxlength={ALT_TEXT_MAX}")
+                            .classes("grow")
+                        )
+                        ta.set_enabled(p.editable and sp.alt_text)
+                        ta.on(
+                            "blur",
+                            lambda _e, h=h, ta=ta: _save_alt(h, ta.value or "", exp),
+                        )
 
         # -- caption / first comment ---------------------------------------- #
         @ui.refreshable
@@ -1099,6 +1205,13 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 ui.label(
                     f"Caption: {len(p.caption)} characters"
                     + (" · with a first comment" if p.first_comment.strip() else "")
+                    + (
+                        f" · alt text on {n_alt} photo(s)"
+                        if (n_alt := sum(1 for h in p.photos if p.alt_text(h)))
+                        and not p.omit_alt
+                        and prov().alt_text
+                        else ""
+                    )
                 ).classes("text-sm")
                 for w in warnings:
                     ui.label("⚠ " + w).classes("text-sm text-amber-600")
@@ -1170,6 +1283,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         def _refresh_all() -> None:
             _top.refresh()
             _photos.refresh()
+            _alt.refresh()
             _text.refresh()
             _dest.refresh()
             _when.refresh()
@@ -1192,6 +1306,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
 
         _top()
         _photos()
+        _alt()
         _text()
         _dest()
         _when()

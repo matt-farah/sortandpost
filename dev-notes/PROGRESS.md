@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-16 (alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
 _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 
 > **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
@@ -9,6 +9,23 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 > (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
 > installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
 > Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## ♿ 2026-10-16 — Alt text on posts (branch `feat/alt-text`)
+
+- Per-photo alt text in the composer (**Alt text** panel, `Post.alt_texts` by pixel hash).
+  A spec capability (`alt_text`, `alt_text_networks`), so shared code never names a vendor.
+  Zernio: `mediaItems[].altText`. Upload-Post: `<network>_alt_text` (JSON array / repeated `[]` /
+  `|`-separated / single string per network). Postiz: `alt` on each image (found in its source,
+  PR #851; only Bluesky / Mastodon / Tumblr read it). robopost: none, panel disabled.
+- Alt text is only sent when a chosen channel's network gets it. Warnings for networks it
+  misses and for network length limits.
+- User ask: if a provider refuses it, offer a resend without. A 4xx create that carried alt
+  text is logged `alt_text=True` → post page card **Send again without alt text** (`omit_alt`;
+  **Include it again** undoes). Note: Postiz's ValidationPipe doesn't whitelist, so an old
+  server most likely ignores `alt` instead of refusing. No provider verified live yet (user's
+  Postiz server is down).
+- Gate: full suite green (13 new in `test_alt_text.py`, 2 in `test_send_post.py`); ruff,
+  format, mypy, `uv audit` clean. User click-through: OK.
 
 ## ✈️ 2026-10-16 — Background post sending + "Send when online" (branch `feat/post-queue`)
 
