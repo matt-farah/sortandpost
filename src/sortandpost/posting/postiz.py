@@ -8,6 +8,12 @@ channel, each with ``settings.__type`` = the channel's identifier. Only
 creating posts is rate-limited (90 an hour self-hosted by default, 100 on
 cloud; self-hosters raise it with ``API_LIMIT``, here with
 ``posting.rate_limit_overrides``).
+
+Alt text is an ``alt`` on each image object (``MediaDto``, added in Postiz PR
+#851, mid-2025; read from its source 2026-10-16, not in the public docs, not yet
+verified live). Only its Bluesky, Mastodon and Tumblr integrations read it.
+An older server either ignores it or refuses the post; the composer then offers
+"Send again without alt text".
 """
 
 from __future__ import annotations
@@ -32,9 +38,13 @@ def build_payload(req: CreateRequest) -> dict[str, Any]:
     """The ``POST /posts`` body: one ``posts[]`` item per channel. The first
     comment goes as the thread's second value."""
     when = (req.schedule_at or req.now).astimezone(UTC)
-    value: list[dict[str, Any]] = [
-        {"content": req.caption, "image": [{"id": m.id, "path": m.path} for m in req.media]}
-    ]
+    images: list[dict[str, Any]] = []
+    for i, m in enumerate(req.media):
+        image: dict[str, Any] = {"id": m.id, "path": m.path}
+        if alt := req.alt_for(i):
+            image["alt"] = alt
+        images.append(image)
+    value: list[dict[str, Any]] = [{"content": req.caption, "image": images}]
     if req.first_comment.strip():
         value.append({"content": req.first_comment, "image": []})
     return {
@@ -103,6 +113,8 @@ SPEC = ProviderSpec(
     create_timeout_s=180.0,
     channelless_drafts=False,
     first_comment=True,
+    alt_text=True,
+    alt_text_networks=frozenset({"bluesky", "mastodon", "tumblr"}),
     network_fields={
         "instagram": (
             FieldSpec(

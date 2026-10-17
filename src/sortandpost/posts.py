@@ -57,7 +57,7 @@ from sortandpost.post_export import (
     parse_color,
     resolve_ig_spec,
 )
-from sortandpost.posting.model import Channel, CreateRequest, MediaRef
+from sortandpost.posting.model import Channel, CreateRequest, MediaRef, network_name
 from sortandpost.posting.model import SendMode as SendMode
 from sortandpost.posting.spec import ProviderSpec
 from sortandpost.posting.store import load_channel_cache as load_channel_cache
@@ -86,6 +86,10 @@ TEXT_LIMITS_SOFT = {
     "threads": 500,
     "pinterest": 500,
 }
+# Alt text: the most one photo's text may hold here, and each network's own limit
+# (warn only). Bluesky's 2000 is the highest any network takes.
+ALT_TEXT_MAX = 2000
+ALT_TEXT_LIMITS = {"x": 1000, "instagram": 1000, "pinterest": 500, "mastodon": 1500}
 IG_MAX_BORDER = 100
 MIN_LEAD = timedelta(minutes=2)  # a schedule time must be at least this far ahead
 # Quick-pick schedule slots (local time): morning, afternoon, after work, evening.
@@ -124,6 +128,9 @@ class Post:
     photos: list[str] = field(default_factory=list)  # ordered pixel_hashes
     caption: str = ""
     first_comment: str = ""
+    alt_texts: dict[str, str] = field(default_factory=dict)  # pixel_hash -> alt text
+    # the user chose "Send again without alt text" (a provider refused it)
+    omit_alt: bool = False
     channel_ids: list[str] = field(default_factory=list)
     # provider-neutral keys (see each spec's network_fields), e.g.
     # {"instagram": {"postType": "POST", "format": "portrait"},
@@ -201,6 +208,12 @@ class Post:
 
     def schedule_dt(self) -> datetime | None:
         return parse_utc(self.schedule_at)
+
+    def alt_text(self, pixel_hash: str) -> str:
+        return self.alt_texts.get(pixel_hash, "").strip()
+
+    def has_alt_text(self) -> bool:
+        return any(self.alt_text(h) for h in self.photos)
 
     def setting(self, network: str, key: str, default: str = "") -> str:
         return self.network_settings.get(network, {}).get(key, default)
@@ -339,6 +352,8 @@ def _coerce(raw: dict[str, Any]) -> Post | None:
         photos=_list("photos"),
         caption=_s("caption"),
         first_comment=_s("first_comment"),
+        alt_texts={str(k): v for k, v in _dict("alt_texts").items() if isinstance(v, str) and v},
+        omit_alt=data.get("omit_alt") is True,
         channel_ids=_list("channel_ids"),
         network_settings=ns,
         schedule_at=_s("schedule_at") or None,
@@ -469,6 +484,7 @@ def duplicate_post(paths: Paths, post_id: str, *, device_id: str = "") -> Post |
         photos=list(src.photos),
         caption=src.caption,
         first_comment=src.first_comment,
+        alt_texts={h: a for h, a in src.alt_texts.items() if h in src.photos},
         channel_ids=list(src.channel_ids),
         network_settings={k: dict(v) for k, v in src.network_settings.items()},
     )
@@ -638,7 +654,46 @@ def validate(
         warnings.append("The caption is empty.")
     if post.first_comment.strip() and not spec.first_comment:
         warnings.append(f"{name} can't post a first comment; it is left out.")
+    warnings += _alt_warnings(post, chosen, spec)
     return errors, warnings
+
+
+def _alt_warnings(post: Post, chosen: list[Channel], spec: ProviderSpec) -> list[str]:
+    if not post.has_alt_text():
+        return []
+    name = spec.name
+    if post.omit_alt:
+        return ["Alt text is left out of this send (you chose to send without it)."]
+    if not spec.alt_text:
+        return [f"{name} can't send alt text; it is left out."]
+    networks = sorted({c.network for c in chosen})
+    miss = [network_name(n) for n in networks if not spec.alt_text_for(n)]
+    out: list[str] = []
+    if miss:
+        reach = ", ".join(network_name(n) for n in sorted(spec.alt_text_networks))
+        out.append(f"Alt text isn't sent to {', '.join(miss)} through {name} (only to {reach}).")
+    for net in networks:
+        limit = ALT_TEXT_LIMITS.get(net)
+        if limit is None or not spec.alt_text_for(net):
+            continue
+        for i, h in enumerate(post.photos):
+            if len(post.alt_text(h)) > limit:
+                out.append(
+                    f"Alt text for photo {i + 1} is {len(post.alt_text(h))} characters; "
+                    f"{network_name(net)} allows {limit}."
+                )
+    return out
+
+
+def alt_texts_for(post: Post, spec: ProviderSpec, chosen: tuple[Channel, ...]) -> tuple[str, ...]:
+    """The alt text a create sends, one per photo in order -- or ``()`` when there is
+    none, the user left it out, or no chosen channel would get it (so a provider
+    that might refuse the field is never sent it for nothing)."""
+    if post.omit_alt or not spec.alt_text or not post.has_alt_text():
+        return ()
+    if chosen and not any(spec.alt_text_for(c.network) for c in chosen):
+        return ()
+    return tuple(post.alt_text(h) for h in post.photos)
 
 
 def network_values(post: Post, spec: ProviderSpec, network: str) -> dict[str, str]:
@@ -686,4 +741,5 @@ def make_request(
         schedule_at=send_when.astimezone(UTC) if send_when else None,
         first_comment=post.first_comment if spec.first_comment else "",
         settings=settings,
+        alt_texts=alt_texts_for(post, spec, chosen),
     )

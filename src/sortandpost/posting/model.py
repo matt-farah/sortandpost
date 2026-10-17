@@ -32,6 +32,20 @@ _KNOWN_NETWORKS = (
 _EXACT = {"x": "x", "twitter": "x"}
 
 
+_NETWORK_NAMES = {
+    "x": "X",
+    "linkedin": "LinkedIn",
+    "tiktok": "TikTok",
+    "youtube": "YouTube",
+    "wordpress": "WordPress",
+}
+
+
+def network_name(network: str) -> str:
+    """How a :func:`network_key` is shown (``"LinkedIn"``, ``"X"``, ``"Bluesky"``)."""
+    return _NETWORK_NAMES.get(network, network.title())
+
+
 def network_key(raw: str) -> str:
     """Lower-case canonical network name (``instagram``, ``facebook``, ``x``, …)."""
     s = raw.strip().lower()
@@ -110,9 +124,14 @@ class CreateRequest:
     first_comment: str = ""
     settings: dict[str, dict[str, str]] = field(default_factory=dict)
     idempotency_key: str = ""  # one per create call, for providers that dedupe on it
+    # one entry per ``media`` item, same order ("" = none); empty = no alt text sent
+    alt_texts: tuple[str, ...] = ()
 
     def settings_for(self, channel: Channel) -> dict[str, str]:
         return dict(self.settings.get(channel.network, {}))
+
+    def alt_for(self, index: int) -> str:
+        return self.alt_texts[index] if index < len(self.alt_texts) else ""
 
 
 # ``PostingError.code`` when no connection to the server was ever made (offline,

@@ -11,11 +11,17 @@ A *profile* (``user``) owns the connected social accounts, and one create goes
 to one profile, so a channel is ``<profile>:<platform>`` carrying its profile
 as ``Channel.account`` (``single_account``). The free plan allows 10 uploads a
 month.
+
+Alt text is a field per network, ``<network>_alt_text`` (docs checked
+2026-10-16; not yet verified live), each with its own spelling of "one per
+photo": a JSON array, a repeated ``[]`` field, ``|``-separated, or -- for
+networks that post one image -- a single string (:data:`_ALT_STYLE`).
 """
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, Literal
 
 from sortandpost.posting.model import Channel, CreateRequest
 from sortandpost.posting.spec import AuthSpec, FieldSpec, Option, ProviderSpec, RateLimit
@@ -23,6 +29,22 @@ from sortandpost.posting.spec import AuthSpec, FieldSpec, Option, ProviderSpec, 
 # networks that take <network>_first_comment
 _FIRST_COMMENT_NETWORKS = {"instagram", "facebook", "x", "threads", "bluesky"}
 _ID_SEP = ":"
+
+# how each network's <network>_alt_text spells one value per photo
+AltStyle = Literal["json", "repeat", "pipe", "first"]
+_ALT_STYLE: dict[str, AltStyle] = {
+    "linkedin": "json",
+    "instagram": "json",
+    "bluesky": "json",
+    "x": "repeat",
+    "facebook": "repeat",
+    "threads": "repeat",
+    "mastodon": "pipe",
+    "discord": "pipe",
+    "pinterest": "first",
+    "lemmy": "first",
+    "wordpress": "first",
+}
 
 
 def channel_id(profile: str, platform: str) -> str:
@@ -81,9 +103,25 @@ def build_payload(req: CreateRequest) -> dict[str, Any]:
                 form[f"{net}_first_comment"] = req.first_comment
     if "pinterest" in networks:
         form["pinterest_description"] = req.caption
+    if any(req.alt_texts):
+        alts = [req.alt_for(i) for i in range(len(req.media))]
+        for net in sorted(networks & _ALT_STYLE.keys()):
+            if not (net == "instagram" and story):  # alt text is for feed images only
+                form.update(_alt_field(net, alts))
     for values in req.settings.values():
         form.update(values)
     return form
+
+
+def _alt_field(net: str, alts: list[str]) -> dict[str, Any]:
+    style = _ALT_STYLE[net]
+    if style == "json":
+        return {f"{net}_alt_text": json.dumps(alts, ensure_ascii=False)}
+    if style == "repeat":
+        return {f"{net}_alt_text[]": alts}
+    if style == "pipe":  # a "|" inside a text would split it, so it becomes "/"
+        return {f"{net}_alt_text": "|".join(a.replace("|", "/") for a in alts)}
+    return {f"{net}_alt_text": alts[0]} if alts and alts[0] else {}
 
 
 SPEC = ProviderSpec(
@@ -121,6 +159,8 @@ SPEC = ProviderSpec(
     channelless_drafts=False,
     single_account=True,
     first_comment=True,
+    alt_text=True,
+    alt_text_networks=frozenset(_ALT_STYLE),
     network_fields={
         "instagram": (
             FieldSpec(

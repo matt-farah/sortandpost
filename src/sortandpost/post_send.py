@@ -25,6 +25,10 @@ A post that mixes Instagram with other channels may be sent as two creates
 other channels first, then Instagram. A failed or unknown first create stops
 the send, so the second is never started on top of a part in doubt. A retry
 only goes to channels no sent part has reached.
+
+A create refused (4xx) while it carried alt text is logged with
+``alt_text=True``: the provider (an older Postiz server, say) may not take the
+field, so the composer offers to send it again without (``Post.omit_alt``).
 """
 
 from __future__ import annotations
@@ -212,6 +216,7 @@ def _send(
             part = _start_part(post, group, mode, spec)
             save_post(paths, post, device_id=settings.device_id)
             phase = "export"
+            with_alt = False
             try:
                 media = _upload(
                     settings,
@@ -226,6 +231,7 @@ def _send(
                 )
                 req = make_request(post, channels, mode, media, spec, now=now, only=group.channels)
                 phase = "create"
+                with_alt = bool(req.alt_texts)
                 req = replace(req, idempotency_key=uuid.uuid4().hex)
                 ids = api.create_post(req)
             except PostingError as exc:
@@ -240,6 +246,7 @@ def _send(
                     offline=_offline(phase, exc),
                     created=created,
                     spec=spec,
+                    refused_alt=with_alt and phase == "create" and 400 <= exc.status < 500,
                 )
             except Exception as exc:
                 log.exception("sending post %s (%s) failed during %s", post.id, group.name, phase)
@@ -427,6 +434,7 @@ def _failed(
     offline: bool,
     created: list[SendGroup],
     spec: ProviderSpec,
+    refused_alt: bool = False,
 ) -> SendResult:
     # Only an Instagram part can follow another (plan_send), so a part already
     # created here is the other channels'.
@@ -469,13 +477,32 @@ def _failed(
     _settle(post)
     post.log.append(
         _log_entry(
-            settings, "send_failed", mode=mode, part=part["group"], phase=phase, error=message
+            settings,
+            "send_failed",
+            mode=mode,
+            part=part["group"],
+            phase=phase,
+            error=message,
+            **({"alt_text": True} if refused_alt else {}),
         )
     )
     save_post(settings.paths, post, device_id=settings.device_id)
     if created:
         message = f"{done}{which} failed: {message} Retrying sends only what's left."
+    if refused_alt:
+        message += f" The post had alt text — if {spec.name} can't take it, send it again without."
     return SendResult(False, message, post, offline=offline)
+
+
+def refused_alt_text(post: Post) -> str | None:
+    """The mode of a failed send whose create was refused while it carried alt
+    text (its last log entry), else ``None``."""
+    if post.status != "failed" or post.omit_alt or not post.log:
+        return None
+    last = post.log[-1]
+    if last.get("action") == "send_failed" and last.get("alt_text"):
+        return str(last.get("mode") or "draft")
+    return None
 
 
 def resolve_interrupted(settings: Settings, post_id: str, *, was_sent: bool) -> Post | None:
