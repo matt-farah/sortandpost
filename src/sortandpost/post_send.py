@@ -1,7 +1,8 @@
 """Send a composed post through its posting back-end: export → upload → create.
 
-Only ever run from an explicit click behind a confirm dialog, off the web event
-loop (``run.io_bound``), and only while this machine holds the write lock. The
+Only ever run for a send the user confirmed (a click behind a confirm dialog),
+off the web event loop -- by the background sender, :mod:`sortandpost.post_queue`
+-- and only while this machine holds the write lock. The
 back-end is :func:`sortandpost.posting.provider_for` the post; nothing here
 depends on which one it is.
 
@@ -14,6 +15,10 @@ nothing was created, so the post becomes ``failed`` and
 can be retried; uploads already done (to the same provider, with the same
 export settings) are reused through ``media_cache``. A provider's known rate
 limit is checked for the whole send before the first call.
+
+A queued post with ``queue_wait_online`` that can't reach the provider before
+its create call (no reply while uploading) goes back to ``queued`` instead of
+``failed``: nothing was created, so the background sender tries again later.
 
 A post that mixes Instagram with other channels may be sent as two creates
 (:func:`sortandpost.posts.plan_send`), each tracked as its own part: the
@@ -48,7 +53,7 @@ from sortandpost.post_export import (
 )
 from sortandpost.posting import active_provider, limiter, open_client, provider_for
 from sortandpost.posting.client import PostingClient, redact
-from sortandpost.posting.model import MediaRef, PostingError
+from sortandpost.posting.model import NO_CONNECTION, MediaRef, PostingError
 from sortandpost.posting.spec import ProviderSpec
 from sortandpost.posts import (
     Post,
@@ -89,6 +94,9 @@ class SendResult:
     ok: bool
     message: str
     post: Post | None = None
+    requeued: bool = False  # offline: back in the queue, not failed
+    offline: bool = False  # couldn't reach the provider (a failed immediate send)
+    transient: bool = False  # refused for now (rate limit, no key here): try again later
 
 
 def pool_exporter(
@@ -158,7 +166,9 @@ def _send(
     spec = provider_for(post, settings)
     key, _source = get_key(spec)
     if not key:
-        return SendResult(False, f"No {spec.name} API key. Add one in Settings → Posting.", post)
+        return SendResult(
+            False, f"No {spec.name} API key. Add one in Settings → Posting.", post, transient=True
+        )
     channels, _ = load_channel_cache(paths, spec.key)
     sources = resolve_sources(engine, post.photos)
     unavailable = {h for h, p in sources.items() if p is None}
@@ -183,6 +193,7 @@ def _send(
             f"{spec.name} allows {lim.describe('new posts') if lim else 'only so many posts'}; "
             f"this send needs {len(groups)}. Try again in {_wait_text(wait)}.",
             post,
+            transient=True,
         )
     if not groups:
         # A partly-sent post whose remaining channels were all unticked.
@@ -226,6 +237,7 @@ def _send(
                     phase,
                     exc.friendly,
                     unknown=_unknown(phase, exc),
+                    offline=_offline(phase, exc),
                     created=created,
                     spec=spec,
                 )
@@ -240,6 +252,7 @@ def _send(
                     phase,
                     msg,
                     unknown=phase == "create",
+                    offline=False,
                     created=created,
                     spec=spec,
                 )
@@ -358,7 +371,9 @@ def _start_part(post: Post, group: SendGroup, mode: SendMode, spec: ProviderSpec
 def _settle(post: Post) -> None:
     """Recompute ``status`` once no part is in doubt: sent when every chosen
     channel has the post (a no-channel draft: when a part was sent), else
-    ``failed`` (retryable; channels already reached are skipped)."""
+    ``failed`` (retryable; channels already reached are skipped). A settled
+    post has left the queue."""
+    clear_queue(post)
     sent = [pt for pt in post.parts if pt["status"] == "sent"]
     remaining = [c for c in post.channel_ids if c not in post.sent_channel_ids()]
     post.sending_mode = None
@@ -367,6 +382,14 @@ def _settle(post: Post) -> None:
         post.status = "scheduled" if scheduled else "sent_draft"
     else:
         post.status = "failed"
+
+
+def clear_queue(post: Post) -> None:
+    post.queued_mode = None
+    post.queued_at = ""
+    post.queued_by = ""
+    post.queue_wait_online = False
+    post.queue_note = ""
 
 
 def _names(groups: list[SendGroup]) -> str:
@@ -381,7 +404,15 @@ def _unknown(phase: str, exc: PostingError) -> bool:
     a 5xx during create leaves the outcome unknown -- the provider may have
     created the post before failing. Only a 4xx is a definite "nothing was
     created"."""
-    return phase == "create" and (exc.status == 0 or exc.status >= 500)
+    return (
+        phase == "create" and (exc.status == 0 or exc.status >= 500) and exc.code != NO_CONNECTION
+    )
+
+
+def _offline(phase: str, exc: PostingError) -> bool:
+    """No reply, and certainly nothing created: any phase before create, or a
+    create whose connection was never made."""
+    return exc.status == 0 and (phase != "create" or exc.code == NO_CONNECTION)
 
 
 def _failed(
@@ -393,6 +424,7 @@ def _failed(
     message: str,
     *,
     unknown: bool,
+    offline: bool,
     created: list[SendGroup],
     spec: ProviderSpec,
 ) -> SendResult:
@@ -415,6 +447,25 @@ def _failed(
             post,
         )
     part["status"] = "failed"
+    if offline and post.queue_wait_online:
+        # Nothing was created (no reply before the create call): wait for the
+        # connection instead of failing. A part already sent stays sent.
+        post.status = "queued"
+        post.sending_mode = None
+        post.queue_note = "offline"
+        post.log.append(
+            _log_entry(
+                settings, "send_offline", mode=mode, part=part["group"], phase=phase, error=message
+            )
+        )
+        save_post(settings.paths, post, device_id=settings.device_id)
+        done = f"{done}{which} " if created else "It "
+        return SendResult(
+            False,
+            f"{spec.name} couldn't be reached. {done}stays queued and sends when you're online.",
+            post,
+            requeued=True,
+        )
     _settle(post)
     post.log.append(
         _log_entry(
@@ -424,7 +475,7 @@ def _failed(
     save_post(settings.paths, post, device_id=settings.device_id)
     if created:
         message = f"{done}{which} failed: {message} Retrying sends only what's left."
-    return SendResult(False, message, post)
+    return SendResult(False, message, post, offline=offline)
 
 
 def resolve_interrupted(settings: Settings, post_id: str, *, was_sent: bool) -> Post | None:

@@ -9,8 +9,11 @@ one collections and saved searches have.) One file per post rather than one
 ``posts.json`` so two machines editing *different* posts never produce a sync
 conflict copy -- losing a post's send log could lead to a double post.
 
-A post's life: ``draft`` → (Send as draft | Schedule) → ``sending`` →
-``sent_draft`` / ``scheduled`` (or ``failed``, which can be retried). The
+A post's life: ``draft`` → (Send as draft | Schedule) → ``queued`` →
+``sending`` → ``sent_draft`` / ``scheduled`` (or ``failed``, which can be
+retried). ``queued`` is the confirmed send waiting for the background sender
+(:mod:`sortandpost.post_queue`); with ``queue_wait_online`` it also waits out
+being offline. The
 back-ends' APIs can't be relied on to edit a post afterwards, so a sent post is
 frozen here; "Duplicate" starts a new draft from it. ``sending`` is written *before*
 the create call and is never retried automatically: a send interrupted by a
@@ -63,11 +66,12 @@ from sortandpost.sync.clock import utcnow
 
 log = logging.getLogger(__name__)
 
-PostStatus = Literal["draft", "sending", "sent_draft", "scheduled", "failed"]
+PostStatus = Literal["draft", "queued", "sending", "sent_draft", "scheduled", "failed"]
 PartStatus = Literal["sending", "sent", "failed"]
 
 SENT_STATUSES: frozenset[str] = frozenset({"sent_draft", "scheduled"})
 EDITABLE_STATUSES: frozenset[str] = frozenset({"draft", "failed"})
+_STATUSES = ("draft", "queued", "sending", "sent_draft", "scheduled", "failed")
 
 _ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
@@ -129,6 +133,12 @@ class Post:
     status: str = "draft"
     sending_mode: str | None = None  # the mode of the in-flight / interrupted send
     provider: str = ""  # the back-end its first send went through ("" = never sent)
+    # A confirmed send waiting for the background sender (status ``queued``):
+    queued_mode: str | None = None  # draft | schedule
+    queued_at: str = ""
+    queued_by: str = ""  # device id of the machine that queued it
+    queue_wait_online: bool = False  # offline -> keep waiting (not ``failed``)
+    queue_note: str = ""  # why it hasn't gone yet ("offline", "time passed", …)
     # pixel_hash (or "<pixel_hash>#ig" for an Instagram-sized upload) ->
     # {"export_key", "provider", "media_id", "media_path", "uploaded_at"}
     media_cache: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -163,6 +173,15 @@ class Post:
     @property
     def sent(self) -> bool:
         return self.status in SENT_STATUSES
+
+    @property
+    def queued(self) -> bool:
+        return self.status == "queued"
+
+    @property
+    def sendable(self) -> bool:
+        """A send may start: an editable post, or one queued for sending."""
+        return self.editable or self.queued
 
     @property
     def partly_sent(self) -> bool:
@@ -323,11 +342,14 @@ def _coerce(raw: dict[str, Any]) -> Post | None:
         channel_ids=_list("channel_ids"),
         network_settings=ns,
         schedule_at=_s("schedule_at") or None,
-        status=status
-        if status in ("draft", "sending", "sent_draft", "scheduled", "failed")
-        else "draft",
+        status=status if status in _STATUSES else "draft",
         sending_mode=_s("sending_mode") or None,
         provider=provider,
+        queued_mode=_s("queued_mode") if _s("queued_mode") in ("draft", "schedule") else None,
+        queued_at=_s("queued_at"),
+        queued_by=_s("queued_by"),
+        queue_wait_online=data.get("queue_wait_online") is True,
+        queue_note=_s("queue_note"),
         media_cache=mc,
         parts=parts,
         log=[e for e in logv if isinstance(e, dict)] if isinstance(logv, list) else [],
@@ -548,7 +570,7 @@ def validate(
     warnings: list[str] = []
     name = spec.name
     n = len(post.photos)
-    if not post.editable:
+    if not post.sendable:
         errors.append("This post was already sent. Duplicate it to send again.")
     if active is not None and post.partly_sent and post.provider and post.provider != active:
         errors.append(

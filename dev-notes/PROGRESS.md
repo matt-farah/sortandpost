@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-16 (background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
 _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 
 > **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
@@ -9,6 +9,25 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 > (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
 > installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
 > Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## ✈️ 2026-10-16 — Background post sending + "Send when online" (branch `feat/post-queue`)
+
+- Drafts were already local (`sync/posts/<id>.json` + cached channel list), so composing worked
+  offline; sending didn't. Now every confirmed send is **queued** (new status `queued`) and sent
+  by one background worker (`post_queue`): the dialog closes at once and the status bar toasts
+  the outcome on any page, with "sending…" / "N posts queued" in the status bar.
+- **Send when online** (confirm dialog): probes the provider first and waits while it can't
+  be reached ("Waiting to go online", retried every 30 s, **Try now** / **Cancel queue**). A
+  connection lost before the create call goes back to the queue. A plain Send fails fast offline.
+- Decisions (user): a queued scheduled post whose time passed is **held** ("Needs a new time"),
+  never sent late. The **editing machine** sends, whichever machine queued the post. Another
+  device's queued posts wait 90 s after this machine becomes the editor (its writes must
+  sync first: no double post). Handover / shutdown wait for a send in flight.
+- A never-opened connection (`NO_CONNECTION`: connect error / connect timeout) is now a definite
+  "not created", even on create, so Upload-Post (inline upload) no longer ends up "Sending…"
+  (outcome unknown) when you're offline. An unknown create outcome is still never re-sent.
+- Gate: 1032 passed / 13 skipped (14 new in `test_post_queue.py`); ruff, format, mypy,
+  `uv audit` clean. User click-through: held post, background send, offline fail, wait-online.
 
 ## 🐧 2026-10-16 — V3 P7: Linux AppImage (branch `feat/linux-appimage`)
 

@@ -29,7 +29,13 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from sortandpost.posting.model import Channel, CreateRequest, MediaRef, PostingError
+from sortandpost.posting.model import (
+    NO_CONNECTION,
+    Channel,
+    CreateRequest,
+    MediaRef,
+    PostingError,
+)
 from sortandpost.posting.ratelimit import RateLimiter
 from sortandpost.posting.spec import ProviderSpec
 
@@ -306,6 +312,10 @@ class ApiClient:
             self._limiter.record(op)  # counted as sent: the server counts it on arrival
         try:
             resp = self._http.request(method, path, **kwargs)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise self._error(
+                0, redact(f"{type(exc).__name__}: {exc}", self._key), NO_CONNECTION
+            ) from None
         except httpx.HTTPError as exc:
             raise self._error(0, redact(f"{type(exc).__name__}: {exc}", self._key)) from None
         if resp.is_redirect:
@@ -378,6 +388,10 @@ class ApiClient:
             resp = self._bare.put(
                 url, content=path.read_bytes(), headers={"Content-Type": "image/jpeg"}
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise self._error(
+                0, redact(f"{type(exc).__name__}: {exc}", self._key), NO_CONNECTION
+            ) from None
         except httpx.HTTPError as exc:
             raise self._error(0, redact(f"{type(exc).__name__}: {exc}", self._key)) from None
         if resp.status_code >= 300:

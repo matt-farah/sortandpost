@@ -115,6 +115,11 @@ class CreateRequest:
         return dict(self.settings.get(channel.network, {}))
 
 
+# ``PostingError.code`` when no connection to the server was ever made (offline,
+# DNS, refused, connect timeout): nothing reached it, so nothing was created.
+NO_CONNECTION = "no_connection"
+
+
 class PostingError(RuntimeError):
     """A posting API call failed. ``status`` is the HTTP status (0 = no reply);
     ``code`` the provider's machine code when it sent one. ``friendly`` is the

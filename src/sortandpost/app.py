@@ -43,7 +43,7 @@ from nicegui.events import KeyEventArguments, ValueChangeEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
-from sortandpost import __version__, achievements_ui, missing
+from sortandpost import __version__, achievements_ui, missing, post_queue
 from sortandpost.achievements import (
     EVENT_GITHUB_SEARCH,
     MODE_LABELS,
@@ -969,6 +969,8 @@ def _status_bar() -> None:
                     else f"read-only · {State.lock_holder}"
                 )
                 paused = " · indexing paused" if State.indexer_paused.is_set() else ""
+                posts_q = post_queue.status_text()
+                paused += f" · {posts_q}" if posts_q else ""
                 clip_on = State.settings is None or State.settings.config.clip.enabled
                 suggestions = f"{pending} CLIP suggestions pending · " if clip_on else ""
                 # missing only matters here while a library folder is offline
@@ -977,12 +979,36 @@ def _status_bar() -> None:
             except Exception:  # never let the status bar break a page
                 summary.set_text("status unavailable")
 
+        posts_seen = post_queue.last_seq()
+
+        def _posts_feed() -> None:
+            """Toast background post sends that finished since this tab opened."""
+            nonlocal posts_seen
+            for ev in post_queue.events_since(posts_seen):
+                posts_seen = ev.seq
+                if ev.ok:
+                    ui.notify(f"“{ev.title}”: {ev.message}", type="positive", timeout=8000)
+                else:
+                    ui.notify(
+                        ev.message if ev.held else f"“{ev.title}” wasn't sent: {ev.message}",
+                        type="warning" if ev.held else "negative",
+                        caption=(
+                            "Open the post and choose Send when online to have it wait."
+                            if ev.offline
+                            else None
+                        ),
+                        multi_line=True,
+                        timeout=0,
+                        close_button="OK",
+                    )
+
         _tick()
         _live_tick()
         _undo_tick()
         ui.timer(5.0, _tick)
         ui.timer(1.0, _live_tick)
         ui.timer(1.0, _undo_tick)
+        ui.timer(1.0, _posts_feed)
 
 
 _UNDO_WINDOW_SEC = 5 * 60
@@ -1256,6 +1282,7 @@ def build_ui(settings: Settings) -> None:
         _start_indexer_thread(settings, manager)
     _start_lock_watch(settings, manager)
     _start_online_only_watch(settings)
+    post_queue.start(settings, engine, writable=lambda: manager.writes_open)
     _install_onboarding_gate()
     _register_welcome(settings, engine, manager)
 
@@ -3548,6 +3575,7 @@ def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
 
 
 _INDEXER_JOIN_SEC = 60.0
+_POST_SEND_JOIN_SEC = 45.0  # a send in flight finishes before a handover / the final publish
 
 
 def _stop_indexer() -> None:
@@ -3566,12 +3594,20 @@ def _stop_indexer() -> None:
     State.indexer_started = False
 
 
+def _prepare_hand_over() -> None:
+    """Before editing is handed over: the indexer stops, and a post the queue
+    is sending finishes (writes are already closed, so no new one starts)."""
+    _stop_indexer()
+    post_queue.wait_idle(_POST_SEND_JOIN_SEC)
+
+
 def _shutdown_all(manager: SyncManager) -> None:
     """App shutdown (Quit, restart, Ctrl-C, SIGTERM), strictly in this order:
     stop the indexer and wait for it -- it stops between files, so this is
     quick -- then the final publish + lock release (``manager.stop``,
     constraints #4 and #9), then exiftool."""
     State.shutting_down = True  # the lock watch must not start a new indexer now
+    post_queue.stop()  # no new send starts; one in flight finishes (below)
     thread = State.indexer_thread
     if State.indexer_stop is not None:
         State.indexer_stop.set()
@@ -3579,6 +3615,7 @@ def _shutdown_all(manager: SyncManager) -> None:
         thread.join(timeout=_INDEXER_JOIN_SEC)
         if thread.is_alive():
             log.warning("indexer still busy after %.0fs; publishing anyway", _INDEXER_JOIN_SEC)
+    post_queue.wait_idle(_POST_SEND_JOIN_SEC)
     try:
         manager.stop()
     except Exception:
@@ -3602,7 +3639,7 @@ def _start_lock_watch(settings: Settings, manager: SyncManager) -> None:
             try:
                 before = manager.mode
                 if before is WriteMode.writable and not State.shutting_down:
-                    manager.maybe_hand_over(prepare=_stop_indexer)
+                    manager.maybe_hand_over(prepare=_prepare_hand_over)
                 mode = manager.refresh()
                 if before is WriteMode.writable and mode is not WriteMode.writable:
                     _stop_indexer()  # a handover already did; a lost lock didn't
@@ -3617,6 +3654,8 @@ def _start_lock_watch(settings: Settings, manager: SyncManager) -> None:
                 State.apply(manager)
                 if mode is not before:
                     log.info("write-lock state changed: %s -> %s", before, mode)
+                    if mode is WriteMode.writable:
+                        post_queue.kick()
                 if (
                     mode is WriteMode.writable
                     and settings.config.indexer.run_in_app

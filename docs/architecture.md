@@ -809,9 +809,23 @@ How they're applied:
   `DELETE /uploadposts/schedule/{job_id}` (not wired in).
 - **Posts** live in `sync/posts/<post_id>.json`, one file each (a deliberate exception to
   constraint #4, like collections: not `pixel_hash` state, not in `changes`, not merged). Status:
-  `draft` → `sending` → `sent_draft` | `scheduled` (or `failed`, retryable). A sent post is
-  frozen; "Duplicate" makes a new draft.
-- **No double posts** — `sending` is written before the create call, which is never retried.
+  `draft` → `queued` → `sending` → `sent_draft` | `scheduled` (or `failed`, retryable). A sent
+  post is frozen; "Duplicate" makes a new draft. Composing needs no connection: the channel list
+  is cached in `local/<provider>.json`.
+- **Background sending + "Send when online"** (`post_queue`) — the confirm dialog only
+  *queues* the post (`queued_mode`, `queued_by`, `queue_wait_online`, `queue_note`); one worker
+  thread sends it off the event loop, and each tab's status bar toasts the outcome. **Send when
+  online** probes the provider (`check_auth`) first and keeps the post queued while it can't
+  be reached (`queue_note="offline"`, re-tried every 30 s). A connection lost before the create
+  call puts it back in the queue; a never-opened connection (`posting.model.NO_CONNECTION`) is a
+  definite "not created", even on create. An immediate send fails fast offline instead. Rules:
+  only the machine with editing access sends, whichever machine queued it, and another device's
+  queued posts wait until this machine has been the editor for 90 s (its writes must arrive
+  first). A queued scheduled post whose time passed is **held** ("Needs a new time"), never sent
+  late. "Cancel queue" makes it editable again. Handover and shutdown wait for a send in
+  flight (`post_queue.wait_idle`).
+- **No double posts** — `sending` is written before the create call, which is never retried
+  (the queue only picks up `queued` posts).
   A network error / timeout / 5xx on create leaves the post `sending` for the user to settle
   ("It was sent" / "It wasn't sent") after checking the provider; only a 4xx becomes `failed`.
   Uploads are cached per photo + provider + export settings, so a retry doesn't re-upload.
