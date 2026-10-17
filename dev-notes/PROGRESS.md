@@ -1,16 +1,41 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-16 (V3 P5b + rename to sortandpost.photos; V3.md #10 compose from a photo, #12 onboarding folder removal and #9 Start setup over done; stress-test fixes S1–S10 done)._
-_Working branch: `main`. V3 through P6a–d merged._
+_Last updated: 2026-10-16 (V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
+_Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 
-> **▶️ Next:** the pre-release stress-test list in `Issues.md` is done, and V3.md #9 (Start setup
-> over), #12 (add / remove folders in onboarding), #10 (compose a post from the photo page) and
-> P5b (copy) + the sortandpost.photos rename. The rename's tray / installer / DMG names only show
-> after a desktop rebuild (not done yet).
-> Next: V3 **P7 Linux AppImage** (needs a Linux VM) or **P8 pywebview** (stretch);
-> untested Docker shapes: a real Synology (`PUID`/`PGID`) and Docker Desktop on Windows.
-> The macOS + Windows rebuild and GitHub release wait on the Apple Developer ID / public-repo
-> decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+> **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
+> headless in the Lima VM only: the real-desktop checklist (GNOME / KDE tray, keyring, autostart,
+> x86_64 hardware) is in V3Plan.md → P7. Untested Docker shapes: a real Synology
+> (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
+> installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
+> Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🐧 2026-10-16 — V3 P7: Linux AppImage (branch `feat/linux-appimage`)
+
+- **`packaging/linux/build.sh [--arch x86_64|aarch64]`** → `dist/sortandpost-<ver>-<arch>.AppImage`
+  (2.0.0: aarch64 273 MB, x86_64 305 MB). PyInstaller onedir + pinned appimagetool / type2
+  runtime, built in a digest-pinned `ubuntu:22.04` container (glibc 2.35 floor; `--no-container`
+  for CI). Bundles the same pinned exiftool Perl tarball as macOS (system perl runs it).
+- **Desktop layer on Linux** (`desktop/_linux.py`): tray backend picked before pystray loads —
+  AppIndicator (bundled PyGObject 3.50, pinned `<3.52` for GLib 2.72) when a StatusNotifier host
+  is on the bus, XEmbed `xorg` when an X tray host exists, else headless. **Settings → Overview →
+  Desktop app → Quit** (every OS, needed with no tray; server exits 76, tray follows). SIGTERM /
+  SIGHUP = clean stop. Start at login = XDG autostart entry → `$APPIMAGE`. `binaries.host_env()`
+  gives xdg-open / Reveal / exiftool the host's env, not the bundle's. A Linux no-keyring message
+  on the posting settings. `--version` flag.
+- **Tested in Lima** (arm64 natively, x86_64 in an amd64 container): launch / single instance,
+  first-run wizard + CLIP download + index (JPEG / HEIC / CR2), rating → `XMP:Rating`, RAW
+  untouched, search, delete → put back (no system-Trash offer), Quit from Settings + SIGTERM
+  (final publish + lock release), autostart on/off, second machine → Take over editing,
+  Wayland-only (weston headless). Then the user's click-through from the Mac browser.
+- **Fixed during the click-through:** with no xdg-utils the browser launch went through
+  Python's `webbrowser` with the bundle's libraries (`gio: undefined symbol`) — `open_path`
+  now tries `gio open` / `$BROWSER` / browsers itself; and a restart moved to port 8081
+  because the old server's TIME_WAIT connections made `port_free` say 8080 was busy — it now
+  binds with `SO_REUSEADDR` like uvicorn. **That one affects macOS too** (ships with the next
+  desktop rebuild).
+- Gate: Mac 1018 passed / 13 skipped, Linux VM 1008 / 23; ruff, format, mypy, alembic check,
+  `uv audit` clean.
 
 ## 🏷️ 2026-10-16 — V3 P5b closed + rename to sortandpost.photos (branch `feat/copy-rewrite`)
 

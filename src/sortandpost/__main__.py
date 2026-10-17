@@ -3,6 +3,7 @@
 ``--tray`` runs the desktop app instead (menu-bar item + the server as a child
 process, :mod:`sortandpost.desktop`); that is the default for the packaged app.
 ``--serve`` is how the desktop app starts its server child.
+``--version`` prints the version and exits.
 """
 
 from __future__ import annotations
@@ -63,6 +64,11 @@ def main() -> None:
     if _frozen():
         _frozen_ca_bundle()
     args = sys.argv[1:]
+    if "--version" in args:  # the packaged app's build check; no tray, no server
+        from sortandpost import __version__
+
+        print(f"sortandpost.photos {__version__}")
+        return
     if "--tray" in args or (_frozen() and "--serve" not in args):
         from sortandpost.desktop.tray import run_tray
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any
@@ -25,6 +26,7 @@ from sqlalchemy.engine import Engine
 
 from sortandpost.collections import get_collection, load_collections
 from sortandpost.config import PostingConfig, Settings
+from sortandpost.library_roots import running_in_docker
 from sortandpost.post_export import (
     IgSpec,
     resolve_sources,
@@ -1276,13 +1278,23 @@ def _key_panel(spec: ProviderSpec, client: Any) -> None:
                 ).classes("text-xs sp-muted")
                 return
             if st.keychain is None:
-                ui.label("No OS keychain is available here (e.g. inside Docker).").classes(
-                    "text-sm text-amber-600"
+                if sys.platform.startswith("linux") and not running_in_docker():
+                    ui.label("No system keyring is available here.").classes(
+                        "text-sm text-amber-600"
+                    )
+                    hint = (
+                        "Install and unlock a Secret Service keyring (GNOME Keyring or "
+                        f"KWallet), then restart sortandpost.photos. Or set {spec.env_var} in "
+                        "the environment it starts with."
+                    )
+                else:
+                    ui.label("No OS keychain is available here (e.g. inside Docker).").classes(
+                        "text-sm text-amber-600"
+                    )
+                    hint = f"Set {spec.env_var} in .env and restart."
+                ui.label(f"{hint} The key is never stored in the app-data folder.").classes(
+                    "text-xs sp-muted"
                 )
-                ui.label(
-                    f"Set {spec.env_var} in .env and restart. The key is never stored in the "
-                    "app-data folder."
-                ).classes("text-xs sp-muted")
                 return
             has_key = bool(st.masked)
             if has_key:

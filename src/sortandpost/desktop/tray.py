@@ -6,7 +6,10 @@ Trash?" (only ever on the user's click, constraint #1), then a clean server stop
 (indexer stop, final publish, lock release -- constraints #4 / #9).
 
 pystray drives the menu. Its callbacks run on the UI (main) thread, so anything
-slow runs on a worker thread and hops back with :meth:`TrayApp._on_main`.
+slow runs on a worker thread and hops back with :meth:`TrayApp._on_main`. On a
+Linux session with nowhere to show an icon (:mod:`sortandpost.desktop._linux`)
+the tray runs headless: it still supervises the server, and Settings → Quit
+ends the app (the server exits with ``QUIT_EXIT_CODE``).
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from typing import Any
 
 from sortandpost import __version__
 from sortandpost.desktop import login_item
-from sortandpost.desktop.control import RESTART_EXIT_CODE
+from sortandpost.desktop.control import QUIT_EXIT_CODE, RESTART_EXIT_CODE
 from sortandpost.desktop.icon import render_tray_icon
 from sortandpost.desktop.runtime import (
     InstanceLock,
@@ -54,8 +57,19 @@ def _open_path(path: Path) -> None:
         subprocess.Popen(["open", str(path)])
     elif sys.platform == "win32":  # pragma: no cover - Windows only
         os.startfile(str(path))  # type: ignore[attr-defined,unused-ignore]
-    else:  # pragma: no cover - P7
-        subprocess.Popen(["xdg-open", str(path)])
+    else:
+        from sortandpost.desktop import _linux
+
+        _linux.open_path(str(path))
+
+
+def _open_url(url: str) -> None:
+    if sys.platform.startswith("linux"):
+        from sortandpost.desktop import _linux
+
+        _linux.open_path(url)  # outside the bundle's libraries
+    else:
+        webbrowser.open(url)
 
 
 def _ask(title: str, message: str, *, yes: str, no: str) -> bool:
@@ -95,10 +109,9 @@ def trash_failure_message(res: dict[str, Any] | None) -> str | None:
 
 
 class TrayApp:
-    def __init__(self, server: ServerProcess, lock: InstanceLock) -> None:
-        import pystray
-
-        self._pystray = pystray
+    def __init__(
+        self, server: ServerProcess, lock: InstanceLock, *, headless: bool = False
+    ) -> None:
         self.server = server
         self.lock = lock
         self.status: dict[str, Any] | None = None
@@ -109,6 +122,15 @@ class TrayApp:
         self._shutdown_done = threading.Event()
         self._shutdown_lock = threading.Lock()
         self._quit_started = threading.Event()
+        self.icon: Any
+        self.headless = headless
+        if headless:
+            from sortandpost.desktop._linux import HeadlessIcon
+
+            self.icon = HeadlessIcon()
+            return
+        import pystray
+
         item, sep = pystray.MenuItem, pystray.Menu.SEPARATOR
         self.icon = pystray.Icon(
             "sortandpost",
@@ -175,13 +197,14 @@ class TrayApp:
         self._on_main(self.icon.update_menu)
 
     def _on_main(self, fn: Any) -> None:
-        if sys.platform == "darwin":
+        if sys.platform == "darwin" and not self.headless:  # no AppKit loop when headless
             from sortandpost.desktop import _macos
 
             _macos.call_on_main(fn)
         else:  # pragma: no cover
             # win32: menu callbacks already run on pystray's message-loop thread,
             # and update_menu only rebuilds an HMENU, which any thread may do.
+            # Linux: pystray's GTK / X backends queue the call onto their own loop.
             fn()
 
     def _notify_and_wait(self, title: str, message: str) -> None:
@@ -204,12 +227,16 @@ class TrayApp:
                 from sortandpost.desktop import _windows
 
                 _windows.notify(title, message)
+            else:
+                from sortandpost.desktop import _linux
+
+                _linux.notify(title, message)
         except Exception:  # never let a notice stand between the user and Quit
             log.exception("quit: could not show %r", title)
 
     # -- actions ------------------------------------------------------------ #
     def open_browser(self) -> None:
-        webbrowser.open(browser_url(self.server.port))
+        _open_url(browser_url(self.server.port))
 
     def _menu_open(self, _icon: object, _item: object) -> None:
         self.open_browser()
@@ -259,9 +286,14 @@ class TrayApp:
         proc = self.server.proc
 
         def _wait() -> None:
-            if proc is None or proc.wait() != RESTART_EXIT_CODE:
+            code = None if proc is None else proc.wait()
+            if code not in (RESTART_EXIT_CODE, QUIT_EXIT_CODE):
                 return
             if self.quitting or self.server.quitting or self.server.proc is not proc:
+                return
+            if code == QUIT_EXIT_CODE:
+                log.info("quit from the app's Settings")
+                self.end_session()
                 return
             log.info("server asked for a restart")
             self.ready = False
@@ -314,6 +346,14 @@ class TrayApp:
 
         threading.Thread(target=_work, name="sortandpost-quit", daemon=True).start()
 
+    def end_session(self) -> None:
+        """Quit without asking: Settings → Quit (the server has already stopped
+        cleanly), or a signal (logout, ``kill``) on Linux."""
+        self.quitting = True
+        self._refresh_menu()
+        self.shutdown()
+        self.icon.stop()
+
     def shutdown(self) -> None:
         """Stop the server cleanly and release our runtime files. Idempotent;
         used by Quit, by an OS-initiated terminate (logout) and at exit."""
@@ -365,7 +405,7 @@ class TrayApp:
             self.ready
             and not self.server.alive()
             and not self.server.quitting
-            and self.server.exit_code() != RESTART_EXIT_CODE  # _watch_for_restart's
+            and self.server.exit_code() not in (RESTART_EXIT_CODE, QUIT_EXIT_CODE)
         ):
             self.crashed, self.ready = True, False
             log.error("server exited unexpectedly (code %s)", self.server.exit_code())
@@ -400,8 +440,18 @@ class TrayApp:
 
             _windows.hold_app_mutex()
             _windows.install_session_end(self.icon, on_end=self.shutdown)
+        else:
+            from sortandpost.desktop import _linux
+
+            _linux.install_session_end(self.end_session)
         try:
             self.icon.run(setup=self._setup)
+        except Exception as exc:
+            if not self.quitting:
+                raise
+            # pystray's GTK backend tidies up through the desktop's notification
+            # service as the loop ends; a session without one raises there.
+            log.warning("tray icon cleanup failed after quit: %s", exc)
         finally:
             self.shutdown()  # no-op after Quit; covers any other way the loop ends
 
@@ -411,7 +461,7 @@ def _reuse_running(info: RuntimeInfo | None) -> int:
         log.warning("sortandpost is already running, but its address is unknown")
         return 1
     log.info("sortandpost is already running (pid %d); opening %s", info.pid, info.url)
-    webbrowser.open(info.url)
+    _open_url(info.url)
     return 0
 
 
@@ -427,6 +477,16 @@ def run_tray() -> int:
     server = ServerProcess(
         port=pick_port(), token=new_token(), log_file=_logs_dir() / "server-output.log"
     )
+    headless = False
+    if sys.platform.startswith("linux"):
+        from sortandpost.desktop import _linux
+
+        headless = _linux.pick_backend() is None
     server.start()
-    TrayApp(server, lock).run()
+    try:
+        app = TrayApp(server, lock, headless=headless)
+    except Exception:  # pystray couldn't reach the display / tray host after all
+        log.exception("no tray icon; running without one (quit from Settings)")
+        app = TrayApp(server, lock, headless=True)
+    app.run()
     return 0

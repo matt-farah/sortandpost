@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=sortandpost.photos
+GenericName=Photo organizer
+Comment=Rate, tag and search your photo library
+Exec=sortandpost
+Icon=sortandpost
+Categories=Graphics;Photography;
+Terminal=false

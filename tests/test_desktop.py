@@ -66,6 +66,23 @@ def test_pick_port_skips_a_busy_port() -> None:
         assert runtime.port_free(picked)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no TIME_WAIT bind block on Windows")
+def test_a_restarted_servers_port_counts_as_free() -> None:
+    """A server that just exited leaves its closed connections in TIME_WAIT;
+    the restart must still get the same port (the open tab reloads there)."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as uvicorn binds
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    port = srv.getsockname()[1]
+    client = socket.create_connection(("127.0.0.1", port))
+    conn, _ = srv.accept()
+    conn.close()  # the server closes first -> TIME_WAIT on its side
+    srv.close()
+    client.close()
+    assert runtime.port_free(port)
+
+
 # --------------------------------------------------------------------------- #
 # control API (server side)
 # --------------------------------------------------------------------------- #
@@ -245,7 +262,8 @@ def test_parent_alive_check_follows_the_process_on_windows() -> None:
 # --------------------------------------------------------------------------- #
 # login item
 # --------------------------------------------------------------------------- #
-def test_login_item_plist_opens_the_bundle(tmp_path: Path) -> None:
+def test_login_item_plist_opens_the_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
     bundle = Path("/Applications/sortandpost.app")
     assert not login_item.is_enabled(tmp_path)
     path = login_item.enable(bundle, tmp_path)
@@ -273,6 +291,51 @@ def test_login_item_packaged_windows_exe(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(sys, "platform", "win32")
     assert login_item.app_bundle() == exe.resolve()
     assert login_item.run_command(exe) == f'"{exe}"'  # quoted: the path may hold spaces
+
+
+def test_login_item_autostart_entry_on_linux(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    appimage = Path("/home/me/Apps/sortandpost-2.0.0-x86_64.AppImage")
+    assert not login_item.is_enabled(tmp_path)
+    path = login_item.enable(appimage, tmp_path)
+    assert path == tmp_path / ".config" / "autostart" / "app.sortandpost.desktop"
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("[Desktop Entry]\n")
+    assert f'Exec="{appimage}"\n' in text
+    assert "X-GNOME-Autostart-enabled=true" in text
+    assert login_item.is_enabled(tmp_path)
+    assert not (tmp_path / "Library").exists()  # no LaunchAgent on Linux
+    login_item.disable(tmp_path)
+    assert not login_item.is_enabled(tmp_path)
+    login_item.disable(tmp_path)  # idempotent
+
+
+def test_login_item_autostart_follows_xdg_config_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    assert login_item.autostart_path() == tmp_path / "cfg" / "autostart" / "app.sortandpost.desktop"
+
+
+def test_login_item_exec_quoting() -> None:
+    # The desktop-entry spec: quote, escape " ` $ \ inside the quotes, double %,
+    # then double every backslash for the string-value layer.
+    odd = Path('/home/me/my "apps"/50% $off.AppImage')
+    assert login_item._exec_quote(odd) == '"/home/me/my \\\\"apps\\\\"/50%% \\\\$off.AppImage"'
+
+
+def test_login_item_packaged_appimage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    appimage = tmp_path / "sortandpost.AppImage"
+    appimage.write_bytes(b"")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("APPIMAGE", str(appimage))
+    assert login_item.app_bundle() == appimage  # the file, not its /tmp/.mount_* copy
+    monkeypatch.delenv("APPIMAGE")
+    assert login_item.app_bundle() is None  # a bare onedir: no stable path
+    assert not login_item.supported()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows registry")
@@ -322,6 +385,149 @@ def test_frozen_without_bundled_exiftool_falls_back_to_path(
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     assert binaries.exiftool_path() == "exiftool"
+
+
+def test_host_env_takes_the_bundle_out_of_a_host_programs_environment() -> None:
+    bundle = Path("/tmp/.mount_abc/usr/bin/sortandpost/_internal")
+    b = str(bundle)
+    env = {
+        "LD_LIBRARY_PATH": f"{b}:{b}/lib",
+        "LD_LIBRARY_PATH_ORIG": "/opt/vendor/lib",
+        "GI_TYPELIB_PATH": f"{b}/gi_typelibs",
+        "XDG_DATA_DIRS": f"{b}/share:/usr/local/share:/usr/share",
+        "SSL_CERT_FILE": f"{b}/certifi/cacert.pem",
+        "GDK_PIXBUF_MODULE_FILE": "/tmp/tmpfhux3rwg",  # the runtime hook's loader cache
+        "_PYI_ARCHIVE_FILE": f"{b}/../sortandpost",
+        "_MEIPASS2": b,
+        "PATH": "/usr/local/bin:/usr/bin",
+        "APPDIR": "/tmp/.mount_abc",
+        "APPIMAGE": "/home/me/sortandpost.AppImage",
+        "HOME": "/home/me",
+        "ALMOST": b + "-not-inside",
+    }
+    out = binaries.host_env(env, bundle=bundle)
+    assert out == {
+        "LD_LIBRARY_PATH": "/opt/vendor/lib",  # the user's own value, back
+        "XDG_DATA_DIRS": "/usr/local/share:/usr/share",
+        "PATH": "/usr/local/bin:/usr/bin",
+        "APPDIR": "/tmp/.mount_abc",
+        "APPIMAGE": "/home/me/sortandpost.AppImage",
+        "HOME": "/home/me",
+        "ALMOST": b + "-not-inside",
+    }
+    assert env["GI_TYPELIB_PATH"]  # the input is never modified
+
+
+def test_host_env_is_a_plain_copy_outside_a_frozen_linux_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/somewhere")
+    assert not getattr(sys, "frozen", False)
+    env = binaries.host_env()
+    assert env == dict(os.environ) and env is not os.environ
+
+
+def test_linux_opener_never_falls_back_to_webbrowser(tmp_path: Path) -> None:
+    """No xdg-open (a minimal install): the host's own openers run, never
+    Python's webbrowser (it would start them with the bundle's libraries)."""
+    from sortandpost.desktop import _linux
+
+    def add(name: str) -> str:
+        exe = tmp_path / name
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        return str(exe)
+
+    env = {"PATH": str(tmp_path)}
+    url = "http://sortandpost.localhost:8080/"
+    assert _linux._opener_command(url, env) is None
+    firefox = add("firefox")
+    assert _linux._opener_command(url, env) == [firefox, url]
+    assert _linux._opener_command("/home/me/logs", env) is None  # a browser isn't a file manager
+    gio = add("gio")
+    assert _linux._opener_command(url, env) == [gio, "open", "--", url]
+    assert _linux._opener_command(url, {**env, "BROWSER": "firefox --new-tab %s"}) == [
+        firefox,
+        "--new-tab",
+        url,
+    ]
+    xdg = add("xdg-open")
+    assert _linux._opener_command("/home/me/logs", env) == [xdg, "/home/me/logs"]
+
+
+# --------------------------------------------------------------------------- #
+# Linux tray backend
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("env", "appindicator", "sni_host", "xembed_host", "want"),
+    [
+        ({"DISPLAY": ":0"}, True, True, True, "appindicator"),
+        ({"WAYLAND_DISPLAY": "wayland-0"}, True, True, False, "appindicator"),
+        ({"DISPLAY": ":0"}, True, False, True, "xorg"),  # XEmbed host: XFCE, MATE, …
+        ({"DISPLAY": ":0"}, False, True, True, "xorg"),  # SNI host, but no typelib
+        ({"DISPLAY": ":0"}, True, False, False, None),  # GNOME on X11, no extension
+        ({"WAYLAND_DISPLAY": "wayland-0"}, True, False, False, None),
+        ({}, True, True, True, None),  # no display at all (ssh, a server)
+        ({"PYSTRAY_BACKEND": "gtk"}, False, False, False, "gtk"),  # the user's choice wins
+    ],
+)
+def test_linux_tray_backend_choice(
+    env: dict[str, str], appindicator: bool, sni_host: bool, xembed_host: bool, want: str | None
+) -> None:
+    from sortandpost.desktop import _linux
+
+    got = _linux.choose_backend(
+        env, appindicator=appindicator, sni_host=sni_host, xembed_host=xembed_host
+    )
+    assert got == want
+
+
+def test_headless_icon_runs_setup_and_stops() -> None:
+    from sortandpost.desktop._linux import HeadlessIcon
+
+    icon = HeadlessIcon()
+    seen: list[object] = []
+
+    def setup(i: object) -> None:
+        seen.append(i)
+        icon.update_menu()
+        icon.stop()
+
+    runner = threading.Thread(target=icon.run, args=(setup,))
+    runner.start()
+    runner.join(5)
+    assert not runner.is_alive() and seen == [icon]
+
+
+def test_tray_ends_when_the_app_quit_from_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sortandpost.desktop.supervisor import ServerProcess
+    from sortandpost.desktop.tray import TrayApp
+
+    server = ServerProcess(port=1, token="t", log_file=tmp_path / "out.log")
+    code = control.QUIT_EXIT_CODE
+    server.proc = subprocess.Popen([sys.executable, "-c", f"raise SystemExit({code})"])
+    tray = TrayApp(server, runtime.instance_lock(tmp_path), headless=True)
+    restarted: list[bool] = []
+    monkeypatch.setattr(tray, "_restart_server", lambda *, open_browser: restarted.append(True))
+    tray._watch_for_restart()
+    assert tray._shutdown_done.wait(5)
+    assert tray.icon._stopped.is_set() and tray.quitting and not restarted
+    tray._poll_once()
+    assert not tray.crashed  # a quit, not a crash
+
+
+def test_settings_quit_exits_for_the_tray_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sortandpost import app
+
+    monkeypatch.setenv(control.TOKEN_ENV, "t0k")
+    monkeypatch.setattr(app._QUIT_APP, "is_set", lambda: True)
+    monkeypatch.setattr(app.logging, "shutdown", lambda: None)
+    monkeypatch.setattr(app.os, "execv", lambda *_a: pytest.fail("must not exec"))
+    with pytest.raises(SystemExit) as exc:
+        app._reexec_if_requested()
+    assert exc.value.code == control.QUIT_EXIT_CODE
 
 
 # --------------------------------------------------------------------------- #
@@ -376,6 +582,19 @@ def test_no_new_indexer_once_shutting_down(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(web_app.State, "shutting_down", True)
     web_app._start_indexer_thread(object(), object())  # type: ignore[arg-type]
     assert web_app.State.indexer_started is False
+
+
+def test_version_flag_starts_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sortandpost import __main__, __version__
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)  # frozen: the tray by default
+    monkeypatch.setattr(sys, "argv", ["sortandpost", "--version"])
+    monkeypatch.setattr(__main__, "_frozen_ca_bundle", lambda: None)
+    monkeypatch.setattr(__main__, "serve", lambda: pytest.fail("must not serve"))
+    __main__.main()
+    assert capsys.readouterr().out.strip() == f"sortandpost.photos {__version__}"
 
 
 def test_server_command_from_source() -> None:

@@ -36,6 +36,9 @@ PREFIX = "/_desktop"
 # it -- rather than the server re-exec'ing itself, which on Windows would leave
 # the tray holding a dead process while the new one runs unsupervised.
 RESTART_EXIT_CODE = 75
+# ...and when the user quit the whole app from Settings (a Linux session with no
+# tray icon has no other Quit): the tray ends too instead of reporting a crash.
+QUIT_EXIT_CODE = 76
 
 
 @dataclass

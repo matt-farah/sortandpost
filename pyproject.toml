@@ -64,6 +64,11 @@ sortandpost = "sortandpost.__main__:main"
 desktop = [
     "pystray>=0.19",
     "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    # Linux tray: pystray's AppIndicator backend (GNOME hides X11 tray icons).
+    # Source-only on PyPI. 3.52+ needs GLib >= 2.80, and the AppImage builds on
+    # Ubuntu 22.04 (GLib 2.72) for its glibc baseline -- so stay on 3.50.x.
+    # Building it needs libgirepository1.0-dev + libcairo2-dev (pycairo).
+    "pygobject>=3.50,<3.52; sys_platform == 'linux'",
     "pyinstaller>=6.10",
 ]
 dev = [
@@ -114,7 +119,7 @@ strict = true
 plugins = []
 # SQLModel/NiceGUI ship partial stubs; don't fail the build on their internals.
 [[tool.mypy.overrides]]
-module = ["nicegui.*", "send2trash.*", "pystray.*", "AppKit.*", "Foundation.*", "PyObjCTools.*"]
+module = ["nicegui.*", "send2trash.*", "pystray.*", "AppKit.*", "Foundation.*", "PyObjCTools.*", "gi.*"]
 ignore_missing_imports = true
 
 # These ship no stubs at all. `follow_imports = skip` makes them `Any` whether or
@@ -122,7 +127,7 @@ ignore_missing_imports = true
 # optional heavy deps are installed in the current env (torch/open-clip/watchdog
 # are absent in the light dev venv, present in Docker and a full native setup).
 [[tool.mypy.overrides]]
-module = ["rawpy.*", "open_clip.*", "torch.*", "pillow_heif.*", "watchdog.*"]
+module = ["rawpy.*", "open_clip.*", "torch.*", "pillow_heif.*", "watchdog.*", "jeepney.*", "Xlib.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 

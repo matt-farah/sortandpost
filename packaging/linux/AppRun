@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry point: run the PyInstaller app in usr/bin/sortandpost/.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/sortandpost/sortandpost" "$@"

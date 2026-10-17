@@ -40,7 +40,7 @@ it up with no rebuild.
 > or another computer, set `SORTANDPOST_PASSWORD` (or `SORTANDPOST_PASSWORD_FILE`) and, for
 > Docker, `BIND=0.0.0.0`. On a network, plain HTTP lets others on that network read the
 > password: put it behind HTTPS (see [docs/docker.md](docs/docker.md#https)). The macOS /
-> Windows desktop app only listens on this computer. See [SECURITY.md](SECURITY.md).
+> Windows / Linux desktop app only listens on this computer. See [SECURITY.md](SECURITY.md).
 
 ## Install
 
@@ -68,6 +68,32 @@ Download `sortandpost-<version>-setup.exe` from
 your user only (no admin prompt) and lives in the system tray, like the macOS app. It isn't
 code-signed yet, so Windows SmartScreen may ask you to confirm (**More info → Run anyway**).
 To build it yourself: `pwsh packaging\windows\build.ps1`.
+
+### Linux app (AppImage)
+
+Download `sortandpost-<version>-x86_64.AppImage` (or `-aarch64` for ARM) from
+[Releases](https://github.com/matt-farah/sortandpost/releases), make it executable and run it:
+
+```bash
+chmod +x sortandpost-*.AppImage
+./sortandpost-*.AppImage
+```
+
+No Python or exiftool to install (it uses the system `perl`, which every desktop distro has).
+Needs glibc 2.35 or newer: Ubuntu 22.04+, Debian 12+, Fedora 36+. It opens the library in your
+browser at `http://sortandpost.localhost:8080` and only listens on this computer.
+
+- **Tray icon**: shown on KDE, most other desktops, and GNOME with the *AppIndicator* extension
+  (Ubuntu ships it). Where there's no tray, the app still runs. Quit it from
+  **Settings → Overview → Quit sortandpost.photos**.
+- **FUSE**: AppImages need `fusermount` (`libfuse2` or `fuse3`). Without it, run
+  `./sortandpost-*.AppImage --appimage-extract-and-run`.
+- **API keys for posting** go in your Secret Service keyring (GNOME Keyring / KWallet). Without
+  one, set the provider's env var (e.g. `ROBOPOST_API_KEY`) before starting the app.
+- *Start at login* adds `~/.config/autostart/app.sortandpost.desktop`. If you move the
+  AppImage, turn it off and on again.
+
+To build it yourself: `packaging/linux/build.sh` (needs Docker; `--arch x86_64|aarch64`).
 
 ### From source (any OS)
 
@@ -164,7 +190,7 @@ setup and checks, and [SECURITY.md](SECURITY.md) to report a vulnerability priva
 | `src/sortandpost/` | The app (web UI, indexer, sync layer, CLIP, posting, desktop tray) |
 | `tests/` | pytest suite |
 | `migrations/` | Alembic migrations for the SQLite schema |
-| `packaging/` | Docker entrypoint, macOS `.app` / DMG and Windows installer builds |
+| `packaging/` | Docker entrypoint, macOS `.app` / DMG, Windows installer and Linux AppImage builds |
 | `tools/` | Dev helpers (Tailwind CSS build, UI copy export) |
 | `docs/` | Architecture spec, Docker / NAS setup, security review |
 | `dev-notes/` | Planning notes, roadmaps, progress log and issue history from development |
