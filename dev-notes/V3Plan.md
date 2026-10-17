@@ -66,8 +66,121 @@ reuses a proven recipe). **No Haiku.**
 | P6b ✅ | **Server-mode security** (Docker.md must-haves): shared-password login gating the pages, `/thumbs`, the trash-thumb route **and the socket.io connection**. Session secret in `local/` (L1), rate limiting (L3), bind to `127.0.0.1` by default, Host allowlist + websocket Origin check (M1), HTTPS reverse-proxy example | **Opus** | Security-critical. It's easy to leave a route or the websocket ungated. |
 | P6d ✅ | **Editing checkout** (added 2026-10-14; design in [Docker.md](../docs/docker.md#editing-checkout)): an always-on Docker writer would keep every desktop read-only forever. Request → grant → take through `sync/` files only: the borrower writes `sync/locks/request-<id8>.json`; the holder shows a 30 s "handing over" toast with **Keep editing**, then stops the indexer, publishes, and rewrites its lock as a grant (`handoff_to`, `handoff_generation`); the borrower takes it only once its synced DB reaches that generation. Quit returns the lock (Docker reclaims a free lock unless another request is pending); Docker reclaims early with the same **Take over editing** button. Needs a writable → read-only **demotion** path in `SyncManager` + `_start_lock_watch`, and write handlers re-checking the mode at action time. Two-manager tests with a delayed, reordering `sync/` bridge | **Opus** | Changes the single-writer lock (constraint #9) across the sync layer, indexer lifecycle and UI. A wrong order hands over a stale DB. |
 | P6c ✅ | **Helper + server docs**: launchd plist, Windows `.bat` + Task Scheduler note, a `/settings` helper-status panel with an install command, M2 helper fixes. Document the always-on NAS shape (read-only second machine) and bind-mount performance | **Sonnet** | Bounded tooling + docs. |
-| P7 | **Linux AppImage + test on Linux**: reuse the P5 PyInstaller recipe. Needs a Linux VM first | **Sonnet** (Opus if native-lib packaging fights back) | Recipe already proven on macOS/Windows. |
+| P7 ✅ | **Linux AppImage + test on Linux**: reuse the P5 PyInstaller recipe. Linux VM ready 2026-10-16 (see **P7 prep** below). Done 2026-10-16: x86_64 + arm64 AppImages, tested headless in Lima + the user's click-through; real-desktop checks deferred (list below) | **Sonnet** (Opus if native-lib packaging fights back) | Recipe already proven on macOS/Windows. |
 | P8 | **Stretch: pywebview native window** (`native=True`) as an option next to the tray + `*.localhost` browser | **Sonnet** | Small and isolated. Last priority; if not reached, it moves to V4. |
+
+**P7 prep (2026-10-16): the Linux VM.** A Lima VM named `linux` on the Mac: Ubuntu 24.04.5,
+arm64, `--vm-type=vz --rosetta`, 4 CPU / 6 GiB / 60 GiB, headless. Run commands from the Mac with
+`limactl shell linux -- bash -lc '…'` (`-l` loads `~/.profile`); `limactl stop|start linux`.
+- **Mounts** keep host paths: the repo `/Users/matt1125/Documents/GitHub/sortandpost` is writable,
+  the rest of `~` read-only. The guest home is `/home/matt1125.guest`.
+- **Venv outside the repo**: `~/.profile` sets `UV_PROJECT_ENVIRONMENT=~/venvs/sortandpost` and
+  `UV_LINK_MODE=copy`, so the Mac `.venv` in the shared repo is never touched. Synced with
+  `uv sync --locked --extra dev --extra desktop` (torch 2.14.1+cpu).
+- **Installed**: Docker 29.9 + buildx/compose; uv + Python 3.13; exiftool 12.76; FUSE
+  (`libfuse2t64`, `fuse3`), squashfs-tools, patchelf, desktop-file-utils (AppImage); Xvfb, xdotool,
+  ImageMagick; GTK3 + AyatanaAppIndicator typelibs, `python3-gi`; Playwright Chromium.
+- **Added 2026-10-16 (P7 step 1)**: `build-essential pkg-config libgirepository1.0-dev
+  libcairo2-dev`, to build PyGObject 3.50.x + pycairo from source (the `desktop` extra on Linux).
+  3.52+ needs GLib >= 2.80, and the AppImage builds on Ubuntu 22.04 (GLib 2.72), hence the `<3.52` pin.
+- **x86_64**: Rosetta binfmt (flags `OCF`) runs x86_64 binaries in the VM and in
+  `docker run --platform linux/amd64` containers (verified). Plan: arm64 AppImage natively,
+  x86_64 AppImage in an amd64 container. A final x86_64 build can also run on GitHub Actions.
+- **Status**: the full pytest suite passes on Linux arm64
+  (`xvfb-run -a uv run --locked pytest -q -p no:cacheprovider`).
+- **Open for P7:**
+  - **Tray backend**: pystray needs a display (`xvfb-run -a`) and falls back to its `_xorg`
+    backend. Ubuntu's GNOME hides X11 tray icons, so the app needs PyGObject in the venv / bundle
+    to get the AppIndicator backend.
+  - **Tray testing**: the VM has no desktop, so the tray can only be smoke-tested under Xvfb. A
+    hands-on check needs a GUI VM (UTM) or a real Linux desktop.
+
+**P7 plan (2026-10-16).** Decisions: ship **x86_64 + arm64** AppImages, bundle the
+**AppIndicator** tray backend, and do all P7 testing in the headless Lima VM. The user clicks
+through from the Mac browser over Lima's port forward. A GUI VM or real hardware comes later
+(see the deferred list below). One PR, `feat/linux-appimage`:
+
+1. **Deps** ✅: `pygobject>=3.50,<3.52; sys_platform == 'linux'` in the `desktop` extra (locked
+   3.50.2 + pycairo 1.29.2). It's sdist-only, so the VM / build container needs
+   `libgirepository1.0-dev libcairo2-dev`. `gi.*` is in mypy's ignore list.
+2. **Desktop layer** ✅ (deviations from the plan below: pystray's GTK backends already queue
+   `update_menu` onto their own loop, so there's no `GLib.idle_add`; `xorg` also needs an XEmbed
+   host (`_NET_SYSTEM_TRAY_S<n>`), else headless; the no-keychain hint on a Linux desktop names
+   GNOME Keyring / KWallet. Verified in Lima from source: headless + Settings Quit; `xorg`
+   docked in stalonetray + SIGTERM; `appindicator` against a stand-in StatusNotifierWatcher
+   (menu exported, Quit clicked over dbusmenu) -- all clean stops):
+   - New `desktop/_linux.py`. `pick_backend()` sets `PYSTRAY_BACKEND` before pystray is
+     imported: `appindicator` if gi + AyatanaAppIndicator3 import and a StatusNotifierWatcher
+     is on the session bus, else `xorg` with a `DISPLAY`, else no tray. It also has a
+     best-effort `notify()`.
+   - Tray: `update_menu` goes through `GLib.idle_add` under GTK backends; SIGTERM/SIGHUP →
+     `shutdown`.
+   - **Settings → Quit sortandpost** (only when `desktop.control` is mounted) for a machine
+     with no tray.
+   - Start at login = an XDG autostart file
+     `~/.config/autostart/app.sortandpost.desktop` → `$APPIMAGE`.
+   - `binaries.host_env()` restores `LD_LIBRARY_PATH_ORIG` & co. for host tools (`xdg-open`,
+     the browser, "Open with" apps, perl/exiftool), but not for the `--serve` child.
+   - Check that a missing Secret Service shows the "use the env var" message, not an error.
+3. **`packaging/linux/`** ✅ (build.sh + spec + make_icon.py + AppRun / .desktop / appdata + the
+   builder `Dockerfile`). Pins: appimagetool 1.9.1, type2-runtime 20251108 (sha256 per arch,
+   matching GitHub's asset digests). Output 2.0.0: aarch64 273 MB (875 MB bundle), x86_64
+   305 MB (1017 MB). A cached rebuild takes ~1.5 min (arm64) / ~3 min (x86_64 under Rosetta).
+   Gotchas met:
+   - Importing pystray needs a display, so the build sets `PYSTRAY_BACKEND=dummy`.
+   - Rosetta's binfmt refuses an AppImage (its magic bytes sit in the ELF header padding),
+     so appimagetool runs from a copy with bytes 8-10 zeroed.
+   - The x86_64 *app* can't run in the arm64 VM itself (no x86_64 glibc): test it in an amd64
+     container (`ubuntu:24.04` + perl, `--network host`, `APPIMAGE_EXTRACT_AND_RUN=1`).
+   - `--version` was added for the build's sanity check.
+   - Build inside a digest-pinned `ubuntu:22.04` container (`--platform linux/arm64|amd64`;
+     glibc 2.35 baseline), or `--no-container` for CI.
+   - The same pinned exiftool Perl tarball as macOS, run by the system perl.
+   - PyInstaller onedir (macOS spec's `collect_all` list + torchvision `*.so` glob +
+     gi/pystray backends + secretstorage/jeepney hidden imports; lean `gi` hooksconfig).
+   - Pinned `appimagetool` (type2 static runtime, zstd) →
+     `dist/sortandpost-<ver>-{x86_64,aarch64}.AppImage`.
+   - arm64 natively first, then x86_64 in an amd64 container (Rosetta).
+4. **Test in Lima** ✅ (2026-10-16: all automated items, both arches as planned, plus the user's
+   click-through). Extra fix found: `host_env` also drops `GDK_PIXBUF_MODULE_FILE` (PyInstaller's
+   loader cache in /tmp, outside the bundle):
+   - The gate (in the VM and on the Mac).
+   - AppImage smoke under `xvfb-run`:
+     - Launch, `app.lock` / `runtime.json` / `/healthz`, backend logged.
+     - Second launch reuses the running instance.
+     - Wizard on scratch pref/local dirs, the CLIP download, and an index of ~300 photos copied
+       into the guest home (`~/Downloads` is a read-only mount). JPEG / HEIC / RAW, rating →
+       `XMP:Rating` round trip, search, frozen pool workers.
+     - Delete → put back, with no system-Trash offer and no `.Trash-*`.
+     - Quit (tray / Settings / SIGTERM) → final publish + lock release.
+     - Autostart file on/off; second-"machine" read-only → Take over editing.
+     - Host tools get the restored env.
+     - **Wayland-only** (no X server, `DISPLAY` unset): the AppImage under `weston
+       --backend=headless` + a stand-in StatusNotifierWatcher shows the AppIndicator icon and
+       quits cleanly, and with no host runs headless. This proves the bundled GTK carries its
+       Wayland backend (verified from source 2026-10-16).
+   - The user clicked through the arm64 AppImage (fresh first run on scratch pref/local dirs)
+     at `http://localhost:8080` over Lima's forward (nothing on the Mac held 8080 then). Two
+     bugs found and fixed:
+     - **No xdg-utils** (the VM has none): the browser launch fell back to Python's
+       `webbrowser`, which ran `gio open` with the bundle's `LD_LIBRARY_PATH` → `undefined
+       symbol: g_string_free_and_steal`. `_linux.open_path` now tries xdg-open, `gio open`,
+       `$BROWSER`, then a browser by name, always with `host_env()`.
+     - **Restart moved ports** (all POSIX, macOS too): after the wizard's folder pick the old
+       server's closed connections sat in TIME_WAIT, `runtime.port_free` (a plain `bind`)
+       called 8080 busy and the new server came up on 8081, stranding the tab. `port_free`
+       now binds with `SO_REUSEADDR` like uvicorn (not on Windows).
+5. **Docs** ✅: an architecture.md "Desktop app → Linux" subsection (+ Stack table, Restart
+   note), README "Linux app (AppImage)", CLAUDE.md Commands, CONTRIBUTING (Linux apt deps).
+
+**Deferred: real Linux desktop checklist** (GUI VM or hardware, after P7):
+- Tray icon + menu on Ubuntu GNOME (AppIndicator), KDE Plasma, and a Wayland session.
+- No-tray fallback on stock Fedora GNOME.
+- The Secret Service keychain (gnome-keyring / KWallet) prompt, plus the key surviving restarts.
+- Start at login across a real logout / login; a clean stop on logout.
+- Reveal / Open in Files / Dolphin.
+- Double-click launch; AppImageLauncher / Gear Lever.
+- The x86_64 AppImage on real Intel/AMD hardware (CLIP speed, `slow` / `fast`).
 
 **Manual check (any time, on the Windows machine):** Ctrl-click grid selection (V2 #24),
 which was never tried on Windows.

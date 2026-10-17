@@ -86,8 +86,8 @@ is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 | Filesystem watch   | `watchdog` |
 | Lint / format / types | `ruff check`, `ruff format`, `mypy` |
 | Tests              | `pytest` + `pytest-asyncio` |
-| Deployment         | Docker Compose, single container; **macOS app** = PyInstaller onedir `.app` + DMG (`packaging/macos/build.sh`); **Windows app** = PyInstaller onedir + Inno Setup installer + zip (`packaging/windows/build.ps1`) |
-| Desktop tray       | `pystray` (+ PyObjC on macOS) — `desktop` optional extra |
+| Deployment         | Docker Compose, single container; **macOS app** = PyInstaller onedir `.app` + DMG (`packaging/macos/build.sh`); **Windows app** = PyInstaller onedir + Inno Setup installer + zip (`packaging/windows/build.ps1`); **Linux app** = PyInstaller onedir + AppImage (`packaging/linux/build.sh`) |
+| Desktop tray       | `pystray` (+ PyObjC on macOS, PyGObject / AppIndicator on Linux) — `desktop` optional extra |
 
 ---
 
@@ -931,7 +931,9 @@ uvicorn each want the main thread.
     spawn pool re-runs the executable.
 - **Restart** (a new data folder, the wizard's folder pick): under the tray the server exits
   with `control.RESTART_EXIT_CODE` (75) and the tray starts a fresh server on the same port
-  (`TrayApp._watch_for_restart`). It never re-execs itself there: on Windows `os.execv`
+  (`TrayApp._watch_for_restart`; `runtime.port_free` binds with `SO_REUSEADDR` like uvicorn,
+  so the old server's TIME_WAIT connections don't push the restart onto the next port and
+  strand the open tab). It never re-execs itself there: on Windows `os.execv`
   spawns a new process, and the tray would be left holding a dead one.
 
 ### Windows (V2 P6; `desktop._windows`, `packaging/windows/`)
@@ -960,6 +962,51 @@ uvicorn each want the main thread.
 - **File replacement**: Windows can't replace a file something holds open. The working DB's
   pool is disposed *before* a pull / restore / conflict swap, and `sync.publish.replace_file`
   retries sharing violations for ~3 s (publish, lock, embeddings matrix, rowmap).
+
+### Linux (V3 P7; `desktop._linux`, `packaging/linux/`)
+
+- **Build**: `packaging/linux/build.sh [--arch x86_64|aarch64]` → `dist/sortandpost-<ver>-<arch>.AppImage`.
+  PyInstaller onedir (`sortandpost.spec`) wrapped by appimagetool (static type2 runtime, zstd;
+  tool + runtime sha256-pinned). It runs in a digest-pinned **`ubuntu:22.04`** container
+  (`--platform linux/amd64|arm64`), so the floor is **glibc 2.35 / GLib 2.72**: Ubuntu 22.04+,
+  Debian 12+, Fedora 36+. That GLib is also why the desktop extra pins `pygobject<3.52`.
+  `--no-container` builds on the host (CI). It bundles exiftool's Perl distribution
+  (sha256-pinned, the same version as macOS), run by the system `/usr/bin/perl`. Unsigned.
+  An x86_64 build under Rosetta (Lima) works, but Rosetta's binfmt refuses AppImage magic bytes,
+  so the script runs appimagetool from a copy with bytes 8–10 zeroed.
+- **Tray backend** (`_linux.pick_backend`, before pystray is imported; a user-set
+  `PYSTRAY_BACKEND` wins): **appindicator** (bundled PyGObject + GTK 3 +
+  AyatanaAppIndicator3 typelibs) when a StatusNotifier host owns
+  `org.kde.StatusNotifierWatcher` on the session bus (KDE, Ubuntu GNOME, GNOME + the
+  AppIndicator extension; works on Wayland-only sessions); else **xorg** (XEmbed; *no menu* —
+  a click opens the browser) when `DISPLAY` is set and something owns `_NET_SYSTEM_TRAY_S<n>`;
+  else **none** — `HeadlessIcon` keeps the tray process supervising the server with no icon.
+- **Quit without a tray**: Settings → Overview → **Desktop app** has *Quit sortandpost.photos*
+  (shown only when the server was launched by the tray, i.e. has a control token). The server
+  shuts down cleanly and exits with `control.QUIT_EXIT_CODE` (76); the tray sees it in
+  `_watch_for_restart` and ends too. Available on every OS, needed on Linux.
+- **Session end**: `_linux.install_session_end` turns SIGTERM / SIGHUP (logout) into the same
+  clean stop as Quit.
+- **Start at login** = an XDG autostart entry, `${XDG_CONFIG_HOME:-~/.config}/autostart/app.sortandpost.desktop`,
+  `Exec=` the `$APPIMAGE` path (quoted per the Desktop Entry spec), written atomically. Only
+  offered from an AppImage (`login_item.app_bundle()` is `$APPIMAGE`). Moving the AppImage
+  breaks the entry until it's toggled again.
+- **Host programs get the host environment** (`binaries.host_env`): the PyInstaller bootloader
+  points `LD_LIBRARY_PATH` (and the gi hooks `GI_TYPELIB_PATH`, `GDK_PIXBUF_MODULE_FILE`, `GTK_*`)
+  at the bundle, which breaks `xdg-open`, a browser, a file manager or perl. `host_env()`
+  restores each `X` from `X_ORIG`, drops bundle-only keys and `_PYI_*` / `_MEI*`, and strips
+  bundle paths from path lists. Used for `xdg-open` (`_linux.open_path`; with no xdg-utils it
+  tries `gio open`, `$BROWSER`, then a browser by name itself — never Python's `webbrowser`,
+  which starts them with the bundle's environment), Reveal / Open
+  (`reveal._spawn`) and exiftool. The `--serve` child keeps the bundle env. A no-op when not
+  frozen on Linux.
+- **No trash flush**: as under Docker, managed-trash batches stay until put back (send2trash
+  could create a `.Trash-<uid>` on a library volume). Quit asks nothing.
+- **API keys**: `keyring` uses the Secret Service (GNOME Keyring / KWallet). With none on the
+  bus, the posting settings say so and point at the provider's env var.
+- **Tested** (2026-10-16) only headless in the Lima VM (arm64 natively, x86_64 in an amd64
+  container): Xvfb, a fake StatusNotifier host, Wayland-only weston. Real desktops are a
+  checklist in dev-notes/V3Plan.md → P7.
 
 ---
 

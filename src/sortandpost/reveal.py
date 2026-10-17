@@ -18,6 +18,8 @@ from pathlib import Path
 from shutil import which
 from urllib.parse import quote
 
+from sortandpost.binaries import host_env
+
 _DEVNULL = subprocess.DEVNULL
 
 
@@ -41,7 +43,9 @@ def reveal_supported() -> bool:
 
 
 def _spawn(args: list[str] | str) -> None:
-    subprocess.Popen(args, stdout=_DEVNULL, stderr=_DEVNULL)  # fire and forget
+    # host_env: a file manager / viewer started with the packaged Linux app's
+    # bundled libraries on its search path can crash.
+    subprocess.Popen(args, stdout=_DEVNULL, stderr=_DEVNULL, env=host_env())  # fire and forget
 
 
 def _explorer_select(path: Path) -> str:

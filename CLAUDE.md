@@ -55,6 +55,9 @@ packaging/macos/build.sh               # -> dist/sortandpost.app + dist/sortandp
 # Desktop app (Windows, PowerShell)
 pwsh packaging\windows\build.ps1       # -> dist\sortandpost-<ver>-setup.exe + -win-x64.zip
 
+# Desktop app (Linux AppImage; needs Docker — builds in an ubuntu:22.04 container)
+packaging/linux/build.sh [--arch x86_64|aarch64]   # -> dist/sortandpost-<ver>-<arch>.AppImage
+
 # Docker (experimental; same CLIs with `docker compose run --rm app …`)
 cp .env.example .env                   # set PHOTO_LIBRARY, SYNC_DIR, DEVICE_NAME, PORT
 docker compose up --build              # http://localhost:8080

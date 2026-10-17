@@ -145,7 +145,14 @@ def clear_runtime(pid: int, base: Path | None = None) -> None:
 
 
 def port_free(port: int, host: str = "127.0.0.1") -> bool:
+    """Whether the server could listen on ``port`` now. Asked the way uvicorn
+    binds: with SO_REUSEADDR off Windows, so the TIME_WAIT connections a server
+    that just restarted leaves behind don't count as busy (without it the
+    restart moved to the next port and the open tab never found it). Windows
+    doesn't block on TIME_WAIT, and its SO_REUSEADDR would steal a live port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if sys.platform != "win32":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
         except OSError:

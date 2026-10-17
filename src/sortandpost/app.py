@@ -3352,6 +3352,9 @@ def build_ui(settings: Settings) -> None:
                             ui.label("Read-only — indexer actions are disabled.").classes(
                                 "text-amber-600 text-sm"
                             )
+                    if desktop_control.control_token() is not None:
+                        with _settings_card("Desktop app", "power_settings_new"):
+                            _quit_app_button()
 
                 with _settings_section("library"):
                     with _settings_card(
@@ -4652,6 +4655,36 @@ def _app_data_editor(settings: Settings) -> None:
     # (and an older single-folder install skips the wizard), so no button there.
     if source in ("shared", "remembered"):
         _start_setup_over_button(settings)
+
+
+def _quit_app_button() -> None:
+    """Quit the desktop app from the page (V3 P7): a Linux session with no tray
+    icon has no other Quit. The usual clean shutdown runs (indexer stop, final
+    publish, lock release); then :func:`_reexec_if_requested` exits with
+    ``QUIT_EXIT_CODE`` and the tray ends too."""
+
+    def _go() -> None:
+        dlg.close()
+        with ui.dialog().props("persistent") as bye, ui.card().classes("items-center gap-2 p-6"):
+            ui.label("sortandpost.photos has quit.").classes("font-medium")
+            ui.label("You can close this tab.").classes("text-xs sp-faint")
+        bye.open()
+        _QUIT_APP.set()
+        asyncio.get_running_loop().call_later(0.8, nicegui_app.shutdown)
+
+    with ui.dialog() as dlg, ui.card().classes("w-[32rem] max-w-full gap-2"):
+        ui.label("Quit sortandpost.photos?").classes("font-semibold")
+        ui.label(
+            "Indexing stops and this page stops working until you open the app again."
+        ).classes("text-sm sp-muted")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dlg.close).props("flat")
+            ui.button("Quit", on_click=_go).props("color=primary")
+
+    ui.label("Stops sortandpost.photos on this computer.").classes("text-xs sp-faint")
+    ui.button("Quit sortandpost.photos", icon="power_settings_new", on_click=dlg.open).props(
+        "flat dense no-caps"
+    )
 
 
 def _start_setup_over_button(settings: Settings) -> None:
@@ -6499,6 +6532,7 @@ _GATED_PREFIXES = (
     "/achievements",
 )
 _RESTART = threading.Event()
+_QUIT_APP = threading.Event()  # Settings → Quit (desktop app only)
 
 
 def _is_gated(path: str) -> bool:
@@ -6559,7 +6593,11 @@ def _reexec_if_requested() -> None:
     """After ``ui.run`` returns: re-launch this same command in place if a
     restart was requested. The listening socket is already closed (and Python
     sockets aren't inherited across exec), so the new process can bind the
-    port again."""
+    port again. After Settings → Quit, exit with ``QUIT_EXIT_CODE`` instead,
+    so the desktop tray ends as well."""
+    if _QUIT_APP.is_set() and desktop_control.control_token() is not None:
+        logging.shutdown()
+        raise SystemExit(desktop_control.QUIT_EXIT_CODE)
     if not _RESTART.is_set():
         return
     log.info("restarting sortandpost")

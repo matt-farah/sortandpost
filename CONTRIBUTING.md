@@ -25,6 +25,9 @@ of them shape almost every change:
 You need [uv](https://docs.astral.sh/uv/) and [exiftool](https://exiftool.org/)
 (`brew install exiftool`, `apt install libimage-exiftool-perl`, or `winget install exiftool`).
 Python 3.12 or 3.13; uv installs the pinned one from `.python-version` for you.
+On Linux, the `desktop` extra builds PyGObject from source, so first install
+`build-essential pkg-config libgirepository1.0-dev libcairo2-dev` (Debian / Ubuntu names),
+and run the tests under `xvfb-run -a` if there's no display.
 
 ```bash
 uv sync --locked --extra dev --extra desktop   # the venv exactly matches uv.lock

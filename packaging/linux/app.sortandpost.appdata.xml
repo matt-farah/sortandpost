@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.sortandpost</id>
+  <name>sortandpost.photos</name>
+  <summary>Rate, tag and search your photo library</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="photos.sortandpost">
+    <name>Matt Farah</name>
+  </developer>
+  <description>
+    <p>
+      A locally-run photo organizer. It scans your existing photo folders, lets you rate
+      photos 1-5 stars, suggests tags with CLIP and finds photos by describing them, all in
+      your browser and with no cloud service.
+    </p>
+  </description>
+  <launchable type="desktop-id">app.sortandpost.desktop</launchable>
+  <url type="homepage">https://sortandpost.photos</url>
+  <categories>
+    <category>Graphics</category>
+    <category>Photography</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>
