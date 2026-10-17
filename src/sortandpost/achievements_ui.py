@@ -25,21 +25,18 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session
 
+from sortandpost import profile_ui
 from sortandpost.achievements import (
     EVENT_DEVIL_MODE,
     EVENT_KONAMI,
-    MODE_LABELS,
-    NAME_MAX_LEN,
     Achievement,
     AchievementTracker,
-    Mode,
     Unlock,
     compute_metrics,
-    load_profile,
     resource_path,
-    save_profile,
 )
 from sortandpost.config import Settings
+from sortandpost.profiles import MODE_LABELS, NAME_MAX_LEN, Mode, load_profile
 
 log = logging.getLogger(__name__)
 
@@ -181,21 +178,37 @@ def art_url(mode: str) -> str:
 # header chip + toasts
 # --------------------------------------------------------------------------- #
 def header_chip() -> None:
-    """Profile name + 🏆 score (+ how many are waiting to be revealed), top
-    right; toasts new unlocks in this tab."""
+    """Profile picture + name + 🏆 score (+ how many are waiting to be
+    revealed), top right; toasts new unlocks in this tab. With achievements
+    Off, just the picture (when there is one), linking to the profile."""
     tracker, settings = TRACKER, _SETTINGS
     if tracker is None or settings is None:
         return
-    profile = load_profile(settings.paths)
+    store = profile_ui.store(settings)
+    profile = store.get()
     if profile.mode == "off":
+        url = store.avatar_url(profile)
+        if url:
+            with ui.link("", "/settings#sp-profile").classes("sp-chip sp-trophy flex items-center"):
+                ui.tooltip("Profile")
+                profile_ui.avatar(profile, url)
         return
     with ui.link("", PAGE_URL).classes("sp-chip sp-trophy flex items-center gap-1 no-wrap"):
         ui.tooltip("Achievements")
+
+        @ui.refreshable
+        def _face() -> None:
+            p = store.get()
+            url = store.avatar_url(p)
+            if url:
+                profile_ui.avatar(p, url)
+
+        _face()
         if profile.name:
             ui.label(profile.name).classes("font-medium")
         score = ui.label()
         badge = ui.label().classes("sp-ach-badge")
-    last_seq, last_version = tracker.seq, -1
+    last_seq, last_version, face_version = tracker.seq, -1, profile_ui.VERSION
 
     def _refresh() -> None:
         nonlocal last_version
@@ -207,7 +220,7 @@ def header_chip() -> None:
         badge.set_visibility(sealed > 0)
 
     def _feed() -> None:
-        nonlocal last_seq
+        nonlocal last_seq, face_version
         new = tracker.since(last_seq)
         if new:
             last_seq = new[-1].seq
@@ -216,6 +229,9 @@ def header_chip() -> None:
                 _toast(new, mode)
         if new or tracker.version != last_version:
             _refresh()
+        if face_version != profile_ui.VERSION:  # the picture changed in another tab
+            face_version = profile_ui.VERSION
+            _face.refresh()
 
     _refresh()
     ui.timer(_FEED_SEC, _feed)
@@ -368,27 +384,27 @@ def _reveal_dialog(dialog: ui.dialog, a: Achievement, mode: Mode) -> None:
 # profile editor -- Settings + the welcome wizard
 # --------------------------------------------------------------------------- #
 def profile_editor(settings: Settings, *, notify: bool = True) -> None:
-    """Profile name + Angel / Devil / Off. Saved as it changes to the shared
-    ``sync/profile.json`` (caller gates on the write lock)."""
-    profile = load_profile(settings.paths)
+    """Profile picture, name + Angel / Devil / Off. Saved as it changes to the
+    shared profile (caller gates on the write lock)."""
+    profile = profile_ui.store(settings).get()
     state = {"name": profile.name, "mode": profile.mode}
+    with profile_ui.avatar_editor(settings):
+        name_in = (
+            ui.input("Profile name", value=profile.name)
+            .props(f"outlined dense maxlength={NAME_MAX_LEN}")
+            .classes("w-64")
+        )
     ui.label(
         "Achievements turn sorting and posting into a game. Your name and score show "
         "at the top right. Angel cheers you on; Devil… doesn't. Shared by every "
         "computer that uses this library."
-    ).classes("text-xs sp-faint max-w-xl")
+    ).classes("text-xs sp-faint max-w-xl pt-2")
     with ui.row().classes("items-center gap-4 no-wrap"):
         persona = ui.image(art_url(profile.mode)).classes("sp-ach-persona shrink-0")
         persona.set_visibility(profile.mode != "off")
-        with ui.column().classes("gap-2"):
-            name_in = (
-                ui.input("Profile name", value=profile.name)
-                .props(f"outlined dense maxlength={NAME_MAX_LEN}")
-                .classes("w-64")
-            )
-            mode_in = ui.toggle(
-                {m: label for m, label in MODE_LABELS.items()}, value=profile.mode
-            ).props("no-caps")
+        mode_in = ui.toggle(
+            {m: label for m, label in MODE_LABELS.items()}, value=profile.mode
+        ).props("no-caps")
 
     def _save(what: str) -> None:
         mode: Mode = mode_in.value if mode_in.value in MODE_LABELS else "angel"
@@ -397,7 +413,7 @@ def profile_editor(settings: Settings, *, notify: bool = True) -> None:
             return
         was = state["mode"]
         try:
-            saved = save_profile(settings.paths, name=name, mode=mode, device_id=settings.device_id)
+            saved = profile_ui.store(settings).save(name=name, mode=mode)
         except OSError as exc:
             ui.notify(f"couldn't save: {exc}", type="negative")
             return

@@ -43,13 +43,8 @@ from nicegui.events import KeyEventArguments, ValueChangeEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
-from sortandpost import __version__, achievements_ui, missing, post_queue
-from sortandpost.achievements import (
-    EVENT_GITHUB_SEARCH,
-    MODE_LABELS,
-    load_profile,
-    profile_file,
-)
+from sortandpost import __version__, achievements_ui, missing, post_queue, profile_ui
+from sortandpost.achievements import EVENT_GITHUB_SEARCH
 from sortandpost.auth import (
     LOGIN_PATH,
     LOGOUT_PATH,
@@ -214,6 +209,7 @@ from sortandpost.prefs import (
     set_season,
     set_theme,
 )
+from sortandpost.profiles import MODE_LABELS, load_profile, profile_file
 from sortandpost.relocate import read_record as read_relocation
 from sortandpost.reveal import (
     open_in_default_app,
@@ -1308,6 +1304,7 @@ def build_ui(settings: Settings) -> None:
 
     register_post_pages(settings, engine, thumb_small)
     achievements_ui.start(settings, engine)
+    profile_ui.start(settings, engine)
     achievements_ui.register_pages(settings)
 
     @ui.page("/")
@@ -2158,6 +2155,8 @@ def build_ui(settings: Settings) -> None:
             with ui.column().classes("sp-photo-info gap-1 text-sm shrink-0 max-w-sm"):
                 star_widget = _star_widget(settings, engine, pixel_hash, stars or 0)
                 flag_switch = _edit_flag_button(settings, engine, pixel_hash, flagged)
+                if State.write_mode == WriteMode.writable:
+                    profile_ui.use_as_profile_button(settings, engine, pixel_hash)
                 ui.label("← → move · 1-5 rate · 0 clear · f flag").classes("text-[11px] sp-faint")
                 _facts(photo)
                 # tags live in the info column, between the facts and the paths
