@@ -31,6 +31,8 @@ MODULES = [
     "achievements_ui",
     "posts_ui",
     "achievements",
+    "profile_ui",
+    "profiles",
     "themes",
     "prefs",
 ]
