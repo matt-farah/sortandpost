@@ -43,7 +43,7 @@ from nicegui.events import KeyEventArguments, ValueChangeEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
-from sortandpost import __version__, achievements_ui, missing, post_queue, profile_ui
+from sortandpost import __version__, achievements_ui, help_ui, missing, post_queue, profile_ui
 from sortandpost.achievements import EVENT_GITHUB_SEARCH
 from sortandpost.auth import (
     LOGIN_PATH,
@@ -739,6 +739,8 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
     paint = first_paint_css(resolve_season(State.season), _THEME_TO_DARK[State.theme])
     ui.add_head_html(f"<style>{paint}</style>")
     ui.add_body_html(_APPBAR_HEIGHT_JS)
+    if not minimal:
+        ui.add_body_html(help_ui.HELP_KEY_JS)  # `?` opens /help
     with ui.header().classes("sp-appbar items-center justify-between gap-4"):
         with ui.row().classes("items-center gap-2 no-wrap"):
             with ui.icon(glyph_icon).classes("sp-season-glyph text-lg") as glyph:
@@ -764,6 +766,12 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
         with ui.row().classes("items-center gap-2 no-wrap"):
             achievements_ui.header_chip()
             _edit_lock_controls()
+            with ui.link("", help_ui.PAGE_URL).classes(
+                "sp-nav flex items-center"
+                + (" sp-nav-active" if active == help_ui.PAGE_URL else "")
+            ):
+                ui.icon("help_outline").props('aria-label="Keyboard shortcuts"')
+                ui.tooltip("Keyboard shortcuts (?)")
             if State.login_enabled:
                 ui.button(icon="logout", on_click=_sign_out).props(
                     "flat dense round size=sm"
@@ -1306,6 +1314,7 @@ def build_ui(settings: Settings) -> None:
     achievements_ui.start(settings, engine)
     profile_ui.start(settings, engine)
     achievements_ui.register_pages(settings)
+    help_ui.register_pages()
 
     @ui.page("/")
     async def library(request: Request) -> None:
