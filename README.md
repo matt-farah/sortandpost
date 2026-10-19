@@ -170,6 +170,15 @@ bar. Docker hands over in about 30 seconds, unless someone using Docker clicks *
 editing**. When you quit the desktop app, Docker takes editing back. Docker's own page
 has the same button.
 
+## Updates
+
+The desktop apps check GitHub once a day for a new release (one small file, nothing about
+you or your photos is sent) and show a banner when there is one. **Update & restart**
+downloads it, checks its signature, saves your library, installs it and reopens the app.
+Turn the check off in **Settings → Overview → Updates**, or with
+`SORTANDPOST_NO_UPDATE_CHECK=1`. Docker and source installs only get the banner: update them
+with `docker compose pull` / `git pull`.
+
 ## How it works
 
 Every photo is identified by a hash of its decoded pixels, so moves, renames, copies and

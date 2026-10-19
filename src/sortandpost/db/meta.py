@@ -14,6 +14,12 @@ from sortandpost.db.models import Meta
 
 GENERATION_KEY = "db_generation"
 SCHEMA_VERSION_KEY = "schema_version"
+# What this app writes into ``meta.schema_version``. Bump it when a schema change
+# would let an older app damage the library if it kept writing (not for a new
+# table or column an older app just ignores): a computer whose app is older than
+# the library's schema stays read-only until it's updated
+# (``sync.manager.NeedsUpdate``; docs/architecture.md → "Updates").
+SCHEMA_VERSION = 1
 
 
 def get_meta(session: Session, key: str, default: str | None = None) -> str | None:

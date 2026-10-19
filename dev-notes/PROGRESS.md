@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-19 (keyboard shortcuts help page; profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-19 (in-app updates from GitHub Releases; keyboard shortcuts help page; profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
 _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 
 > **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
@@ -9,6 +9,32 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 > (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
 > installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
 > Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🔄 2026-10-19 — In-app updates (branch `feat/in-app-updates`)
+
+- New `sortandpost.update` package + `update_ui`, specified in docs/architecture.md → "Updates".
+  Daily check of `releases/latest/download/latest.json` (on by default; Settings → Overview →
+  Updates toggle / `SORTANDPOST_NO_UPDATE_CHECK=1`). The manifest is **Ed25519-signed**: the
+  public key is in `update/pubkey.py`, and the private key is in
+  `~/.sortandpost-release/update-signing-key.pem` (user has a copy in their password manager).
+  Downloads are sha256-checked.
+- Banner on `/` + Settings card: What's new, **Update & restart**, Skip this version.
+  - Install: the server shuts down cleanly and exits **77**; then the tray launches a detached
+    helper and ends.
+  - The helpers: macOS DMG → `ditto` + swap; Linux AppImage swap; Windows `setup.exe
+    /VERYSILENT /RELAUNCH=1` (new `[Run]` entry in the .iss).
+  - The result is shown on the next boot.
+- Install-source detection (`update/source.py`): direct / brew (cask `auto_updates true`) /
+  winget update themselves; apt / zip / Docker / source get a hint only.
+- `db.meta.SCHEMA_VERSION` (1) is stamped by the writer. A library stamped higher keeps an
+  older app read-only (`sync.manager.NeedsUpdate`; header "update this computer to edit").
+- `tools/release/make_manifest.py`: `keygen` / `build` (writes + signs `latest.json`, prints
+  brew cask + winget values) / `verify`. `cryptography` is now a direct dependency.
+- Gate: full suite green (30 new in `test_update.py`, incl. a real DMG swap and an AppImage
+  swap); ruff, format, mypy, `uv audit` clean; Tailwind rebuilt. User click-through
+  (banner / notes / Settings, against a local test feed): OK.
+- **Not yet tested:** a real packaged old → new update on macOS / Windows / Linux. Do it with
+  the first two public releases. Builds without this code need one manual update.
 
 ## ⌨️ 2026-10-19 — Keyboard shortcuts help page (branch `feat/help-page`)
 
@@ -641,7 +667,7 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
   A Developer-ID-signed app keeps the Keychain "Always Allow" across updates; ad-hoc doesn't.
 
 ### Release process (GitHub) — agreed outline, not done yet
-1. Decide: the repo is **private** (release assets need repo access) → make it public or
+1. ~~Decide public/private~~ — going **public** on `matt-farah/sortandpost` (2026-10-19). Was: the repo is **private** (release assets need repo access) → make it public or
    publish from a separate public `sortandpost-releases` repo. Apple Developer Program
    ($99/yr) for Developer ID + notarization (`SORTANDPOST_SIGN_ID` + `NOTARY_PROFILE`;
    `build.sh` already handles both) — user deciding later. Windows ships unsigned at first
@@ -653,8 +679,13 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 5. `git tag -a v2.0.0` → push → `gh release create v2.0.0 … *.dmg *setup.exe *.zip
    SHA256SUMS.txt` with per-platform install notes (macOS 15+: Gatekeeper → System Settings
    → Privacy & Security → Open Anyway when unsigned; Apple Silicon only).
-6. Later: brew cask / winget point at the release assets; optional GitHub Actions build on
-   tag (macos-14 arm64 + windows runners; billed minutes on a private repo).
+6. **Update manifest** (in-app updates): gather every platform's file in one `dist/`, then
+   `uv run python tools/release/make_manifest.py build --notes notes.md`, and upload
+   `latest.json` + `latest.json.sig` with the build files. Never mark a release as a
+   pre-release if it should reach installed apps (`releases/latest` skips them).
+7. Later: brew cask (own tap, `auto_updates true`) / winget (`wingetcreate update`) from
+   the values `make_manifest.py build` prints; a `.deb` + apt repo; optional GitHub Actions
+   build on tag.
 
 ## 📦 2026-09-30 — `uv.lock` adopted on every build (P6 open question)
 

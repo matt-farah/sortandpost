@@ -25,7 +25,7 @@ from typing import Any
 
 from sortandpost import __version__
 from sortandpost.desktop import login_item
-from sortandpost.desktop.control import QUIT_EXIT_CODE, RESTART_EXIT_CODE
+from sortandpost.desktop.control import QUIT_EXIT_CODE, RESTART_EXIT_CODE, UPDATE_EXIT_CODE
 from sortandpost.desktop.icon import render_tray_icon
 from sortandpost.desktop.runtime import (
     InstanceLock,
@@ -46,6 +46,8 @@ from sortandpost.logging_setup import configure
 log = logging.getLogger(__name__)
 
 STATUS_POLL_SEC = 5.0
+# Server exits that aren't a crash.
+_PLANNED_EXITS = (RESTART_EXIT_CODE, QUIT_EXIT_CODE, UPDATE_EXIT_CODE)
 
 
 def _logs_dir() -> Path:
@@ -287,7 +289,7 @@ class TrayApp:
 
         def _wait() -> None:
             code = None if proc is None else proc.wait()
-            if code not in (RESTART_EXIT_CODE, QUIT_EXIT_CODE):
+            if code not in _PLANNED_EXITS:
                 return
             if self.quitting or self.server.quitting or self.server.proc is not proc:
                 return
@@ -295,12 +297,46 @@ class TrayApp:
                 log.info("quit from the app's Settings")
                 self.end_session()
                 return
+            if code == UPDATE_EXIT_CODE:
+                self._install_update()
+                return
             log.info("server asked for a restart")
             self.ready = False
             self._refresh_menu()
             self._restart_server(open_browser=False)
 
         threading.Thread(target=_wait, name="sortandpost-server-watch", daemon=True).start()
+
+    def _install_update(self) -> None:
+        """The server has shut down cleanly to install an update: start the
+        installer helper (it waits for this process to exit, swaps the app and
+        relaunches it), then end. If the helper can't start, carry on with the
+        old version -- the next boot shows why (``result.txt``)."""
+        from sortandpost.update.apply import launch_installer
+        from sortandpost.update.check import take_pending, write_result
+        from sortandpost.update.source import install_target
+
+        pending, target = take_pending(), install_target()
+        reason = ""
+        if pending is None:
+            reason = "the downloaded update was missing or changed"
+        elif target is None:
+            reason = "couldn't tell where the app is installed"
+        else:
+            try:
+                launch_installer(pending, target, tray_pid=os.getpid())
+            except OSError as exc:
+                reason = f"couldn't start the installer: {exc}"
+        if reason:
+            log.error("update: %s", reason)
+            write_result(False, reason)
+            self.ready = False
+            self._refresh_menu()
+            self._restart_server(open_browser=True)
+            return
+        assert pending is not None
+        log.info("update %s: installing; this app ends now", pending.version)
+        self.end_session()
 
     def _menu_quit(self, _icon: object, _item: object) -> None:
         if self.quitting or self._quit_started.is_set():
@@ -405,7 +441,7 @@ class TrayApp:
             self.ready
             and not self.server.alive()
             and not self.server.quitting
-            and self.server.exit_code() not in (RESTART_EXIT_CODE, QUIT_EXIT_CODE)
+            and self.server.exit_code() not in _PLANNED_EXITS
         ):
             self.crashed, self.ready = True, False
             log.error("server exited unexpectedly (code %s)", self.server.exit_code())

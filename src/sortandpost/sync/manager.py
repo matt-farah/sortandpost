@@ -49,7 +49,7 @@ from sqlmodel import Session
 
 from sortandpost.config import Settings
 from sortandpost.db import make_engine
-from sortandpost.db.meta import bump_generation
+from sortandpost.db.meta import SCHEMA_VERSION, SCHEMA_VERSION_KEY, bump_generation, set_meta
 from sortandpost.sync.clock import Clock, isoformat, utcnow
 from sortandpost.sync.handoff import (
     EditRequest,
@@ -76,6 +76,7 @@ from sortandpost.sync.publish import (
     pull_published,
     quick_check,
     read_generation,
+    read_meta_int,
     sha256_file,
 )
 from sortandpost.sync.snapshots import (
@@ -95,6 +96,10 @@ _PROMOTE_RETRY_SEC = 60
 # tool may still be writing it).
 _LIVE_MERGE_EVERY_SEC = 60
 _LIVE_MERGE_SETTLE_SEC = 30
+
+
+class NeedsUpdate(RuntimeError):
+    """The library's schema is newer than this app's (``meta.schema_version``)."""
 
 
 class WriteMode(StrEnum):
@@ -140,6 +145,8 @@ class SyncManager:
         self.quarantined: list[Path] = []  # conflict copies set aside as unmergeable
         # why the last attempt to become the writer failed (we stayed read-only)
         self.writer_error: str | None = None
+        # ...because another computer's newer app upgraded the library's schema
+        self.needs_update = False
         self._promote_retry_at: datetime | None = None
 
         self._stop = threading.Event()
@@ -204,12 +211,18 @@ class SyncManager:
         reason is kept in :attr:`writer_error` and the next try waits
         ``_PROMOTE_RETRY_SEC``."""
         try:
+            self._check_schema()
             self.last_merge = self._merge_conflicts()
             self._reconcile_generation()
             self._verify_or_restore()
         except Exception as exc:
-            log.exception("could not take over editing; staying read-only")
-            self.writer_error = f"{type(exc).__name__}: {exc}"
+            self.needs_update = isinstance(exc, NeedsUpdate)
+            if self.needs_update:
+                log.warning("staying read-only: %s", exc)
+                self.writer_error = str(exc)
+            else:
+                log.exception("could not take over editing; staying read-only")
+                self.writer_error = f"{type(exc).__name__}: {exc}"
             self._promote_retry_at = self._clock() + timedelta(seconds=_PROMOTE_RETRY_SEC)
             try:
                 self._release()
@@ -218,6 +231,7 @@ class SyncManager:
             self.mode = WriteMode.read_only
             return self.mode
         self.writer_error = None
+        self.needs_update = False
         self._promote_retry_at = None
         if background:
             self._start_thread()
@@ -625,11 +639,33 @@ class SyncManager:
             self._reset_working_engine()  # Windows can't replace a file SQLite holds open
             pull_published(self.paths.published_db, self.paths.working_db, device_id=self.device_id)
             self._reset_working_engine()
+            self._stamp_schema()  # rides along with the next real publish
             self._last_publish_hash = sha256_file(self.paths.working_db)
             self._last_publish_at = self._clock()
         else:
             # local is level or ahead: make sure sync/ carries our state
+            self._stamp_schema()
             self.publish(force=True)
+
+    def _check_schema(self) -> None:
+        """Refuse to write a library a newer app has upgraded (constraint #9's
+        read-only mode until this computer is updated)."""
+        found = max(
+            read_meta_int(self.paths.working_db, SCHEMA_VERSION_KEY),
+            read_meta_int(self.paths.published_db, SCHEMA_VERSION_KEY),
+        )
+        if found > SCHEMA_VERSION:
+            raise NeedsUpdate(
+                "another computer updated sortandpost.photos, and this library now "
+                "needs the new version -- update this computer to keep editing"
+            )
+
+    def _stamp_schema(self) -> None:
+        if read_meta_int(self.paths.working_db, SCHEMA_VERSION_KEY) >= SCHEMA_VERSION:
+            return
+        with Session(self._db_engine()) as s:
+            set_meta(s, SCHEMA_VERSION_KEY, str(SCHEMA_VERSION))
+            s.commit()
 
     def _verify_or_restore(self) -> None:
         if quick_check(self.paths.working_db):
