@@ -1,296 +1,415 @@
-﻿id,page,file,line,function,context,text,new_text
-1,/welcome,src/sortandpost/app.py,5712,_welcome_intro,ui.label,Welcome back — let's add this computer,Welcome back to sortandpost.photos! Let's add this computer
-2,/welcome,src/sortandpost/app.py,5712,_welcome_intro,ui.label,Welcome to sortandpost,Welcome to sortandpost.photos
-3,/welcome,src/sortandpost/app.py,5715,_welcome_intro,ui.label,"Your library, ratings and tags are already here. Just tell sortandpost where your photos are on this computer.","Your database has been imported. Select where your photos are synced on this computer (i.e. a Google Drive, OneDrive, Dropbox folder)"
-4,/welcome,src/sortandpost/app.py,5718,_welcome_intro,ui.label,"Rate, tag and search your photos — privately, on your own computers. A few quick choices and you're done; nothing is scanned until you finish.",sortandpost.photos helps photographers take their photo library from 'living on my hard drive' to organized and posted for people to see. sortandpost.photos is built with privacy by design. Everything is run locally on your computer. None of your data is visible to sortandpost.photos ever. 
-5,/welcome,src/sortandpost/app.py,5725,_shared_folder_intro,ui.label,"Pick a folder in the cloud drive you already use (Synology Drive, OneDrive, Dropbox, Google Drive, iCloud Drive, …) so your ratings, tags and search index follow you to your other computers — or any folder if you only use this one.","Choose where to store your database. We suggest using a folder that is synced so that you have a backup and it syncs between your computers (i.e. a Google Drive, OneDrive, Dropbox folder)"
-6,/welcome,src/sortandpost/app.py,5730,_shared_folder_intro,ui.label,Already use sortandpost on another computer? Pick the same folder here and everything carries over. Your photos stay exactly where they are.,"If you already use sortandpost, choose the same folder where your database is already stored"
-7,/welcome,src/sortandpost/app.py,5814,_library_next,ui.notify,add at least one photo folder,Choose a folder or multiple folders where your photos are stored
-8,/welcome,src/sortandpost/app.py,5818,_library_next,ui.notify,none of these folders can be found right now — they'll be scanned once they're available,None of those folders can be accessed. They will be scanned when sortandpost.photos can access them.
-9,/welcome,src/sortandpost/app.py,5826,_read_only_note,ui.label,"{State.lock_holder or 'Another computer'} is using this library right now, so shared settings can't change. Adjust them later in Settings.",{State.lock_holder or 'Another computer'} has the database locked. Close sortandpost.photos on that computer and try again.
-10,/welcome,src/sortandpost/app.py,5835,welcome_page,ui.step(title=),Library data,Library data
-11,/welcome,src/sortandpost/app.py,5839,welcome_page,ui.step(title=),Photo folders,Photo folders
-12,/welcome,src/sortandpost/app.py,5841,welcome_page,ui.label,Folders sortandpost scans for photos. Nothing in them is moved or renamed. Different computers can use different folders.,sortandpost.photos scans for photos. The folders are not moved or renamed. Different computers can have different folder locations as long as the same photos are synced to them
-13,/welcome,src/sortandpost/app.py,5853,welcome_page,ui.step(title=),Scanning,Scanning
-14,/welcome,src/sortandpost/app.py,5856,welcome_page,ui.label,Skip folders named,Skip folders named
-15,/welcome,src/sortandpost/app.py,5862,welcome_page,ui.step(title=),Stacks & deleting,Stacks & deleting
-16,/welcome,src/sortandpost/app.py,5864,welcome_page,ui.label,Image stacking,Image stacking
-17,/welcome,src/sortandpost/app.py,5866,welcome_page,ui.label,Deleting photos,Deleting photos
-18,/welcome,src/sortandpost/app.py,5873,welcome_page,ui.step(title=),AI search,AI search
-19,/welcome,src/sortandpost/app.py,5881,welcome_page,ui.step(title=),You,You
-20,/welcome,src/sortandpost/app.py,5888,welcome_page,ui.step(title=),Look,Look
-21,/welcome,src/sortandpost/app.py,5892,welcome_page,ui.step(title=),Ready,Ready
-22,/welcome,src/sortandpost/app.py,5896,welcome_page,ui.button,Start using sortandpost,Start using sortandpost
-23,/welcome,src/sortandpost/app.py,5898,welcome_page,ui.button,Back,Back
-24,/welcome,src/sortandpost/app.py,5903,_profile_summary,,{MODE_LABELS[profile.mode]} mode{name},{MODE_LABELS[profile.mode]} mode{name}
-25,/welcome,src/sortandpost/app.py,5907,_render_summary,,fast (all cores),fast (all cores)
-26,/welcome,src/sortandpost/app.py,5907,_render_summary,,slow (background),slow (background)
-27,/welcome,src/sortandpost/app.py,5909,_render_summary,,Shared folder,Shared folder
-28,/welcome,src/sortandpost/app.py,5911,_render_summary,,Photo folders,Photo folders
-29,/welcome,src/sortandpost/app.py,5912,_render_summary,,none yet,none yet
-30,/welcome,src/sortandpost/app.py,5914,_render_summary,,Scanning,Scanning
-31,/welcome,src/sortandpost/app.py,5915,_render_summary,,Skipped folders,Skipped folders
-32,/welcome,src/sortandpost/app.py,5916,_render_summary,,Stacking,Stacking
-33,/welcome,src/sortandpost/app.py,5916,_render_summary,,on,on
-34,/welcome,src/sortandpost/app.py,5916,_render_summary,,off,off
-35,/welcome,src/sortandpost/app.py,5917,_render_summary,,AI search & tagging,AI search & tagging
-36,/welcome,src/sortandpost/app.py,5917,_render_summary,,on,on
-37,/welcome,src/sortandpost/app.py,5917,_render_summary,,off,off
-38,/welcome,src/sortandpost/app.py,5918,_render_summary,,Achievements,Achievements
-39,/welcome,src/sortandpost/app.py,5920,_render_summary,,Deleting,Deleting
-40,/welcome,src/sortandpost/app.py,5921,_render_summary,,the whole stack,the whole stack
-41,/welcome,src/sortandpost/app.py,5923,_render_summary,,only the selected photo,only the selected photo
-42,/welcome,src/sortandpost/app.py,5929,_render_summary,ui.label,Shared settings come from your library — change any of them later in Settings.,sortandpost.photos is importing settings from your library. You can adjust them later in the Settings page
-43,/welcome,src/sortandpost/app.py,5937,_render_summary,ui.label,Scanning starts right away and runs in the background — you can browse while it works.,sortandpost.photos is scanning your library in the background. Feel free to click around while it works
-44,/welcome,src/sortandpost/app.py,5966,_welcome_folder_step,ui.label,"A new library — its database, thumbnails and search index are kept here.",Your database and other app data are stored here
-45,/welcome,src/sortandpost/app.py,5969,_welcome_folder_step,ui.label,This computer's private working files: {paths.local},This computer's private working files: {paths.local}
-46,/welcome,src/sortandpost/app.py,5973,_welcome_folder_step,ui.label,Set by the APP_DATA environment variable (e.g. Docker).,Set by the APP_DATA environment variable (e.g. Docker).
-47,/welcome,src/sortandpost/app.py,5977,_welcome_folder_step,ui.expansion,Use a different folder,Use a different folder
-48,/welcome,src/sortandpost/app.py,5983,_use,_restart_app,Switching folder…,Switching folder…
-49,/welcome,src/sortandpost/app.py,5985,_welcome_folder_step,_shared_folder_picker(button=),Use this folder,Use this folder
-50,/welcome,src/sortandpost/app.py,6069,_setup_welcome,_settings_card,Where should your library live?,Where should your database live?
-51,/welcome,src/sortandpost/app.py,6076,_use,_restart_app,Setting up your library…,Setting up your library…
-52,/welcome,src/sortandpost/app.py,6078,_setup_welcome,_shared_folder_picker(button=),Continue,Continue
-53,/welcome,src/sortandpost/onboarding.py,136,inspect_folder,FolderInspection(message=),Enter a folder path.,Enter a folder path.
-54,/welcome,src/sortandpost/onboarding.py,140,inspect_folder,FolderInspection(message=),"Use a full path, e.g. /Users/you/Dropbox/Photos.","Use a full path, e.g. /Users/you/Dropbox/Photos."
-55,/welcome,src/sortandpost/onboarding.py,143,inspect_folder,FolderInspection(message=),"That is a file, not a folder.","That is a file, not a folder."
-56,/welcome,src/sortandpost/onboarding.py,148,inspect_folder,FolderInspection(message=),That folder is this computer's private data folder — pick a shared one.,That folder is this computer's private data folder — pick a shared one.
-57,/welcome,src/sortandpost/onboarding.py,160,inspect_folder,FolderInspection(message=),"A new, empty library will be created in this folder.","A new, empty library will be created in this folder."
-58,/welcome,src/sortandpost/onboarding.py,167,inspect_folder,FolderInspection(message=),"This folder already has other files, so the library will go in {target}.","This folder already has other files, so the library will go in {target}."
-59,/welcome,src/sortandpost/onboarding.py,187,_existing,,Found an existing sortandpost library,Found an existing sortandpost.photos library
-60,/welcome,src/sortandpost/onboarding.py,189,_existing,parts.append,"with {photos:,} photo{'s' if photos != 1 else ''}","with {photos:,} photo{'s' if photos != 1 else ''}"
-61,/welcome,src/sortandpost/onboarding.py,192,_existing,, Last used on {last_host}., Last used on {last_host}.
-62,/welcome,src/sortandpost/onboarding.py,193,_existing,," Its ratings, tags and settings will be used on this computer too."," Its ratings, tags and settings will be used on this computer too."
-63,/settings /welcome,src/sortandpost/achievements.py,60,<MODE_LABELS>,constant,Angel,Angel
-64,/settings /welcome,src/sortandpost/achievements.py,60,<MODE_LABELS>,constant,Devil,Devil
-65,/settings /welcome,src/sortandpost/achievements.py,60,<MODE_LABELS>,constant,Off,Off
-66,/settings /welcome,src/sortandpost/achievements_ui.py,376,profile_editor,ui.label,Achievements turn sorting and posting into a game. Your name and score show at the top right. Angel cheers you on; Devil… doesn't. Shared by every computer that uses this library.,Achievements turn sorting and posting into a game. Your name and score show at the top right. Angel cheers you on; Devil… doesn't. Shared by every computer that uses this library.
-67,/settings /welcome,src/sortandpost/achievements_ui.py,385,profile_editor,ui.input,Profile name,Profile name
-68,/settings /welcome,src/sortandpost/achievements_ui.py,394,_save,,angel,angel
-69,/settings /welcome,src/sortandpost/achievements_ui.py,402,_save,ui.notify,couldn't save: {exc},couldn't save: {exc}
-70,/settings /welcome,src/sortandpost/achievements_ui.py,410,_save,ui.notify,{what} saved,{what} saved
-71,/settings /welcome,src/sortandpost/achievements_ui.py,414,profile_editor,_save,Mode,Mode
-72,/settings /welcome,src/sortandpost/app.py,619,_season_tooltip,,{SEASON_LABELS[resolve_season(choice)]} theme,{SEASON_LABELS[resolve_season(choice)]} theme
-73,/settings /welcome,src/sortandpost/app.py,620,_season_tooltip,, (auto), (auto)
-74,/settings,src/sortandpost/app.py,823,_progress_text,, · {_fmt_eta(eta)} left, · {_fmt_eta(eta)} left
-75,/settings,src/sortandpost/app.py,845,_tick,title.set_text,Indexer idle.,Indexer idle.
-76,/settings,src/sortandpost/app.py,2820,settings_page,,Device,Device
-77,/settings,src/sortandpost/app.py,2820,settings_page,,{settings.device_id[:8]}… on {manager.hostname},{settings.device_id[:8]}… on {manager.hostname}
-78,/settings,src/sortandpost/app.py,2822,settings_page,,Write mode,Write mode
-79,/settings,src/sortandpost/app.py,2826,settings_page,,DB generation,DB generation
-80,/settings,src/sortandpost/app.py,2828,settings_page,,Last publish,Last publish
-81,/settings,src/sortandpost/app.py,2831,settings_page,,Publishes this session,Publishes this session
-82,/settings,src/sortandpost/app.py,2832,settings_page,,Snapshots,Snapshots
-83,/settings,src/sortandpost/app.py,2832,settings_page,,{len(snaps)} (newest {snaps[-1].name}),{len(snaps)} (newest {snaps[-1].name})
-84,/settings,src/sortandpost/app.py,2835,settings_page,rows.append,Last merge,Last merge
-85,/settings,src/sortandpost/app.py,2837,settings_page,rows.append,Restored from,Restored from
-86,/settings,src/sortandpost/app.py,2841,settings_page,,photos indexed,photos indexed
-87,/settings,src/sortandpost/app.py,2843,settings_page,,online-only,online-only
-88,/settings,src/sortandpost/app.py,2844,settings_page,,CLIP embeddings,Machine suggested tags
-89,/settings,src/sortandpost/app.py,2845,settings_page,,suggestions pending,suggestions pending
-90,/settings,src/sortandpost/app.py,2846,settings_page,,suggestions approved,suggestions approved
-91,/settings,src/sortandpost/app.py,2850,_needs_lock,ui.label,Read-only — {State.lock_holder or 'another machine'} holds the write lock.,Read-only — {State.lock_holder or 'another machine'} holds the write lock.
-92,/settings,src/sortandpost/app.py,2851,_needs_lock,ui.label,These settings unlock once this machine can write.,These settings unlock once this machine can write.
-93,/settings,src/sortandpost/app.py,2857,settings_page,ui.label,Settings,Settings
-94,/settings,src/sortandpost/app.py,2872,settings_page,_settings_card,Indexing,Indexing
-95,/settings,src/sortandpost/app.py,2878,_scan_now,ui.notify,indexer pass started…,indexer pass started…
-96,/settings,src/sortandpost/app.py,2885,settings_page,ui.button,Run indexer pass now,Run indexer pass now
-97,/settings,src/sortandpost/app.py,2887,settings_page,ui.label,Read-only — indexer actions are disabled.,Read-only — indexer actions are disabled.
-98,/settings,src/sortandpost/app.py,2892,settings_page,_settings_card,Library folders,Library folders
-99,/settings,src/sortandpost/app.py,2894,settings_page,_settings_card,Excluded folders,Excluded folders
-100,/settings,src/sortandpost/app.py,2899,settings_page,_settings_card,Online-only files,Online-only files
-101,/settings,src/sortandpost/app.py,2906,settings_page,_settings_card,Indexing speed,Indexing speed
-102,/settings,src/sortandpost/app.py,2911,settings_page,_settings_card,AI search & tagging,AI search & tagging
-103,/settings,src/sortandpost/app.py,2919,settings_page,ui.label,Rebuild the CLIP matrix from the CLI:  python -m sortandpost.indexer --reembed,Rebuild the CLIP matrix from the CLI:  python -m sortandpost.indexer --reembed
-104,/settings,src/sortandpost/app.py,2922,settings_page,_settings_card,Image stacking,Image stacking
-105,/settings,src/sortandpost/app.py,2929,settings_page,_settings_card,Appearance,Appearance
-106,/settings,src/sortandpost/app.py,2931,settings_page,_settings_card,Open with,Open with
-107,/settings,src/sortandpost/app.py,2936,settings_page,_settings_card,Profile,Profile
-108,/settings,src/sortandpost/app.py,2942,settings_page,ui.link,See your achievements,See your achievements
-109,/settings,src/sortandpost/app.py,2946,settings_page,_settings_card,Posting with {POSTING_SERVICE},Posting with {POSTING_SERVICE}
-110,/settings,src/sortandpost/app.py,2951,settings_page,_settings_card,Deleting photos,Deleting photos
-111,/settings,src/sortandpost/app.py,2956,settings_page,_settings_card,Recently deleted,Recently deleted
-112,/settings,src/sortandpost/app.py,2964,settings_page,_settings_card,Sync status,Sync status
-113,/settings,src/sortandpost/app.py,2970,settings_page,_settings_card,Shared library folder,Shared library folder
-114,/settings,src/sortandpost/app.py,2975,<_SETTINGS_SECTIONS>,constant,Overview,Overview
-115,/settings,src/sortandpost/app.py,2976,<_SETTINGS_SECTIONS>,constant,Library,Library
-116,/settings,src/sortandpost/app.py,2977,<_SETTINGS_SECTIONS>,constant,Indexing & AI,Indexing & AI
-117,/settings,src/sortandpost/app.py,2978,<_SETTINGS_SECTIONS>,constant,Appearance & apps,Appearance & apps
-118,/settings,src/sortandpost/app.py,2979,<_SETTINGS_SECTIONS>,constant,Profile & achievements,Profile & achievements
-119,/settings,src/sortandpost/app.py,2980,<_SETTINGS_SECTIONS>,constant,Posting,Posting
-120,/settings,src/sortandpost/app.py,2981,<_SETTINGS_SECTIONS>,constant,Deleting,Deleting
-121,/settings,src/sortandpost/app.py,2982,<_SETTINGS_SECTIONS>,constant,Sync & storage,Sync & storage
-122,/settings /welcome,src/sortandpost/app.py,3632,_stacking_editor,ui.label,Group near-duplicate photos in the same folder into one entry (the newest by modified time is shown). Ratings and tags apply to the whole stack; only the top photo's file is written (the top JPEG for RAW + JPEG).,"Stack photos together that have a similar name. The latest modified is shown on top. The rating is shared between the photos, but only saved to the EXIF data of the top photo."
-123,/settings /welcome,src/sortandpost/app.py,3637,_stacking_editor,ui.switch,Enabled,Enabled
-124,/settings /welcome,src/sortandpost/app.py,3638,_stacking_editor,ui.checkbox,Pair a RAW with its same-named JPEG,Stack together RAW and JPEG photos that have the same name
-125,/settings /welcome,src/sortandpost/app.py,3640,_stacking_editor,ui.checkbox,"Group similar names — ""img.jpg"", ""img copy.jpg"", ""img (1).jpg"", ""copy img.jpg""","Stack together images with similar names i.e ""img.jpg"", ""img copy.jpg"", ""img (1).jpg"", ""copy img.jpg"""
-126,/settings /welcome,src/sortandpost/app.py,3657,_save,ui.notify,saved — reload the library to see it,saved. Reload the library to see it
-127,/settings /welcome,src/sortandpost/app.py,3659,_stacking_editor,ui.button,Save,Save
-128,/settings /welcome,src/sortandpost/app.py,3666,_theme_editor,ui.label,"Light, Dark, or follow the operating system. Saved on this machine only.","Light, Dark, or follow the operating system. Saved on this machine only."
-129,/settings /welcome,src/sortandpost/app.py,3670,_theme_editor,ui.label,Mode,Mode
-130,/settings /welcome,src/sortandpost/app.py,3672,_theme_editor,ui.toggle,System,System
-131,/settings /welcome,src/sortandpost/app.py,3672,_theme_editor,ui.toggle,Light,Light
-132,/settings /welcome,src/sortandpost/app.py,3672,_theme_editor,ui.toggle,Dark,Dark
-133,/settings /welcome,src/sortandpost/app.py,3677,_on_change,,system,system
-134,/settings /welcome,src/sortandpost/app.py,3684,_theme_editor,ui.label,Season,Season
-135,/settings /welcome,src/sortandpost/app.py,3686,_theme_editor,ui.label,"A color palette per season. Auto follows today's date (Mar-May Spring, Jun-Aug Summer, Sep-Nov Fall, Dec-Feb Winter).","A color palette per season. Auto follows today's date (Mar-May Spring, Jun-Aug Summer, Sep-Nov Fall, Dec-Feb Winter)."
-136,/settings /welcome,src/sortandpost/app.py,3706,_theme_editor,, · {SEASON_LABELS[shown]} now, · {SEASON_LABELS[shown]} now
-137,/settings,src/sortandpost/app.py,3726,_open_with_app_editor,ui.label,"The app sortandpost's Open button launches, instead of the operating system default. Saved on this machine only.","Choose your preferred photo editing app. When you click open in editing app from sortandpost.photos, the app will open with the selected photo/s"
-138,/settings,src/sortandpost/app.py,3732,_open_with_app_editor,ui.input,App path,App path
-139,/settings,src/sortandpost/app.py,3737,_open_with_app_editor,ui.button,Browse…,Browse…
-140,/settings,src/sortandpost/app.py,3742,_open_with_app_editor,ui.label,macOS: the .app in /Applications.  Windows: the .exe path.  Linux: an executable or .desktop file path.,macOS: the .app in /Applications.  Windows: the .exe path.  Linux: an executable or .desktop file path.
-141,/settings,src/sortandpost/app.py,3749,_save,ui.notify,saved,saved
-142,/settings,src/sortandpost/app.py,3749,_save,ui.notify,cleared — using system default,cleared — using system default
-143,/settings,src/sortandpost/app.py,3754,_clear,ui.notify,cleared — using system default,cleared — using system default
-144,/settings,src/sortandpost/app.py,3757,_open_with_app_editor,ui.button,Save,Save
-145,/settings,src/sortandpost/app.py,3758,_open_with_app_editor,ui.button,Use system default,Use system default
-146,/settings /welcome,src/sortandpost/app.py,3768,_cpu_speed_editor,ui.label,"Indexing gathers your photos, stacks photos together that are the same, and uses machine learning to determine the contents of the photos without using any internet resources or uploading your photos anywhere.","Indexing gathers your photos, stacks photos together that are the same, and uses machine learning to determine the contents of the photos without using the Internet or uploading your photos anywhere. sortandpost.photos is built with privacy in mind"
-147,/settings /welcome,src/sortandpost/app.py,3773,_cpu_speed_editor,ui.label,"By default, indexing runs slowly using about {slow_w} cpu core(s), however if you'd like to run the index quickly select fast and it will use all available CPU cores. This may cause your computer to run slowly.","sortandpost.photos uses a slow indexing speed to run in the background without causing delays on your computer. The slow setting uses {slow_w} cpu core(s). If you have a large quantity of photos you'd like to index quickly, turn on fast indexing. It will slow down your computer, but index photos much faster."
-148,/settings /welcome,src/sortandpost/app.py,3779,_cpu_speed_editor,ui.toggle,Slow (background),Slow (background)
-149,/settings /welcome,src/sortandpost/app.py,3779,_cpu_speed_editor,ui.toggle,Fast,Fast
-150,/settings /welcome,src/sortandpost/app.py,3780,_cpu_speed_editor,ui.toggle(value=),slow,slow
-151,/settings /welcome,src/sortandpost/app.py,3782,_cpu_speed_editor,ui.label,Fast uses all CPU cores and may slow down your computer.,Fast uses all CPU cores and may slow down your computer.
-152,/settings /welcome,src/sortandpost/app.py,3788,_save_speed,,fast,fast
-153,/settings /welcome,src/sortandpost/app.py,3788,_save_speed,,slow,slow
-154,/settings /welcome,src/sortandpost/app.py,3791,_save_speed,ui.notify,indexing speed: {ccfg.speed} (applies from the next pass),indexing speed: {ccfg.speed} (applies from the next pass)
-155,/settings /welcome,src/sortandpost/app.py,3801,_deletion_editor,ui.label,"The bulk toolbar's Delete and the photo page's “Delete photo” move the files into the app's trash on this computer (see Settings → Recently deleted) and remove them from the library. When stacking is on, choose whether a delete takes only the shown photo or the whole stack.","When deleting a photo using sortandpost.photos, it uses an internal trash can and only deletes the top photo of the stack."
-156,/settings /welcome,src/sortandpost/app.py,3810,_deletion_editor,ui.select,Delete only the selected / shown photo,Delete only the selected / shown photo
-157,/settings /welcome,src/sortandpost/app.py,3811,_deletion_editor,ui.select,Delete every photo in the stack,Delete every photo in the stack
-158,/settings /welcome,src/sortandpost/app.py,3820,_store,,selected,selected
-159,/settings /welcome,src/sortandpost/app.py,3829,_save,ui.notify,saved,saved
-160,/settings /welcome,src/sortandpost/app.py,3831,_deletion_editor,ui.button,Save,Save
-161,/settings,src/sortandpost/app.py,3840,_trash_panel,ui.label,"Deleted photos wait here, on this computer only, until you move them to the system Trash. Put back returns the files to their original folders with their ratings and tags. Folder: {settings.paths.local / 'trash'}",Deleted photos are put in sortandpost.photos trash. You can move them to your system's trash can or put them back to where they were in the library. Folder: {settings.paths.local / 'trash'}
-162,/settings,src/sortandpost/app.py,3851,_render,ui.label,Nothing here.,Nothing here.
-163,/settings,src/sortandpost/app.py,3857,_render,ui.button,Move all to system Trash,Move all to system Trash
-164,/settings,src/sortandpost/app.py,3865,_trash_batch_row,,"{when} · {len(hashes)} photo(s), {len(b.items)} file(s)","{when} · {len(hashes)} photo(s), {len(b.items)} file(s)"
-165,/settings,src/sortandpost/app.py,3867,_trash_batch_row,, · deleted on another computer, · deleted on another computer
-166,/settings,src/sortandpost/app.py,3870,_trash_batch_row,ui.button,Put back,Put back
-167,/settings,src/sortandpost/app.py,3896,_confirm_flush,ui.label,Move everything here to the system Trash?,Move everything here to the system Trash?
-168,/settings,src/sortandpost/app.py,3898,_confirm_flush,ui.label,The app can no longer put these photos back afterwards — use the system Trash's own Put Back instead. Nothing is permanently deleted.,"After the photos are moved to the system trash, you can restore them from there. They will be automatically removed based on your computer settings"
-169,/settings,src/sortandpost/app.py,3902,_confirm_flush,ui.button,Cancel,Cancel
-170,/settings,src/sortandpost/app.py,3909,_go,,moved {res.moved} file(s) to the system Trash,moved {res.moved} file(s) to the system Trash
-171,/settings,src/sortandpost/app.py,3911,_go,,; {len(res.failed)} could not be moved,; {len(res.failed)} could not be moved
-172,/settings,src/sortandpost/app.py,3916,_confirm_flush,ui.button,Move to Trash,Move to Trash
-173,/settings,src/sortandpost/app.py,3944,_app_data_editor,ui.label,"Where your library's database, thumbnails and search index are kept. Keep it in a cloud drive and pick the same folder on your other computers.","Where your library's database, thumbnails and search index are kept. Keep it in a cloud drive and pick the same folder on your other computers."
-174,/settings,src/sortandpost/app.py,3948,_app_data_editor,ui.label,Shared folder,Shared folder
-175,/settings,src/sortandpost/app.py,3950,_app_data_editor,ui.label,This computer only,This computer only
-176,/settings,src/sortandpost/app.py,3955,_app_data_editor,ui.label,"⚠ set for this launch by the APP_DATA environment variable (Docker, or APP_DATA=... on the command line) — change it there.","⚠ set for this launch by the APP_DATA environment variable (Docker, or APP_DATA=... on the command line) — change it there."
-177,/settings,src/sortandpost/app.py,3961,_app_data_editor,ui.label,"This setup keeps this computer's private files inside the data folder (local/). If that folder is synced, pick its sync/ folder below to move them onto this computer only — you'll confirm your photo folders once.",delete
-178,/settings,src/sortandpost/app.py,3970,_use,ui.notify,that's the folder this computer already uses,that's the folder this computer already uses
-179,/settings,src/sortandpost/app.py,3977,_go,_restart_app,Switching library…,Switching library…
-180,/settings,src/sortandpost/app.py,3980,_use,ui.label,Restart on this folder?,Restart on this folder?
-181,/settings,src/sortandpost/app.py,3983,_use,ui.label,Your current library stays where it is; it isn't copied or moved.,Your current library stays where it is; it isn't copied or moved.
-182,/settings,src/sortandpost/app.py,3987,_use,ui.button,Cancel,Cancel
-183,/settings,src/sortandpost/app.py,3988,_use,ui.button,Save & restart,Save & restart
-184,/settings,src/sortandpost/app.py,3991,_app_data_editor,ui.expansion,Change folder,Change folder
-185,/settings,src/sortandpost/app.py,3992,_app_data_editor,_shared_folder_picker(button=),Save & restart,Save & restart
-186,/settings /welcome,src/sortandpost/app.py,4006,_clip_toggle_editor,ui.label,"Sort and search photos by what's in them — “dog on the beach” — and get tag suggestions to approve. It runs entirely on this computer, but needs a one-time ~600 MB model download and some CPU while indexing. Off, search matches file names, tags and camera only.","sortandpost.photos downloads a machine learning model that automatically categorizes photos. i.e. sunset, dog on beach, portrait. This is a 600MB model that runs locally. Your photos are never sent to the cloud or on anyone else's computer"
-187,/settings /welcome,src/sortandpost/app.py,4011,_clip_toggle_editor,ui.switch,Turn on AI search & tagging,Turn on AI search & tagging
-188,/settings /welcome,src/sortandpost/app.py,4026,_confirm_off,ui.label,Turn off AI search & tagging?,Turn off AI search & tagging?
-189,/settings /welcome,src/sortandpost/app.py,4028,_confirm_off,ui.label,"No more CLIP embedding or tag suggestions, and the Review page goes away. Your photos, ratings, approved tags and existing embeddings are kept, so turning it back on later costs nothing but the model download.","This setting turns off AI categorization of your photos and will disable the review page. Your photos, tags, ratings, and anything you've approved to be added to tags is preserved."
-190,/settings /welcome,src/sortandpost/app.py,4033,_confirm_off,ui.checkbox,Also delete the downloaded model files from this computer,Also delete the downloaded model files from this computer
-191,/settings /welcome,src/sortandpost/app.py,4036,_confirm_off,ui.label,Frees about 600 MB in {settings.paths.models_dir}. That folder is shared by every library on this computer; another library with AI turned on downloads it again.,Frees about 600 MB in {settings.paths.models_dir}. That folder is shared by every library on this computer; another library with AI turned on downloads it again.
-192,/settings /welcome,src/sortandpost/app.py,4059,_go,ui.notify,AI search & tagging turned off,AI search & tagging turned off
-193,/settings /welcome,src/sortandpost/app.py,4060,_go,ui.notify," · freed {freed / 1000000.0:,.0f} MB"," · freed {freed / 1000000.0:,.0f} MB"
-194,/settings /welcome,src/sortandpost/app.py,4064,_confirm_off,ui.button,Cancel,Cancel
-195,/settings /welcome,src/sortandpost/app.py,4065,_confirm_off,ui.button,Turn off,Turn off
-196,/settings /welcome,src/sortandpost/app.py,4076,_changed,ui.notify,AI search & tagging turned on — the model downloads on the next index pass (or use “Download / verify” below),AI search & tagging turned on — the model downloads on the next index pass (or use “Download / verify” below)
-197,/settings,src/sortandpost/app.py,4099,_clip_model_editor,ui.label,{ccfg.model} / {ccfg.pretrained} — cached under {settings.paths.models_dir},{ccfg.model} / {ccfg.pretrained} — cached under {settings.paths.models_dir}
-198,/settings,src/sortandpost/app.py,4102,_clip_model_editor,ui.label,not checked yet,not checked yet
-199,/settings,src/sortandpost/app.py,4105,_check,status.set_text,checking…,checking…
-200,/settings,src/sortandpost/app.py,4110,_check,status.set_text,✓ fully cached — ready to run offline,✓ fully cached — ready to run offline
-201,/settings,src/sortandpost/app.py,4110,_check,status.set_text,✗ not fully cached: {detail},✗ not fully cached: {detail}
-202,/settings,src/sortandpost/app.py,4114,_download,status.set_text,downloading…,downloading…
-203,/settings,src/sortandpost/app.py,4115,_download,ui.notify,downloading CLIP model files — this can take a few minutes…,downloading CLIP model files — this can take a few minutes…
-204,/settings,src/sortandpost/app.py,4120,_download,status.set_text,✓ fully cached — ready to run offline,✓ fully cached — ready to run offline
-205,/settings,src/sortandpost/app.py,4121,_download,ui.notify,CLIP model files downloaded,CLIP model files downloaded
-206,/settings,src/sortandpost/app.py,4123,_download,status.set_text,✗ download failed: {detail},✗ download failed: {detail}
-207,/settings,src/sortandpost/app.py,4124,_download,ui.notify,download failed: {detail},download failed: {detail}
-208,/settings,src/sortandpost/app.py,4127,_clip_model_editor,ui.button,Check if downloaded,Check if downloaded
-209,/settings,src/sortandpost/app.py,4128,_clip_model_editor,ui.button,Download / verify CLIP model,Download AI Tagging Model (CLIP)
-210,/settings /welcome,src/sortandpost/app.py,4174,_load,,Pick a starting point,Pick a starting point
-211,/settings /welcome,src/sortandpost/app.py,4178,_load,ui.label,✓ This folder is a sortandpost library,✓ This folder is a sortandpost library
-212,/settings /welcome,src/sortandpost/app.py,4182,_load,ui.button,⬆  parent,⬆  parent
-213,/settings /welcome,src/sortandpost/app.py,4193,_browse_folder,ui.button,Cancel,Cancel
-214,/settings /welcome,src/sortandpost/app.py,4200,_browse_folder,ui.button,Use this folder,Use this folder
-215,/settings,src/sortandpost/app.py,4343,_load,,Pick a starting point,Pick a starting point
-216,/settings,src/sortandpost/app.py,4347,_load,ui.button,⬆  parent,⬆  parent
-217,/settings,src/sortandpost/app.py,4367,_browse_app,ui.button,Cancel,Cancel
-218,/settings /welcome,src/sortandpost/app.py,4394,_library_roots_editor,ui.label,Folders scanned for photos — specific to this computer. Under Docker a new folder only becomes active after you add its line to docker-compose.yml and run  docker compose up -d.,Folders scanned for photos — specific to this computer. Under Docker a new folder only becomes active after you add its line to docker-compose.yml and run  docker compose up -d.
-219,/settings /welcome,src/sortandpost/app.py,4398,_library_roots_editor,ui.label,Folders scanned for photos — specific to this computer.,Folders scanned for photos — specific to this computer.
-220,/settings /welcome,src/sortandpost/app.py,4423,_render,ui.label,Folders your other computer uses that also exist here:,Folders your other computer uses that also exist here:
-221,/settings /welcome,src/sortandpost/app.py,4433,_render,ui.label,No folders yet — add one below.,No folders yet — add one below.
-222,/settings /welcome,src/sortandpost/app.py,4439,_render,,not mounted — add the compose line and run docker compose up -d,not mounted — add the compose line and run docker compose up -d
-223,/settings /welcome,src/sortandpost/app.py,4441,_render,,folder not found on this computer,folder not found on this computer
-224,/settings /welcome,src/sortandpost/app.py,4453,_render,ui.button.props.tooltip,remove,remove
-225,/settings /welcome,src/sortandpost/app.py,4466,_add_dialog,ui.label,Add a library folder,Add a library folder
-226,/settings /welcome,src/sortandpost/app.py,4469,_add_dialog,ui.input,Folder on this computer (host path),Folder on this computer (host path)
-227,/settings /welcome,src/sortandpost/app.py,4473,_add_dialog,ui.button,Browse…,Browse…
-228,/settings /welcome,src/sortandpost/app.py,4476,_add_dialog,ui.label,e.g.  ~/Library/CloudStorage/OneDrive-Personal/Photos  ·  ~/Dropbox/Photos  ·  C:\Users\you\OneDrive\Photos,e.g.  ~/Library/CloudStorage/OneDrive-Personal/Photos  ·  ~/Dropbox/Photos  ·  C:\Users\you\OneDrive\Photos
-229,/settings /welcome,src/sortandpost/app.py,4480,_add_dialog,ui.input,Mount point inside the container,Mount point inside the container
-230,/settings /welcome,src/sortandpost/app.py,4485,_add_dialog,ui.input,Label (optional),Label (optional)
-231,/settings /welcome,src/sortandpost/app.py,4514,_add_dialog,ui.button,Cancel,Cancel
-232,/settings /welcome,src/sortandpost/app.py,4519,_save_entry,ui.notify,enter the folder path,enter the folder path
-233,/settings /welcome,src/sortandpost/app.py,4527,_save_entry,ui.notify,"saved — add the compose line, run docker compose up -d, then rescan","saved — add the compose line, run docker compose up -d, then rescan"
-234,/settings /welcome,src/sortandpost/app.py,4529,_save_entry,ui.notify,saved — Save & rescan to index it,saved — Save & rescan to index it
-235,/settings /welcome,src/sortandpost/app.py,4531,_save_entry,ui.notify,added,added
-236,/settings /welcome,src/sortandpost/app.py,4534,_add_dialog,ui.button,Save,Save
-237,/settings /welcome,src/sortandpost/app.py,4538,_library_roots_editor,ui.button,Add folder,Add folder
-238,/settings /welcome,src/sortandpost/app.py,4540,_library_roots_editor,ui.label,🖥 helper connected — Browse enabled,🖥 helper connected — Browse enabled
-239,/settings /welcome,src/sortandpost/app.py,4546,_save_rescan,ui.notify,saved — rescanning…,saved — rescanning…
-240,/settings /welcome,src/sortandpost/app.py,4551,_library_roots_editor,ui.button,Save & rescan,Save & rescan
-241,/settings /welcome,src/sortandpost/app.py,4565,_exclude_editor,ui.label,"Folder names skipped while scanning — case-insensitive, matched at any depth. Photos already indexed from an excluded folder drop out on the next scan; removing an entry brings them back.","Specify any subfolders you want to skip scanning. i.e. ""RAWs"" ""PSDs"" ""Instagram"" or any other things you don't want clogging up your library"
-242,/settings /welcome,src/sortandpost/app.py,4576,render,ui.label,none,
-243,/settings /welcome,src/sortandpost/app.py,4599,_exclude_editor,ui.input(placeholder=),"folder name, e.g. RAW","folder name, e.g. RAW"
-244,/settings /welcome,src/sortandpost/app.py,4601,_exclude_editor,ui.button,Add,Add
-245,/settings /welcome,src/sortandpost/app.py,4610,_save,ui.notify,saved — rescanning…,saved — rescanning…
-246,/settings /welcome,src/sortandpost/app.py,4615,_exclude_editor,ui.button,Save & rescan,Save & rescan
-247,/settings,src/sortandpost/app.py,4627,_online_only_editor,ui.label,"Cloud sync tools (OneDrive, Google Drive, Dropbox, iCloud) can leave placeholder stubs whose real bytes download only when opened. “Skip” records them without downloading; “Download” hydrates every one the scanner meets. Either way you can pull the recorded ones now.","Your cloud sync tool (i.e. Google Drive, OneDrive, iCloud Drive) often only downloads files you open. If you want sortandpost.photos to download every file in your library automatically, turn this on, but if you'd rather only have what's already downloaded indexed, choose that option instead."
-248,/settings,src/sortandpost/app.py,4634,_online_only_editor,ui.toggle,Skip (don't download),Skip (don't download)
-249,/settings,src/sortandpost/app.py,4634,_online_only_editor,ui.toggle,Download while scanning,Download while scanning
-250,/settings,src/sortandpost/app.py,4635,_online_only_editor,ui.toggle(value=),skip,skip
-251,/settings,src/sortandpost/app.py,4641,_save_mode,ui.notify,online-only mode: {icfg.online_only},online-only mode: {icfg.online_only}
-252,/settings,src/sortandpost/app.py,4646,_online_only_editor,ui.label,{cloud_n} file(s) currently recorded as online-only.,{cloud_n} file(s) currently recorded as online-only.
-253,/settings,src/sortandpost/app.py,4646,_online_only_editor,ui.label,None recorded.,None recorded.
-254,/settings,src/sortandpost/app.py,4650,_download_now,ui.notify,downloading online-only files…,downloading online-only files…
-255,/settings,src/sortandpost/app.py,4654,_download_now,status.set_text,Done — reload the library to see them.,Done — reload the library to see them.
-256,/settings,src/sortandpost/app.py,4657,_online_only_editor,ui.button,Download & index recorded files,Download & index recorded files
-257,/settings /welcome,src/sortandpost/app.py,5662,_restart_app,ui.label,sortandpost is restarting — this page reloads on its own.,sortandpost is restarting — this page reloads on its own.
-258,/settings /welcome,src/sortandpost/app.py,5743,_shared_folder_picker,ui.input,Shared folder,Shared folder
-259,/settings /welcome,src/sortandpost/app.py,5743,_shared_folder_picker,ui.input(placeholder=),e.g. ~/Dropbox/sortandpost,e.g. ~/Dropbox/sortandpost
-260,/settings /welcome,src/sortandpost/app.py,5749,_shared_folder_picker,ui.button,Browse…,Browse…
-261,/settings,src/sortandpost/posts_ui.py,108,<_EDGE_CHOICES>,constant,1080 px,1080 px
-262,/settings,src/sortandpost/posts_ui.py,108,<_EDGE_CHOICES>,constant,2048 px,2048 px
-263,/settings,src/sortandpost/posts_ui.py,108,<_EDGE_CHOICES>,constant,3072 px,3072 px
-264,/settings,src/sortandpost/posts_ui.py,108,<_EDGE_CHOICES>,constant,4096 px,4096 px
-265,/settings,src/sortandpost/posts_ui.py,108,<_EDGE_CHOICES>,constant,Full size,Full size
-266,/settings,src/sortandpost/posts_ui.py,1072,posting_settings_panel,ui.label,sortandpost uploads clean JPEG copies of your photos to robopost.app and creates a draft or scheduled post. Get an API key in robopost → Team → Manage API Keys.,sortandpost.photos uploads JPEG copies of your photos to robopost.app and creates a draft or scheduled post. Get an API key in robopost → Team → Manage API Keys.
-267,/settings,src/sortandpost/posts_ui.py,1092,_key_row,ui.label,Checking the keychain…,Checking the keychain…
-268,/settings,src/sortandpost/posts_ui.py,1094,_key_row,ui.label,"If macOS asks whether sortandpost may use its keychain item, answer that prompt (Always Allow avoids it next time).",sortandpost.photos stores your key securely using Mac OS Keychain. Always allow access to ignore this prompt next time
-269,/settings,src/sortandpost/posts_ui.py,1099,_key_row,ui.label,API key {st.masked} — from the {ROBOPOST_ENV} environment variable.,API key {st.masked} — from the {ROBOPOST_ENV} environment variable.
-270,/settings,src/sortandpost/posts_ui.py,1101,_key_row,ui.label,Change it where the app is launched (.env / docker-compose). The environment variable always overrides a saved key.,API key {st.masked} — from the {ROBOPOST_ENV} environment variable.
-271,/settings,src/sortandpost/posts_ui.py,1106,_key_row,ui.label,No OS keychain is available here (e.g. inside Docker).,No OS keychain is available here (e.g. inside Docker).
-272,/settings,src/sortandpost/posts_ui.py,1110,_key_row,ui.label,Set {ROBOPOST_ENV} in .env and restart. The key is never stored in the app-data folder.,Set {ROBOPOST_ENV} in .env and restart. The key is never stored in the app-data folder.
-273,/settings,src/sortandpost/posts_ui.py,1116,_key_row,ui.label,API key {st.masked} — stored in the {st.keychain}.,API key {st.masked} — stored in the {st.keychain}.
-274,/settings,src/sortandpost/posts_ui.py,1118,_key_row,ui.label,No API key saved.,No API key saved.
-275,/settings,src/sortandpost/posts_ui.py,1122,_key_row,ui.input,Paste a new API key,Paste a new API key
-276,/settings,src/sortandpost/posts_ui.py,1122,_key_row,ui.input,API key,API key
-277,/settings,src/sortandpost/posts_ui.py,1140,_save_key,ui.notify,Couldn't save to the keychain: {type(exc).__name__},Couldn't save to the keychain: {type(exc).__name__}
-278,/settings,src/sortandpost/posts_ui.py,1145,_save_key,ui.notify,API key saved to the {st.keychain},API key saved to the {st.keychain}
-279,/settings,src/sortandpost/posts_ui.py,1149,_key_row,ui.button,Save,Save
-280,/settings,src/sortandpost/posts_ui.py,1155,_remove,ui.notify,API key removed from the keychain,API key removed from the keychain
-281,/settings,src/sortandpost/posts_ui.py,1158,_key_row,ui.button,Remove,Remove
-282,/settings,src/sortandpost/posts_ui.py,1160,_key_row,ui.label,Only the last 4 characters are ever shown. The key never goes to the browser or into the app-data folder.,Only the last 4 characters of your API key are shown. The key is stored securely in your local vault.
-283,/settings,src/sortandpost/posts_ui.py,1178,_channels,ui.label,  ⚠ reconnect in robopost,  ⚠ reconnect in robopost
-284,/settings,src/sortandpost/posts_ui.py,1182,_test,status.set_text,Connecting…,Connecting…
-285,/settings,src/sortandpost/posts_ui.py,1194,_test,status.set_text,Connected to robopost team “{team}” · {len(chans)} channel(s),Connected to robopost team “{team}” · {len(chans)} channel(s)
-286,/settings,src/sortandpost/posts_ui.py,1198,posting_settings_panel,ui.button,Test connection & load channels,Test connection & load channels
-287,/settings,src/sortandpost/posts_ui.py,1207,posting_settings_panel,ui.label,Upload size,Upload size
-288,/settings,src/sortandpost/posts_ui.py,1212,posting_settings_panel,ui.select,{pc.export_long_edge} px,{pc.export_long_edge} px
-289,/settings,src/sortandpost/posts_ui.py,1218,posting_settings_panel,ui.label,JPEG quality,JPEG quality
-290,/settings /welcome,src/sortandpost/prefs.py,69,set_season,,auto,auto
-291,/settings /welcome,src/sortandpost/themes.py,43,<SEASON_LABELS>,constant,Auto,Auto
-292,/settings /welcome,src/sortandpost/themes.py,44,<SEASON_LABELS>,constant,Spring,Spring
-293,/settings /welcome,src/sortandpost/themes.py,45,<SEASON_LABELS>,constant,Summer,Summer
-294,/settings /welcome,src/sortandpost/themes.py,46,<SEASON_LABELS>,constant,Fall,Fall
-295,/settings /welcome,src/sortandpost/themes.py,47,<SEASON_LABELS>,constant,Winter,Winter
+id,page,file,line,function,context,text,new_text
+1,/welcome,src/sortandpost/app.py,6704,_library_unavailable_card,_settings_card,Your library folder isn't available,
+2,/welcome,src/sortandpost/app.py,6709,_library_unavailable_card,ui.label,"This folder is set by the APP_DATA environment variable (Docker, or APP_DATA=... on the command line) — fix it there, then try again.",
+3,/welcome,src/sortandpost/app.py,6714,_library_unavailable_card,ui.label,"Your photos, ratings and tags are safe — nothing was changed. Try again once the folder is back, or pick another folder below.",
+4,/welcome,src/sortandpost/app.py,6718,_library_unavailable_card,ui.button,Try again,
+5,/welcome,src/sortandpost/app.py,6727,_poll,_restart_app,The folder is back — opening your library…,
+6,/welcome,src/sortandpost/app.py,6735,_welcome_intro,ui.label,Welcome back to sortandpost.photos! Let's add this computer,
+7,/welcome,src/sortandpost/app.py,6737,_welcome_intro,ui.label,Welcome to sortandpost.photos,
+8,/welcome,src/sortandpost/app.py,6740,_welcome_intro,ui.label,"Your database has been imported. Select where your photos are synced on this computer (i.e. a Google Drive, OneDrive, Dropbox folder)",
+9,/welcome,src/sortandpost/app.py,6743,_welcome_intro,ui.label,sortandpost.photos helps photographers take their photo library from 'living on my hard drive' to organized and posted for people to see. sortandpost.photos is built with privacy by design. Everything is run locally on your computer. None of your data is visible to sortandpost.photos ever. ,
+10,/welcome,src/sortandpost/app.py,6752,_shared_folder_intro,ui.label,"Choose where to store your database. We suggest using a folder that is synced so that you have a backup and it syncs between your computers (i.e. a Google Drive, OneDrive, Dropbox folder)",
+11,/welcome,src/sortandpost/app.py,6757,_shared_folder_intro,ui.label,"If you already use sortandpost.photos, choose the same folder where your database is already stored",
+12,/welcome,src/sortandpost/app.py,6842,_library_next,ui.notify,Choose a folder or multiple folders where your photos are stored,
+13,/welcome,src/sortandpost/app.py,6852,_library_next,ui.label,These folders aren't mounted in the container:,
+14,/welcome,src/sortandpost/app.py,6854,_library_next,ui.label,These folders can't be found on this computer:,
+15,/welcome,src/sortandpost/app.py,6859,_library_next,ui.label,"They'll be scanned once sortandpost.photos can reach them. If a path was a mistake, go back and remove it.",
+16,/welcome,src/sortandpost/app.py,6863,_library_next,ui.button,Go back,
+17,/welcome,src/sortandpost/app.py,6869,_library_next,ui.button,Continue anyway,
+18,/welcome,src/sortandpost/app.py,6874,_read_only_note,ui.label,{State.lock_holder or 'Another computer'} has the database locked. Close sortandpost.photos on that computer and try again.,
+19,/welcome,src/sortandpost/app.py,6883,welcome_page,ui.step(title=),Library data,
+20,/welcome,src/sortandpost/app.py,6887,welcome_page,ui.step(title=),Photo folders,
+21,/welcome,src/sortandpost/app.py,6889,welcome_page,ui.label,sortandpost.photos scans for photos. The folders are not moved or renamed. Different computers can have different folder locations as long as the same photos are synced to them,
+22,/welcome,src/sortandpost/app.py,6902,welcome_page,ui.step(title=),Scanning,
+23,/welcome,src/sortandpost/app.py,6905,welcome_page,ui.label,Skip folders named,
+24,/welcome,src/sortandpost/app.py,6911,welcome_page,ui.step(title=),Stacks & deleting,
+25,/welcome,src/sortandpost/app.py,6913,welcome_page,ui.label,Image stacking,
+26,/welcome,src/sortandpost/app.py,6915,welcome_page,ui.label,Deleting photos,
+27,/welcome,src/sortandpost/app.py,6922,welcome_page,ui.step(title=),AI search,
+28,/welcome,src/sortandpost/app.py,6930,welcome_page,ui.step(title=),You,
+29,/welcome,src/sortandpost/app.py,6937,welcome_page,ui.step(title=),Look,
+30,/welcome,src/sortandpost/app.py,6941,welcome_page,ui.step(title=),Ready,
+31,/welcome,src/sortandpost/app.py,6945,welcome_page,ui.button,Start using sortandpost.photos,
+32,/welcome,src/sortandpost/app.py,6949,welcome_page,ui.button,Back,
+33,/welcome,src/sortandpost/app.py,6954,_profile_summary,,{MODE_LABELS[profile.mode]} mode{name},
+34,/welcome,src/sortandpost/app.py,6958,_render_summary,,fast (all cores),
+35,/welcome,src/sortandpost/app.py,6958,_render_summary,,slow (background),
+36,/welcome,src/sortandpost/app.py,6960,_render_summary,,Shared folder,
+37,/welcome,src/sortandpost/app.py,6962,_render_summary,,Photo folders,
+38,/welcome,src/sortandpost/app.py,6963,_render_summary,,none yet,
+39,/welcome,src/sortandpost/app.py,6965,_render_summary,,Scanning,
+40,/welcome,src/sortandpost/app.py,6966,_render_summary,,Skipped folders,
+41,/welcome,src/sortandpost/app.py,6967,_render_summary,,Stacking,
+42,/welcome,src/sortandpost/app.py,6967,_render_summary,,on,
+43,/welcome,src/sortandpost/app.py,6967,_render_summary,,off,
+44,/welcome,src/sortandpost/app.py,6968,_render_summary,,AI search & tagging,
+45,/welcome,src/sortandpost/app.py,6968,_render_summary,,on,
+46,/welcome,src/sortandpost/app.py,6968,_render_summary,,off,
+47,/welcome,src/sortandpost/app.py,6969,_render_summary,,Achievements,
+48,/welcome,src/sortandpost/app.py,6971,_render_summary,,Deleting,
+49,/welcome,src/sortandpost/app.py,6972,_render_summary,,the whole stack,
+50,/welcome,src/sortandpost/app.py,6974,_render_summary,,only the selected photo,
+51,/welcome,src/sortandpost/app.py,6980,_render_summary,ui.label,sortandpost.photos is importing settings from your library. You can adjust them later in the Settings page,
+52,/welcome,src/sortandpost/app.py,6988,_render_summary,ui.label,sortandpost.photos is scanning your library in the background. Feel free to click around while it works,
+53,/welcome,src/sortandpost/app.py,7018,_welcome_folder_step,ui.label,Your database and other app data are stored here,
+54,/welcome,src/sortandpost/app.py,7020,_welcome_folder_step,ui.label,This computer's private working files: {paths.local},
+55,/welcome,src/sortandpost/app.py,7024,_welcome_folder_step,ui.label,Set by the APP_DATA environment variable (e.g. Docker).,
+56,/welcome,src/sortandpost/app.py,7028,_welcome_folder_step,ui.expansion,Use a different folder,
+57,/welcome,src/sortandpost/app.py,7033,_use,_restart_app,Switching folder…,
+58,/welcome,src/sortandpost/app.py,7035,_welcome_folder_step,_shared_folder_picker(button=),Use this folder,
+59,/welcome,src/sortandpost/app.py,7190,_setup_welcome,,Or use a different folder,
+60,/welcome,src/sortandpost/app.py,7192,_setup_welcome,,Where should your database live?,
+61,/welcome,src/sortandpost/app.py,7200,_use,_restart_app,Setting up your library…,
+62,/welcome,src/sortandpost/app.py,7202,_setup_welcome,_shared_folder_picker(button=),Continue,
+63,/welcome,src/sortandpost/onboarding.py,152,inspect_folder,FolderInspection(message=),Enter a folder path.,
+64,/welcome,src/sortandpost/onboarding.py,156,inspect_folder,FolderInspection(message=),"Use a full path, e.g. /Users/you/Dropbox/Photos.",
+65,/welcome,src/sortandpost/onboarding.py,162,inspect_folder,FolderInspection(message=),"That is a file, not a folder.",
+66,/welcome,src/sortandpost/onboarding.py,167,inspect_folder,FolderInspection(message=),That folder is this computer's private data folder — pick a shared one.,
+67,/welcome,src/sortandpost/onboarding.py,180,inspect_folder,,"A new, empty library will be created in this folder{renamed}.",
+68,/welcome,src/sortandpost/onboarding.py,183,inspect_folder,,"This folder already has other files, so the library will go in {target}.",
+69,/welcome,src/sortandpost/onboarding.py,196,_unwritable,,{target} can't be created.,
+70,/welcome,src/sortandpost/onboarding.py,199,_unwritable,,"{probe} is a file, so {target} can't be created there.",
+71,/welcome,src/sortandpost/onboarding.py,202,_unwritable,,You don't have permission to change files in {target}.,
+72,/welcome,src/sortandpost/onboarding.py,203,_unwritable,,You don't have permission to create folders in {probe}.,
+73,/welcome,src/sortandpost/onboarding.py,223,_existing,,Found an existing sortandpost.photos library,
+74,/welcome,src/sortandpost/onboarding.py,225,_existing,parts.append,"with {photos:,} photo{'s' if photos != 1 else ''}",
+75,/welcome,src/sortandpost/onboarding.py,228,_existing,, Last used on {last_host}.,
+76,/welcome,src/sortandpost/onboarding.py,229,_existing,," Its ratings, tags and settings will be used on this computer too.",
+77,/settings /welcome,src/sortandpost/achievements_ui.py,395,profile_editor,ui.input,Profile name,
+78,/settings /welcome,src/sortandpost/achievements_ui.py,400,profile_editor,ui.label,"Achievements turn sorting and posting into a game. Your name and score show at the top right. Tugs, the sweet cat, cheers you on; Percival, the grumpy cat… doesn't. Shared by every computer that uses this library.",
+79,/settings /welcome,src/sortandpost/achievements_ui.py,413,_save,,tugs,
+80,/settings /welcome,src/sortandpost/achievements_ui.py,421,_save,ui.notify,couldn't save: {exc},
+81,/settings /welcome,src/sortandpost/achievements_ui.py,429,_save,ui.notify,{what} saved,
+82,/settings /welcome,src/sortandpost/achievements_ui.py,433,profile_editor,_save,Mode,
+83,/settings /welcome,src/sortandpost/app.py,701,_season_tooltip,,{SEASON_LABELS[resolve_season(choice)]} theme,
+84,/settings /welcome,src/sortandpost/app.py,702,_season_tooltip,, (auto),
+85,/settings,src/sortandpost/app.py,1073,_progress_text,, · {_fmt_eta(eta)} left,
+86,/settings,src/sortandpost/app.py,1095,_tick,title.set_text,Indexer idle.,
+87,/settings,src/sortandpost/app.py,1151,_online_only_text,,", including {', '.join(report.important[:3])}",
+88,/settings,src/sortandpost/app.py,1153,_online_only_text,," (e.g. thumbnails, which then show blank)",
+89,/settings,src/sortandpost/app.py,1156,_online_only_text,,"{count} file(s) in {_shared_folder_label()} are online-only{what}. Docker can't download them, so editing handovers and thumbnails can fail. In your sync app, keep that folder downloaded: OneDrive → Always keep on this device, Google Drive → Mirror files, iCloud → Keep Downloaded.",
+90,/settings,src/sortandpost/app.py,1242,_config_problem_text,,The shared settings file ({settings.paths.config_file.name}) couldn't be read: {settings.config_problem}.,
+91,/settings,src/sortandpost/app.py,1246,_config_problem_text,, A copy of it is kept in {settings.config_backup}.,
+92,/settings,src/sortandpost/app.py,1247,_config_problem_text,, Saving any setting rewrites the file for every computer.,
+93,/settings,src/sortandpost/app.py,3305,settings_page,,Device,
+94,/settings,src/sortandpost/app.py,3305,settings_page,,{settings.device_id[:8]}… on {manager.hostname},
+95,/settings,src/sortandpost/app.py,3307,settings_page,,Write mode,
+96,/settings,src/sortandpost/app.py,3311,settings_page,,DB generation,
+97,/settings,src/sortandpost/app.py,3313,settings_page,,Last publish,
+98,/settings,src/sortandpost/app.py,3316,settings_page,,Publishes this session,
+99,/settings,src/sortandpost/app.py,3317,settings_page,,Backups,
+100,/settings,src/sortandpost/app.py,3318,settings_page,,This computer's files,
+101,/settings,src/sortandpost/app.py,3321,settings_page,rows.append,⚠ Warning,
+102,/settings,src/sortandpost/app.py,3321,settings_page,rows.append,those files are inside {State.local_in_cloud},
+103,/settings,src/sortandpost/app.py,3323,settings_page,rows.append,⚠ Online-only files,
+104,/settings,src/sortandpost/app.py,3326,settings_page,,"{_local_when(moved.moved_at)}, out of {moved.provider}",
+105,/settings,src/sortandpost/app.py,3328,settings_page,, ({len(moved.leftovers)} file(s) left in {moved.old_kept_at}),
+106,/settings,src/sortandpost/app.py,3329,settings_page,rows.append,Moved out of sync folder,
+107,/settings,src/sortandpost/app.py,3331,settings_page,rows.append,Last merge,
+108,/settings,src/sortandpost/app.py,3335,settings_page,rows.append,⚠ Couldn't merge,
+109,/settings,src/sortandpost/app.py,3336,settings_page,rows.append,"{', '.join((q.name for q in manager.quarantined))} (kept in {manager.quarantined[0].parent})",
+110,/settings,src/sortandpost/app.py,3341,settings_page,rows.append,⚠ Can't edit,
+111,/settings,src/sortandpost/app.py,3343,settings_page,rows.append,Restored from,
+112,/settings,src/sortandpost/app.py,3345,settings_page,rows.append,⚠ config.yaml,
+113,/settings,src/sortandpost/app.py,3349,settings_page,rows.append,Last DB recovery,
+114,/settings,src/sortandpost/app.py,3352,settings_page,rows.append,Damaged files kept in,
+115,/settings,src/sortandpost/app.py,3356,settings_page,,photos indexed,
+116,/settings,src/sortandpost/app.py,3357,settings_page,,online-only,
+117,/settings,src/sortandpost/app.py,3358,settings_page,,Machine suggested tags,
+118,/settings,src/sortandpost/app.py,3359,settings_page,,suggestions pending,
+119,/settings,src/sortandpost/app.py,3360,settings_page,,suggestions approved,
+120,/settings,src/sortandpost/app.py,3364,_needs_lock,ui.label,Read-only — {State.lock_holder or 'another machine'} holds the write lock.,
+121,/settings,src/sortandpost/app.py,3365,_needs_lock,ui.label,These settings unlock once this machine can write.,
+122,/settings,src/sortandpost/app.py,3371,settings_page,ui.label,Settings,
+123,/settings,src/sortandpost/app.py,3387,settings_page,ui.label,Library,
+124,/settings,src/sortandpost/app.py,3391,settings_page,ui.link,Change,
+125,/settings,src/sortandpost/app.py,3392,settings_page,_settings_card,Indexing,
+126,/settings,src/sortandpost/app.py,3398,_scan_now,ui.notify,indexer pass started…,
+127,/settings,src/sortandpost/app.py,3405,settings_page,ui.button,Run indexer pass now,
+128,/settings,src/sortandpost/app.py,3407,settings_page,ui.label,Read-only — indexer actions are disabled.,
+129,/settings,src/sortandpost/app.py,3410,settings_page,_settings_card,Updates,
+130,/settings,src/sortandpost/app.py,3413,settings_page,_settings_card,Desktop app,
+131,/settings,src/sortandpost/app.py,3418,settings_page,_settings_card,Shared library folder,
+132,/settings,src/sortandpost/app.py,3424,settings_page,_settings_card,Library folders,
+133,/settings,src/sortandpost/app.py,3426,settings_page,_settings_card,Excluded folders,
+134,/settings,src/sortandpost/app.py,3431,settings_page,_settings_card,Online-only files,
+135,/settings,src/sortandpost/app.py,3438,settings_page,_settings_card,Indexing speed,
+136,/settings,src/sortandpost/app.py,3443,settings_page,_settings_card,AI search & tagging,
+137,/settings,src/sortandpost/app.py,3452,settings_page,_settings_card,Image stacking,
+138,/settings,src/sortandpost/app.py,3459,settings_page,_settings_card,Appearance,
+139,/settings,src/sortandpost/app.py,3462,settings_page,_settings_card,Open with,
+140,/settings,src/sortandpost/app.py,3467,settings_page,_settings_card,Profile,
+141,/settings,src/sortandpost/app.py,3473,settings_page,ui.link,See your achievements,
+142,/settings,src/sortandpost/app.py,3477,settings_page,_settings_card,Service & API key,
+143,/settings,src/sortandpost/app.py,3482,settings_page,_settings_card,Deleting photos,
+144,/settings,src/sortandpost/app.py,3487,settings_page,_settings_card,Recently deleted,
+145,/settings,src/sortandpost/app.py,3495,settings_page,_settings_card,Sync status,
+146,/settings,src/sortandpost/app.py,3508,_back_up_now,_notify_late,Backup failed: {exc},
+147,/settings,src/sortandpost/app.py,3512,_back_up_now,_notify_late,Backed up to snapshots/{snap.name},
+148,/settings,src/sortandpost/app.py,3514,settings_page,ui.button,Back up now,
+149,/settings,src/sortandpost/app.py,3517,settings_page,ui.button.props.tooltip,Save a compressed copy of the database in the shared folder's snapshots/ -- it syncs with everything else,
+150,/settings,src/sortandpost/app.py,3533,_backup_summary,,none yet,
+151,/settings,src/sortandpost/app.py,3536,_backup_summary,,"{count} in snapshots/, newest {when}",
+152,/settings,src/sortandpost/app.py,3540,<_SETTINGS_SECTIONS>,constant,Overview,
+153,/settings,src/sortandpost/app.py,3541,<_SETTINGS_SECTIONS>,constant,Library,
+154,/settings,src/sortandpost/app.py,3542,<_SETTINGS_SECTIONS>,constant,Indexing & AI,
+155,/settings,src/sortandpost/app.py,3543,<_SETTINGS_SECTIONS>,constant,Appearance & apps,
+156,/settings,src/sortandpost/app.py,3544,<_SETTINGS_SECTIONS>,constant,Profile & achievements,
+157,/settings,src/sortandpost/app.py,3545,<_SETTINGS_SECTIONS>,constant,Posting,
+158,/settings,src/sortandpost/app.py,3546,<_SETTINGS_SECTIONS>,constant,Deleting,
+159,/settings,src/sortandpost/app.py,3547,<_SETTINGS_SECTIONS>,constant,Sync & storage,
+160,/settings /welcome,src/sortandpost/app.py,4361,_stacking_editor,ui.label,"Stack photos together that have a similar name. The latest modified is shown on top. The rating is shared between the photos, but only saved to the EXIF data of the top photo.",
+161,/settings /welcome,src/sortandpost/app.py,4365,_stacking_editor,ui.switch,Enabled,
+162,/settings /welcome,src/sortandpost/app.py,4367,_stacking_editor,ui.checkbox,Stack together RAW and JPEG photos that have the same name,
+163,/settings /welcome,src/sortandpost/app.py,4370,_stacking_editor,ui.checkbox,"Stack together images with similar names i.e ""img.jpg"", ""img copy.jpg"", ""img (1).jpg"", ""copy img.jpg""",
+164,/settings /welcome,src/sortandpost/app.py,4388,_save,ui.notify,saved. Reload the library to see it,
+165,/settings /welcome,src/sortandpost/app.py,4390,_stacking_editor,ui.button,Save,
+166,/settings /welcome,src/sortandpost/app.py,4397,_theme_editor,ui.label,"Light, Dark, or follow the operating system. Saved on this machine only.",
+167,/settings /welcome,src/sortandpost/app.py,4401,_theme_editor,ui.label,Mode,
+168,/settings /welcome,src/sortandpost/app.py,4403,_theme_editor,ui.toggle,System,
+169,/settings /welcome,src/sortandpost/app.py,4403,_theme_editor,ui.toggle,Light,
+170,/settings /welcome,src/sortandpost/app.py,4403,_theme_editor,ui.toggle,Dark,
+171,/settings /welcome,src/sortandpost/app.py,4408,_on_change,,system,
+172,/settings /welcome,src/sortandpost/app.py,4415,_theme_editor,ui.label,Season,
+173,/settings /welcome,src/sortandpost/app.py,4417,_theme_editor,ui.label,"A color palette per season. Auto follows today's date (Mar-May Spring, Jun-Aug Summer, Sep-Nov Fall, Dec-Feb Winter).",
+174,/settings /welcome,src/sortandpost/app.py,4437,_theme_editor,, · {SEASON_LABELS[shown]} now,
+175,/settings,src/sortandpost/app.py,4457,_open_with_app_editor,ui.label,"Choose your preferred photo editing app. When you click open in editing app from sortandpost.photos, the app will open with the selected photo/s",
+176,/settings,src/sortandpost/app.py,4463,_open_with_app_editor,ui.input,App path,
+177,/settings,src/sortandpost/app.py,4468,_open_with_app_editor,ui.button,Browse…,
+178,/settings,src/sortandpost/app.py,4473,_open_with_app_editor,ui.label,macOS: the .app in /Applications.  Windows: the .exe path.  Linux: an executable or .desktop file path.,
+179,/settings,src/sortandpost/app.py,4480,_save,ui.notify,saved,
+180,/settings,src/sortandpost/app.py,4480,_save,ui.notify,cleared — using system default,
+181,/settings,src/sortandpost/app.py,4485,_clear,ui.notify,cleared — using system default,
+182,/settings,src/sortandpost/app.py,4488,_open_with_app_editor,ui.button,Save,
+183,/settings,src/sortandpost/app.py,4489,_open_with_app_editor,ui.button,Use system default,
+184,/settings /welcome,src/sortandpost/app.py,4499,_cpu_speed_editor,ui.label,"Indexing gathers your photos, stacks photos together that are the same, and uses machine learning to determine the contents of the photos without using the Internet or uploading your photos anywhere. sortandpost.photos is built with privacy in mind",
+185,/settings /welcome,src/sortandpost/app.py,4504,_cpu_speed_editor,ui.label,"sortandpost.photos uses a slow indexing speed to run in the background without causing delays on your computer. The slow setting uses {slow_w} cpu core(s). If you have a large quantity of photos you'd like to index quickly, turn on fast indexing. It will slow down your computer, but index photos much faster.",
+186,/settings /welcome,src/sortandpost/app.py,4511,_cpu_speed_editor,ui.toggle,Slow (background),
+187,/settings /welcome,src/sortandpost/app.py,4511,_cpu_speed_editor,ui.toggle,Fast,
+188,/settings /welcome,src/sortandpost/app.py,4512,_cpu_speed_editor,ui.toggle(value=),slow,
+189,/settings /welcome,src/sortandpost/app.py,4514,_cpu_speed_editor,ui.label,Fast uses all CPU cores and may slow down your computer.,
+190,/settings /welcome,src/sortandpost/app.py,4520,_save_speed,,fast,
+191,/settings /welcome,src/sortandpost/app.py,4520,_save_speed,,slow,
+192,/settings /welcome,src/sortandpost/app.py,4523,_save_speed,ui.notify,indexing speed: {ccfg.speed} (applies from the next pass),
+193,/settings /welcome,src/sortandpost/app.py,4533,_deletion_editor,ui.label,"When deleting a photo using sortandpost.photos, it uses an internal trash can and only deletes the top photo of the stack by default.",
+194,/settings /welcome,src/sortandpost/app.py,4540,_deletion_editor,ui.select,Delete only the selected / shown photo,
+195,/settings /welcome,src/sortandpost/app.py,4541,_deletion_editor,ui.select,Delete every photo in the stack,
+196,/settings /welcome,src/sortandpost/app.py,4550,_store,,selected,
+197,/settings /welcome,src/sortandpost/app.py,4559,_save,ui.notify,saved,
+198,/settings /welcome,src/sortandpost/app.py,4561,_deletion_editor,ui.button,Save,
+199,/settings,src/sortandpost/app.py,4570,_trash_panel,ui.label,Deleted photos are put in sortandpost.photos trash. You can move them to your system's trash can or put them back to where they were in the library. Folder: {settings.paths.local / 'trash'},
+200,/settings,src/sortandpost/app.py,4581,_render,ui.label,Nothing here.,
+201,/settings,src/sortandpost/app.py,4587,_render,ui.button,Move all to system Trash,
+202,/settings,src/sortandpost/app.py,4595,_trash_batch_row,,"{when} · {len(hashes)} photo(s), {len(b.items)} file(s)",
+203,/settings,src/sortandpost/app.py,4597,_trash_batch_row,, · deleted on another computer,
+204,/settings,src/sortandpost/app.py,4600,_trash_batch_row,ui.button,Put back,
+205,/settings,src/sortandpost/app.py,4615,_put_back,ui.notify,Putting back… progress is in the status bar,
+206,/settings,src/sortandpost/app.py,4627,_confirm_flush,ui.label,Move everything here to the system Trash?,
+207,/settings,src/sortandpost/app.py,4629,_confirm_flush,ui.label,"After the photos are moved to the system trash, you can restore them from there. They will follow your system's trash/recycle bin setting",
+208,/settings,src/sortandpost/app.py,4633,_confirm_flush,ui.button,Cancel,
+209,/settings,src/sortandpost/app.py,4640,_go,,moved {res.moved} file(s) to the system Trash,
+210,/settings,src/sortandpost/app.py,4642,_go,,; {len(res.failed)} could not be moved,
+211,/settings,src/sortandpost/app.py,4649,_confirm_flush,ui.button,Move to Trash,
+212,/settings,src/sortandpost/app.py,4680,_app_data_editor,ui.label,"Where your library's database, thumbnails and search index are kept. Keep it in a cloud drive and pick the same folder on your other computers.",
+213,/settings,src/sortandpost/app.py,4684,_app_data_editor,ui.label,Shared folder,
+214,/settings,src/sortandpost/app.py,4686,_app_data_editor,ui.label,This computer only,
+215,/settings,src/sortandpost/app.py,4691,_app_data_editor,ui.label,"⚠ set for this launch by the APP_DATA environment variable (Docker, or APP_DATA=... on the command line) — change it there.",
+216,/settings,src/sortandpost/app.py,4700,_use,ui.notify,that's the folder this computer already uses,
+217,/settings,src/sortandpost/app.py,4706,_go,_restart_app,Switching library…,
+218,/settings,src/sortandpost/app.py,4709,_use,ui.label,Restart on this folder?,
+219,/settings,src/sortandpost/app.py,4712,_use,ui.label,Your current library stays where it is; it isn't copied or moved.,
+220,/settings,src/sortandpost/app.py,4716,_use,ui.button,Cancel,
+221,/settings,src/sortandpost/app.py,4717,_use,ui.button,Save & restart,
+222,/settings,src/sortandpost/app.py,4720,_app_data_editor,ui.expansion,Change folder,
+223,/settings,src/sortandpost/app.py,4721,_app_data_editor,_shared_folder_picker(button=),Save & restart,
+224,/settings,src/sortandpost/app.py,4738,_go,ui.label,sortandpost.photos has quit.,
+225,/settings,src/sortandpost/app.py,4739,_go,ui.label,You can close this tab.,
+226,/settings,src/sortandpost/app.py,4745,_quit_app_button,ui.label,Quit sortandpost.photos?,
+227,/settings,src/sortandpost/app.py,4747,_quit_app_button,ui.label,Indexing stops and this page stops working until you open the app again.,
+228,/settings,src/sortandpost/app.py,4750,_quit_app_button,ui.button,Cancel,
+229,/settings,src/sortandpost/app.py,4751,_quit_app_button,ui.button,Quit,
+230,/settings,src/sortandpost/app.py,4753,_quit_app_button,ui.label,Stops sortandpost.photos on this computer.,
+231,/settings,src/sortandpost/app.py,4754,_quit_app_button,ui.button,Quit sortandpost.photos,
+232,/settings,src/sortandpost/app.py,4772,_go,ui.notify,Couldn't start setup over: {exc.strerror or exc},
+233,/settings,src/sortandpost/app.py,4777,_go,_restart_app,Starting setup over…,
+234,/settings,src/sortandpost/app.py,4780,_start_setup_over_button,ui.label,Start setup over on this computer?,
+235,/settings,src/sortandpost/app.py,4782,_start_setup_over_button,ui.label,This computer forgets which shared folder it uses and runs the setup wizard again from the first step. You can pick the same folder or a different one.,
+236,/settings,src/sortandpost/app.py,4786,_start_setup_over_button,ui.label,"Nothing in the shared folder is changed or deleted: your photos, ratings, tags and other computers stay as they are.",
+237,/settings,src/sortandpost/app.py,4790,_start_setup_over_button,ui.button,Cancel,
+238,/settings,src/sortandpost/app.py,4791,_start_setup_over_button,ui.button,Start over,
+239,/settings,src/sortandpost/app.py,4793,_start_setup_over_button,ui.button,Start setup over,
+240,/settings,src/sortandpost/app.py,4795,_start_setup_over_button,ui.button.props.tooltip,Run the setup wizard again on this computer,
+241,/settings /welcome,src/sortandpost/app.py,4809,_clip_toggle_editor,ui.label,"sortandpost.photos downloads a machine learning model that automatically categorizes photos. i.e. sunset, dog on beach, portrait. This is a 600MB model that runs locally. Your photos are never sent to the cloud or on anyone else's computer",
+242,/settings /welcome,src/sortandpost/app.py,4813,_clip_toggle_editor,ui.switch,Turn on AI search & tagging,
+243,/settings /welcome,src/sortandpost/app.py,4828,_confirm_off,ui.label,Turn off AI search & tagging?,
+244,/settings /welcome,src/sortandpost/app.py,4830,_confirm_off,ui.label,"This setting turns off AI categorization of your photos and will disable the review page. Your photos, tags, ratings, and anything you've approved to be added to tags is preserved.",
+245,/settings /welcome,src/sortandpost/app.py,4835,_confirm_off,ui.checkbox,Also delete the downloaded model files from this computer,
+246,/settings /welcome,src/sortandpost/app.py,4838,_confirm_off,ui.label,Frees about 600 MB in {settings.paths.models_dir}. That folder is shared by every library on this computer; another library with AI turned on downloads it again.,
+247,/settings /welcome,src/sortandpost/app.py,4861,_go,_notify_late,AI search & tagging turned off,
+248,/settings /welcome,src/sortandpost/app.py,4862,_go,_notify_late," · freed {freed / 1000000.0:,.0f} MB",
+249,/settings /welcome,src/sortandpost/app.py,4866,_confirm_off,ui.button,Cancel,
+250,/settings /welcome,src/sortandpost/app.py,4867,_confirm_off,ui.button,Turn off,
+251,/settings /welcome,src/sortandpost/app.py,4878,_changed,ui.notify,AI search & tagging turned on — the model downloads on the next index pass (or use “Download / verify” below),
+252,/settings,src/sortandpost/app.py,4895,_confirm,ui.label,Rebuild the AI index?,
+253,/settings,src/sortandpost/app.py,4897,_confirm,ui.label,"Every photo's AI fingerprint is recomputed. AI search and “more like this” are incomplete until it finishes, which can take hours on a big library. Suggestions you approved or rejected are kept; only pending ones are regenerated. You can pause or quit meanwhile and it carries on.",
+254,/settings,src/sortandpost/app.py,4907,_go,ui.notify,Rebuilding the AI index — progress is in the status bar,
+255,/settings,src/sortandpost/app.py,4910,_confirm,ui.button,Cancel,
+256,/settings,src/sortandpost/app.py,4911,_confirm,ui.button,Rebuild,
+257,/settings,src/sortandpost/app.py,4914,_rebuild_ai_index_button,ui.button,Rebuild AI index,
+258,/settings,src/sortandpost/app.py,4918,_rebuild_ai_index_button,btn.tooltip,A rebuild is already under way,
+259,/settings,src/sortandpost/app.py,4922,_rebuild_ai_index_editor,ui.label,Recompute every photo's AI fingerprint (needed after the AI model changes).,
+260,/settings,src/sortandpost/app.py,4943,_clip_model_editor,ui.label,{ccfg.model} / {ccfg.pretrained} — cached under {settings.paths.models_dir},
+261,/settings,src/sortandpost/app.py,4946,_clip_model_editor,ui.label,not checked yet,
+262,/settings,src/sortandpost/app.py,4949,_check,status.set_text,checking…,
+263,/settings,src/sortandpost/app.py,4954,_check,status.set_text,✓ fully cached — ready to run offline,
+264,/settings,src/sortandpost/app.py,4954,_check,status.set_text,✗ not fully cached: {detail},
+265,/settings,src/sortandpost/app.py,4958,_download,status.set_text,downloading…,
+266,/settings,src/sortandpost/app.py,4959,_download,ui.notify,downloading CLIP model files — this can take a few minutes…,
+267,/settings,src/sortandpost/app.py,4964,_download,status.set_text,✓ fully cached — ready to run offline,
+268,/settings,src/sortandpost/app.py,4965,_download,ui.notify,CLIP model files downloaded,
+269,/settings,src/sortandpost/app.py,4967,_download,status.set_text,✗ download failed: {detail},
+270,/settings,src/sortandpost/app.py,4968,_download,ui.notify,download failed: {detail},
+271,/settings,src/sortandpost/app.py,4971,_clip_model_editor,ui.button,Check if downloaded,
+272,/settings,src/sortandpost/app.py,4972,_clip_model_editor,ui.button,Download AI Tagging Model (CLIP),
+273,/settings /welcome,src/sortandpost/app.py,5003,_load,,Pick a starting point,
+274,/settings /welcome,src/sortandpost/app.py,5007,_load,ui.label,✓ This folder is a sortandpost.photos library,
+275,/settings /welcome,src/sortandpost/app.py,5011,_load,ui.button,⬆  parent,
+276,/settings /welcome,src/sortandpost/app.py,5022,_browse_folder,ui.button,Cancel,
+277,/settings /welcome,src/sortandpost/app.py,5029,_browse_folder,ui.button,Use this folder,
+278,/settings,src/sortandpost/app.py,5150,_load,,Pick a starting point,
+279,/settings,src/sortandpost/app.py,5154,_load,ui.button,⬆  parent,
+280,/settings,src/sortandpost/app.py,5174,_browse_app,ui.button,Cancel,
+281,/settings /welcome,src/sortandpost/app.py,5210,_library_roots_editor,ui.label,Folders scanned for photos — specific to this computer. Under Docker a new folder only becomes active after you add its line to docker-compose.yml and run  docker compose up -d.,
+282,/settings /welcome,src/sortandpost/app.py,5214,_library_roots_editor,ui.label,Folders scanned for photos — specific to this computer.,
+283,/settings /welcome,src/sortandpost/app.py,5228,_drop,ui.notify,Removed {root.label or root.host} (its files are untouched),
+284,/settings /welcome,src/sortandpost/app.py,5249,_render,ui.label,Folders your other computer uses that also exist here:,
+285,/settings /welcome,src/sortandpost/app.py,5259,_render,ui.label,No folders yet — add one below.,
+286,/settings /welcome,src/sortandpost/app.py,5262,_render,,scanned,
+287,/settings /welcome,src/sortandpost/app.py,5274,_render,ui.label,network: {r.network},
+288,/settings /welcome,src/sortandpost/app.py,5274,_render,ui.label,no network path,
+289,/settings /welcome,src/sortandpost/app.py,5280,_render,ui.label,"{tip}. Check the path, or remove it if it was a mistake.",
+290,/settings /welcome,src/sortandpost/app.py,5285,_render,ui.button.props.tooltip,set the network path,
+291,/settings /welcome,src/sortandpost/app.py,5286,_render,ui.button,Remove,
+292,/settings /welcome,src/sortandpost/app.py,5288,_render,ui.button.props.tooltip,take this folder off the list; its files are not touched,
+293,/settings /welcome,src/sortandpost/app.py,5292,_network_dialog,ui.label,Network path,
+294,/settings /welcome,src/sortandpost/app.py,5296,_network_dialog,ui.button,Cancel,
+295,/settings /welcome,src/sortandpost/app.py,5308,_network_dialog,ui.button,Save,
+296,/settings /welcome,src/sortandpost/app.py,5322,_add_dialog,ui.label,Add a library folder,
+297,/settings /welcome,src/sortandpost/app.py,5325,_add_dialog,ui.input,Folder on this computer (host path),
+298,/settings /welcome,src/sortandpost/app.py,5329,_add_dialog,ui.button,Browse…,
+299,/settings /welcome,src/sortandpost/app.py,5332,_add_dialog,ui.label,e.g.  ~/Library/CloudStorage/OneDrive-Personal/Photos  ·  ~/Dropbox/Photos  ·  C:\Users\you\OneDrive\Photos,
+300,/settings /welcome,src/sortandpost/app.py,5336,_add_dialog,ui.input,Mount point inside the container,
+301,/settings /welcome,src/sortandpost/app.py,5341,_add_dialog,ui.input,Label (optional),
+302,/settings /welcome,src/sortandpost/app.py,5376,_edited,,Save,
+303,/settings /welcome,src/sortandpost/app.py,5384,_add_dialog,ui.button,Cancel,
+304,/settings /welcome,src/sortandpost/app.py,5389,_save_entry,ui.notify,enter the folder path,
+305,/settings /welcome,src/sortandpost/app.py,5403,_save_entry,,Add anyway,
+306,/settings /welcome,src/sortandpost/app.py,5411,_save_entry,ui.notify,"saved — add the compose line, run docker compose up -d, then rescan",
+307,/settings /welcome,src/sortandpost/app.py,5413,_save_entry,ui.notify,saved — Save & rescan to index it,
+308,/settings /welcome,src/sortandpost/app.py,5415,_save_entry,ui.notify,added,
+309,/settings /welcome,src/sortandpost/app.py,5418,_add_dialog,ui.button,Save,
+310,/settings /welcome,src/sortandpost/app.py,5422,_library_roots_editor,ui.button,Add folder,
+311,/settings /welcome,src/sortandpost/app.py,5428,_save_rescan,ui.notify,saved — rescanning…,
+312,/settings /welcome,src/sortandpost/app.py,5433,_library_roots_editor,ui.button,Save & rescan,
+313,/settings /welcome,src/sortandpost/app.py,5441,_root_problem,,Not mounted — add the compose line and run docker compose up -d,
+314,/settings /welcome,src/sortandpost/app.py,5442,_root_problem,,Not found on this computer,
+315,/settings /welcome,src/sortandpost/app.py,5445,<_NETWORK_HINT>,constant,"Use a network share, e.g. \\nas\photo\Film or smb://nas/photo/Film",
+316,/settings /welcome,src/sortandpost/app.py,5451,_network_input,ui.input,Network path (optional),
+317,/settings /welcome,src/sortandpost/app.py,5453,_network_input,ui.label,"How your other computers reach this folder, e.g.  \\nas\photo\Film  ·  smb://nas.local/photo/Film. Copy path then copies each photo's network path (Windows or Mac spelling, whichever computer clicks).",
+318,/settings /welcome,src/sortandpost/app.py,5469,_exclude_editor,ui.label,"Specify any subfolders you want to skip scanning. i.e. ""RAWs"" ""PSDs"" ""Instagram"" or any other things you don't want clogging up your library",
+319,/settings /welcome,src/sortandpost/app.py,5479,render,ui.label,none,
+320,/settings /welcome,src/sortandpost/app.py,5502,_exclude_editor,ui.input(placeholder=),"folder name, e.g. RAW",
+321,/settings /welcome,src/sortandpost/app.py,5504,_exclude_editor,ui.button,Add,
+322,/settings /welcome,src/sortandpost/app.py,5513,_save,ui.notify,saved — rescanning…,
+323,/settings /welcome,src/sortandpost/app.py,5518,_exclude_editor,ui.button,Save & rescan,
+324,/settings,src/sortandpost/app.py,5540,_online_only_editor,ui.label,"sortandpost.photos runs in Docker here, so it can't make your cloud sync tool download online-only files. To index them, {_DOCKER_KEEP_HINT}",
+325,/settings,src/sortandpost/app.py,5544,_online_only_editor,ui.label,{cloud_n} file(s) currently recorded as online-only.,
+326,/settings,src/sortandpost/app.py,5544,_online_only_editor,ui.label,None recorded.,
+327,/settings,src/sortandpost/app.py,5549,_online_only_editor,ui.label,"Your cloud sync tool (i.e. Google Drive, OneDrive, iCloud Drive) often only downloads files you open. If you want sortandpost.photos to download every file in your library automatically, turn this on, but if you'd rather only have what's already downloaded indexed, choose that option instead.",
+328,/settings,src/sortandpost/app.py,5556,_online_only_editor,ui.toggle,Skip (don't download),
+329,/settings,src/sortandpost/app.py,5556,_online_only_editor,ui.toggle,Download while scanning,
+330,/settings,src/sortandpost/app.py,5557,_online_only_editor,ui.toggle(value=),skip,
+331,/settings,src/sortandpost/app.py,5563,_save_mode,ui.notify,online-only mode: {icfg.online_only},
+332,/settings,src/sortandpost/app.py,5568,_online_only_editor,ui.label,{cloud_n} file(s) currently recorded as online-only.,
+333,/settings,src/sortandpost/app.py,5568,_online_only_editor,ui.label,None recorded.,
+334,/settings,src/sortandpost/app.py,5572,_download_now,ui.notify,downloading online-only files…,
+335,/settings,src/sortandpost/app.py,5576,_download_now,status.set_text,Done — reload the library to see them.,
+336,/settings,src/sortandpost/app.py,5579,_online_only_editor,ui.button,Download & index recorded files,
+337,/settings /welcome,src/sortandpost/app.py,6631,_adopt_sync_dir,ui.notify,Couldn't use {target}: {exc.strerror or exc},
+338,/settings /welcome,src/sortandpost/app.py,6644,_restart_app,ui.label,sortandpost.photos is restarting — this page reloads on its own.,
+339,/settings /welcome,src/sortandpost/app.py,6770,_shared_folder_picker,ui.input,Shared folder,
+340,/settings /welcome,src/sortandpost/app.py,6770,_shared_folder_picker,ui.input(placeholder=),e.g. ~/Dropbox/sortandpost,
+341,/settings /welcome,src/sortandpost/app.py,6776,_shared_folder_picker,ui.button,Browse…,
+342,/settings,src/sortandpost/posts_ui.py,129,<_EDGE_CHOICES>,constant,1080 px,
+343,/settings,src/sortandpost/posts_ui.py,129,<_EDGE_CHOICES>,constant,2048 px,
+344,/settings,src/sortandpost/posts_ui.py,129,<_EDGE_CHOICES>,constant,3072 px,
+345,/settings,src/sortandpost/posts_ui.py,129,<_EDGE_CHOICES>,constant,4096 px,
+346,/settings,src/sortandpost/posts_ui.py,129,<_EDGE_CHOICES>,constant,Full size,
+347,/settings,src/sortandpost/posts_ui.py,1328,<_OP_LABELS>,constant,new posts,
+348,/settings,src/sortandpost/posts_ui.py,1328,<_OP_LABELS>,constant,channel lists,
+349,/settings,src/sortandpost/posts_ui.py,1358,_body,ui.label,Posting service,
+350,/settings,src/sortandpost/posts_ui.py,1373,_switch,ui.notify,Posting now uses {PROVIDERS[new].name}. Unsent drafts follow it; posts that already went out stay with the service they went to.,
+351,/settings,src/sortandpost/posts_ui.py,1380,_body,ui.label,sortandpost.photos {spec.about} {spec.key_help},
+352,/settings,src/sortandpost/posts_ui.py,1394,posting_settings_panel,ui.label,Upload size,
+353,/settings,src/sortandpost/posts_ui.py,1399,posting_settings_panel,ui.select,{pc.export_long_edge} px,
+354,/settings,src/sortandpost/posts_ui.py,1405,posting_settings_panel,ui.label,JPEG quality,
+355,/settings,src/sortandpost/posts_ui.py,1414,posting_settings_panel,ui.button,Reset to defaults,
+356,/settings,src/sortandpost/posts_ui.py,1416,posting_settings_panel,ui.button.props.tooltip,"{defaults.export_long_edge} px, quality {defaults.export_quality}",
+357,/settings,src/sortandpost/posts_ui.py,1461,_key_row,ui.label,Checking the keychain…,
+358,/settings,src/sortandpost/posts_ui.py,1463,_key_row,ui.label,sortandpost.photos stores your key securely using Mac OS Keychain. Always allow access to ignore this prompt next time,
+359,/settings,src/sortandpost/posts_ui.py,1469,_key_row,ui.label,{spec.name} API key {st.masked} — from the {spec.env_var} environment variable.,
+360,/settings,src/sortandpost/posts_ui.py,1473,_key_row,ui.label,Change it where the app is launched (.env / docker-compose). The environment variable always overrides a saved key.,
+361,/settings,src/sortandpost/posts_ui.py,1479,_key_row,ui.label,No system keyring is available here.,
+362,/settings,src/sortandpost/posts_ui.py,1483,_key_row,,"Install and unlock a Secret Service keyring (GNOME Keyring or KWallet), then restart sortandpost.photos. Or set {spec.env_var} in the environment it starts with.",
+363,/settings,src/sortandpost/posts_ui.py,1488,_key_row,ui.label,No OS keychain is available here (e.g. inside Docker).,
+364,/settings,src/sortandpost/posts_ui.py,1491,_key_row,,Set {spec.env_var} in .env and restart.,
+365,/settings,src/sortandpost/posts_ui.py,1492,_key_row,ui.label,{hint} The key is never stored in the app-data folder.,
+366,/settings,src/sortandpost/posts_ui.py,1498,_key_row,ui.label,{spec.name} API key {st.masked} — stored in the {st.keychain}.,
+367,/settings,src/sortandpost/posts_ui.py,1500,_key_row,ui.label,No {spec.name} API key saved.,
+368,/settings,src/sortandpost/posts_ui.py,1504,_key_row,ui.input,Paste a new API key,
+369,/settings,src/sortandpost/posts_ui.py,1504,_key_row,ui.input,API key,
+370,/settings,src/sortandpost/posts_ui.py,1522,_save_key,ui.notify,Couldn't save to the keychain: {type(exc).__name__},
+371,/settings,src/sortandpost/posts_ui.py,1527,_save_key,ui.notify,{spec.name} API key saved to the {st.keychain},
+372,/settings,src/sortandpost/posts_ui.py,1531,_key_row,ui.button,Save,
+373,/settings,src/sortandpost/posts_ui.py,1537,_remove,ui.notify,{spec.name} API key removed from the keychain,
+374,/settings,src/sortandpost/posts_ui.py,1540,_key_row,ui.button,Remove,
+375,/settings,src/sortandpost/posts_ui.py,1542,_key_row,ui.label,Only the last 4 characters of your API key are shown. The key is stored securely in your local vault.,
+376,/settings,src/sortandpost/posts_ui.py,1553,_base_url_panel,ui.label,{spec.name} server,
+377,/settings,src/sortandpost/posts_ui.py,1561,_base_url_panel,ui.input,API address,
+378,/settings,src/sortandpost/posts_ui.py,1572,_show,,Uses {url},
+379,/settings,src/sortandpost/posts_ui.py,1607,_save,ui.notify,{spec.name} server saved: {url},
+380,/settings,src/sortandpost/posts_ui.py,1622,_limits_panel,lines.append,{spec.name} allows {rl.describe(_OP_LABELS[op])} ({lim.used(op)} used from this computer).,
+381,/settings,src/sortandpost/posts_ui.py,1629,_limits_panel,ui.label,A send that would go over is refused before anything is uploaded. Self-hosted with a different limit? Set posting.rate_limit_overrides in config.yaml.,
+382,/settings,src/sortandpost/posts_ui.py,1646,_channels,ui.label,  ⚠ reconnect in {spec.name},
+383,/settings,src/sortandpost/posts_ui.py,1650,_test,status.set_text,Connecting…,
+384,/settings,src/sortandpost/posts_ui.py,1655,_test,," (server: {base_url(settings, spec)})",
+385,/settings,src/sortandpost/posts_ui.py,1664,_test,status.set_text,Connected to {spec.name}{who} · {len(chans)} channel(s),
+386,/settings,src/sortandpost/posts_ui.py,1668,_connection_panel,ui.button,Test connection & load channels,
+387,/settings /welcome,src/sortandpost/prefs.py,69,set_season,,auto,
+388,/settings /welcome,src/sortandpost/profile_ui.py,210,crop_dialog,ui.label,Profile picture,
+389,/settings /welcome,src/sortandpost/profile_ui.py,213,crop_dialog,ui.label,Drag to move,
+390,/settings /welcome,src/sortandpost/profile_ui.py,244,crop_dialog,ui.button,Cancel,
+391,/settings /welcome,src/sortandpost/profile_ui.py,245,crop_dialog,ui.button,Save,
+392,/settings /welcome,src/sortandpost/profile_ui.py,254,_save,ui.notify,Not saved: another computer is editing,
+393,/settings /welcome,src/sortandpost/profile_ui.py,258,_save,ui.notify,Couldn't use that picture: {exc},
+394,/settings /welcome,src/sortandpost/profile_ui.py,267,_save,ui.notify,Profile picture saved,
+395,/settings /welcome,src/sortandpost/profile_ui.py,287,crop_library_photo,ui.notify,That photo's file isn't on this computer,
+396,/settings /welcome,src/sortandpost/profile_ui.py,304,_crop_upload,,"data:image/jpeg;base64,",
+397,/settings /welcome,src/sortandpost/profile_ui.py,334,_pick_from_library,ui.notify,No photos to choose from yet,
+398,/settings /welcome,src/sortandpost/profile_ui.py,338,_pick_from_library,ui.label,Choose a photo,
+399,/settings /welcome,src/sortandpost/profile_ui.py,340,_pick_from_library,ui.label,Your best-rated photos first. Any photo's page also has “Use as profile picture”.,
+400,/settings /welcome,src/sortandpost/profile_ui.py,353,_pick_from_library,ui.button,Cancel,
+401,/settings /welcome,src/sortandpost/profile_ui.py,380,_remove,ui.notify,Not saved: another computer is editing,
+402,/settings /welcome,src/sortandpost/profile_ui.py,383,_remove,ui.notify,couldn't save: {exc},
+403,/settings /welcome,src/sortandpost/profile_ui.py,399,avatar_editor,ui.notify,Pick an image under {MAX_UPLOAD_BYTES // (1024 * 1024)} MB,
+404,/settings /welcome,src/sortandpost/profile_ui.py,411,avatar_editor,ui.button,Upload picture…,
+405,/settings /welcome,src/sortandpost/profile_ui.py,417,avatar_editor,ui.button,Choose from library,
+406,/settings /welcome,src/sortandpost/profile_ui.py,421,avatar_editor,ui.button,Remove,
+407,/settings /welcome,src/sortandpost/profiles.py,48,<MODE_LABELS>,constant,Tugs,
+408,/settings /welcome,src/sortandpost/profiles.py,48,<MODE_LABELS>,constant,Percival,
+409,/settings /welcome,src/sortandpost/profiles.py,48,<MODE_LABELS>,constant,Off,
+410,/settings /welcome,src/sortandpost/themes.py,43,<SEASON_LABELS>,constant,Auto,
+411,/settings /welcome,src/sortandpost/themes.py,44,<SEASON_LABELS>,constant,Spring,
+412,/settings /welcome,src/sortandpost/themes.py,45,<SEASON_LABELS>,constant,Summer,
+413,/settings /welcome,src/sortandpost/themes.py,46,<SEASON_LABELS>,constant,Fall,
+414,/settings /welcome,src/sortandpost/themes.py,47,<SEASON_LABELS>,constant,Winter,
