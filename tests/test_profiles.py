@@ -56,19 +56,19 @@ def _webp(seed: int) -> bytes:
 def test_legacy_profile_loads_and_first_save_adds_a_stable_id(paths: Paths) -> None:
     profile_file(paths).write_text(json.dumps({"name": "Matt", "mode": "devil"}))
     p = load_profile(paths)
-    assert (p.id, p.name, p.mode, p.avatar) == ("", "Matt", "devil", "")
+    assert (p.id, p.name, p.mode, p.avatar) == ("", "Matt", "percival", "")  # was Devil
     assert json.loads(profile_file(paths).read_text()) == {"name": "Matt", "mode": "devil"}
 
-    first = save_profile(paths, name="Matt", mode="angel", device_id=DEV_A)
+    first = save_profile(paths, name="Matt", mode="tugs", device_id=DEV_A)
     uuid.UUID(first.id)
-    again = save_profile(paths, name="M", mode="angel", device_id=DEV_B)
+    again = save_profile(paths, name="M", mode="tugs", device_id=DEV_B)
     assert again.id == first.id == load_profile(paths).id
 
 
 def test_bad_fields_are_ignored(paths: Paths) -> None:
     profile_file(paths).write_text(json.dumps({"id": "nope", "avatar": "../../etc", "mode": "x"}))
     p = load_profile(paths)
-    assert (p.id, p.avatar, p.mode) == ("", "", "angel")
+    assert (p.id, p.avatar, p.mode) == ("", "", "tugs")
 
 
 def test_initials() -> None:
@@ -82,12 +82,12 @@ def test_initials() -> None:
 
 def test_set_avatar_keeps_name_and_mode_and_vice_versa(paths: Paths) -> None:
     store = FileProfileStore(paths, DEV_A, _clock())
-    store.save(name="Matt", mode="devil")
+    store.save(name="Matt", mode="percival")
     p = store.set_avatar(_webp(1))
-    assert (p.name, p.mode) == ("Matt", "devil")
+    assert (p.name, p.mode) == ("Matt", "percival")
     assert (avatars_dir(paths) / f"{p.avatar}.webp").read_bytes() == _webp(1)
 
-    p2 = FileProfileStore(paths, DEV_B).save(name="Matt F", mode="angel")
+    p2 = FileProfileStore(paths, DEV_B).save(name="Matt F", mode="tugs")
     assert p2.avatar == p.avatar
     assert store.avatar_url(p2) == f"/profile-avatar/{p.avatar}.webp"
 

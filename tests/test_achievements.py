@@ -10,11 +10,12 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
 from sortandpost.achievements import (
-    EVENT_DEVIL_MODE,
     EVENT_GITHUB_SEARCH,
     EVENT_KONAMI,
+    EVENT_PERCIVAL_MODE,
     AchievementTracker,
     Metrics,
+    all_reveals,
     all_unlocks,
     compute_metrics,
     definitions,
@@ -85,7 +86,7 @@ def test_bundled_table_parses_every_row() -> None:
     assert by["expert-rater"].points == 1000
     assert by["reader"].trigger.event == EVENT_GITHUB_SEARCH
     assert by["konami-code"].trigger.event == EVENT_KONAMI
-    assert by["devil-mode"].trigger.event == EVENT_DEVIL_MODE
+    assert by["percival-mode"].trigger.event == EVENT_PERCIVAL_MODE
 
 
 def test_bundled_copy_matches_the_repo_table() -> None:
@@ -93,8 +94,13 @@ def test_bundled_copy_matches_the_repo_table() -> None:
     assert resource_path("achievements.md").read_text(encoding="utf-8") == repo.read_text(
         encoding="utf-8"
     )
-    assert resource_path("Angel.png").is_file()
-    assert resource_path("Devil.png").is_file()
+    assert resource_path("Tugs.png").is_file()
+    assert resource_path("Percival.png").is_file()
+    art = Path(__file__).parents[1] / "dev-notes" / "achievements"
+    for name in ("Tugs.png", "Percival.png"):
+        assert resource_path(name).read_bytes() == (art / name).read_bytes()
+    for old in ("Angel.png", "Devil.png"):
+        assert not resource_path(old).exists()
 
 
 def test_parse_trigger_variants() -> None:
@@ -113,28 +119,29 @@ def test_unparseable_row_is_skipped() -> None:
 
 def test_markdown_escapes_kept_for_rendering() -> None:
     by = {a.key: a for a in definitions()}
-    assert "\\*" in by["devil-mode"].devil
-    assert by["devil-mode"].description("angel") == by["devil-mode"].angel
+    assert "\\*" in by["percival-mode"].percival
+    assert by["percival-mode"].description("tugs") == by["percival-mode"].tugs
+    assert by["percival-mode"].description("percival") == by["percival-mode"].percival
 
 
 # --- profile ------------------------------------------------------------------
 
 
-def test_profile_defaults_to_angel(paths: Paths) -> None:
+def test_profile_defaults_to_tugs(paths: Paths) -> None:
     p = load_profile(paths)
-    assert (p.name, p.mode) == ("", "angel")
+    assert (p.name, p.mode) == ("", "tugs")
 
 
 def test_profile_round_trip_cleans_name(paths: Paths) -> None:
-    save_profile(paths, name="  Matt\n  F ", mode="devil", device_id=DEV_A)
+    save_profile(paths, name="  Matt\n  F ", mode="percival", device_id=DEV_A)
     p = load_profile(paths)
-    assert (p.name, p.mode, p.updated_by_device) == ("Matt F", "devil", DEV_A)
+    assert (p.name, p.mode, p.updated_by_device) == ("Matt F", "percival", DEV_A)
     assert (paths.sync / "profile.json").is_file()
 
 
 def test_corrupt_profile_falls_back(paths: Paths) -> None:
     (paths.sync / "profile.json").write_text("{nope", encoding="utf-8")
-    assert load_profile(paths).mode == "angel"
+    assert load_profile(paths).mode == "tugs"
 
 
 # --- metrics + due --------------------------------------------------------------
@@ -268,8 +275,20 @@ def test_corrupt_own_file_is_ignored(paths: Paths) -> None:
     t = AchievementTracker(paths, DEV_A, "laptop", clock=_clock())
     t.own_file.write_text("garbage", encoding="utf-8")
     assert all_unlocks(paths) == {}
-    assert t.record_event(EVENT_DEVIL_MODE)
-    assert "devil-mode" in all_unlocks(paths)
+    assert t.record_event(EVENT_PERCIVAL_MODE)
+    assert "percival-mode" in all_unlocks(paths)
+
+
+def test_renamed_achievement_keeps_old_unlocks(paths: Paths) -> None:
+    """The "Devil Mode" achievement is now "Percival Mode": an unlock saved under the old key
+    still counts (and isn't unlocked a second time)."""
+    t = AchievementTracker(paths, DEV_A, "laptop", clock=_clock())
+    t.own_file.parent.mkdir(parents=True, exist_ok=True)
+    old = {"devil-mode": "2026-10-02T00:00:00+00:00"}
+    t.own_file.write_text(json.dumps({"unlocked": old, "revealed": old}), encoding="utf-8")
+    assert all_unlocks(paths) == {"percival-mode": "2026-10-02T00:00:00+00:00"}
+    assert "percival-mode" in all_reveals(paths)
+    assert t.record_event(EVENT_PERCIVAL_MODE) == []
 
 
 def test_rated_floor(paths: Paths) -> None:

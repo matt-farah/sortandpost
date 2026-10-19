@@ -722,11 +722,12 @@ How they're applied:
 ## Achievements (V3 #2; `sortandpost.achievements`, `achievements_ui`)
 
 - **Definitions**: a bundled copy of `dev-notes/achievements/Achievements.md` in
-  `resources/achievements/` (keep the two identical — a test checks; Angel/Devil art sits beside
-  it). The free-text Trigger column is parsed: "Index/Rate/Post/Create N photos/posts/collections"
-  (+ "cannot be triggered on first day") or an event (Devil mode, Konami, "github" search). An
-  unparseable row is skipped with a warning. The key is the name's slug — renaming a row
-  orphans its unlocks.
+  `resources/achievements/` (keep the two identical — a test checks; the Tugs / Percival cat art,
+  512×512 PNGs, sits beside it). The free-text Trigger column is parsed:
+  "Index/Rate/Post/Create N photos/posts/collections" (+ "cannot be triggered on first day") or an
+  event (Percival mode, Konami, "github" search). An unparseable row is skipped with a warning.
+  The key is the name's slug — renaming a row orphans its unlocks unless the old key is added to
+  `achievements._RENAMED_KEYS` (`devil-mode` → `percival-mode`).
 - **Counts are computed** from existing state (`compute_metrics`): photo rows, rated photos
   (`stars > 0`, a stack counts once), collections, posts sent to at least one channel. So an
   existing library unlocks several at once. "First day" = the earliest `photos.first_indexed_at`
@@ -737,7 +738,8 @@ How they're applied:
   nothing needs a merge and nothing is dropped. Unlocks are sticky. Written even in read-only
   mode (own file only, like `library.json`). Like collections/posts, a deliberate exception to
   constraint #4.
-- **Profile** (see "Profile" below): name + mode Angel / Devil / Off. Off hides the score chip,
+- **Profile** (see "Profile" below): name + mode Tugs (the sweet cat) / Percival (the grumpy cat) / Off
+  (`angel` / `devil` in an older `profile.json` load as these). Off hides the score chip,
   toasts and the page, but unlocks keep counting.
 - **Runtime**: one background thread re-checks every 10 s (`achievements_ui.poke()` after a
   rating / new collection runs it sooner); each tab's header chip polls the tracker's in-memory

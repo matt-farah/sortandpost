@@ -43,10 +43,12 @@ from sortandpost.sync.clock import Clock, utcnow
 
 log = logging.getLogger(__name__)
 
-Mode = Literal["angel", "devil", "off"]
-MODES: tuple[Mode, ...] = ("angel", "devil", "off")
-MODE_LABELS: dict[Mode, str] = {"angel": "Angel", "devil": "Devil", "off": "Off"}
-DEFAULT_MODE: Mode = "angel"
+Mode = Literal["tugs", "percival", "off"]
+MODES: tuple[Mode, ...] = ("tugs", "percival", "off")
+MODE_LABELS: dict[Mode, str] = {"tugs": "Tugs", "percival": "Percival", "off": "Off"}
+DEFAULT_MODE: Mode = "tugs"
+# The personas were Angel / Devil before 2026-10-19; a profile saved then keeps its pick.
+_LEGACY_MODES: dict[str, Mode] = {"angel": "tugs", "devil": "percival"}
 NAME_MAX_LEN = 40
 
 AVATAR_SIZE = 512
@@ -134,6 +136,7 @@ def load_profile(paths: Paths) -> Profile:
     if not isinstance(data, dict):
         return Profile()
     mode = data.get("mode")
+    mode = _LEGACY_MODES.get(mode, mode) if isinstance(mode, str) else mode
     avatar = str(data.get("avatar") or "")
     pid = str(data.get("id") or "")
     return Profile(

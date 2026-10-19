@@ -18,6 +18,32 @@ from nicegui.elements.mixins.text_element import TextElement
 
 PAGE_URL = "/help"
 
+_UTM = "?utm_source=unsplash&utm_medium=referral&utm_content=creditCopyText"
+ART_ARTIST = "Brenda Carolina Ortiz Diaz"
+ART_ARTIST_URL = f"https://unsplash.com/@brenortiz/illustrations{_UTM}"
+UNSPLASH_URL = f"https://unsplash.com/illustrations{_UTM}"
+
+
+@dataclass(frozen=True)
+class ArtCredit:
+    mode: str  # the achievements persona the illustration is
+    who: str
+    url: str
+
+
+ART_CREDITS: tuple[ArtCredit, ...] = (
+    ArtCredit(
+        "tugs",
+        "Tugs, the sweet cat",
+        f"https://unsplash.com/illustrations/an-orange-cat-with-a-raised-tail-2uR7BOZi3ZQ{_UTM}",
+    ),
+    ArtCredit(
+        "percival",
+        "Percival, the grumpy cat",
+        f"https://unsplash.com/illustrations/a-grumpy-cartoon-cat-is-sitting-down-DEPoWtdRevo{_UTM}",
+    ),
+)
+
 
 @dataclass(frozen=True)
 class Shortcut:
@@ -170,6 +196,25 @@ def _keys(shortcut: Shortcut) -> None:
             _Kbd(combo).classes("sp-kbd")
 
 
+def _credits() -> None:
+    """Attribution for the achievements cats (Unsplash's credit text + links)."""
+    from sortandpost.achievements_ui import art_url  # lazy: it imports app
+
+    ui.label("Credits").classes("sp-display text-xl font-semibold pt-4")
+    with ui.element("div").classes("sp-help-grid"):
+        for credit in ART_CREDITS:
+            with ui.row().classes("sp-card sp-help-card items-center gap-3 no-wrap"):
+                ui.image(art_url(credit.mode)).classes("sp-ach-persona shrink-0")
+                with ui.column().classes("gap-0 min-w-0"):
+                    ui.label(credit.who).classes("font-medium")
+                    with ui.row().classes("items-baseline gap-1 text-sm sp-muted"):
+                        ui.link("Illustration", credit.url, new_tab=True).classes("text-primary")
+                        ui.label("by")
+                        ui.link(ART_ARTIST, ART_ARTIST_URL, new_tab=True).classes("text-primary")
+                        ui.label("on")
+                        ui.link("Unsplash", UNSPLASH_URL, new_tab=True).classes("text-primary")
+
+
 def register_pages() -> None:
     from sortandpost import app as A  # lazy: app imports this module
 
@@ -194,3 +239,4 @@ def register_pages() -> None:
                                 with ui.element("div").classes("sp-help-row"):
                                     ui.label(shortcut.does)
                                     _keys(shortcut)
+            _credits()
