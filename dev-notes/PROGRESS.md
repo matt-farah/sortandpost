@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-19 (in-app updates from GitHub Releases; keyboard shortcuts help page; profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-19 (achievements personas are now cats Tugs / Percival; in-app updates from GitHub Releases; keyboard shortcuts help page; profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
 _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 
 > **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
@@ -9,6 +9,26 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 > (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
 > installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
 > Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🐈 2026-10-19 — Cat personas: Tugs / Percival (branch `feat/cat-personas`)
+
+- Achievements personas Angel / Devil → **Tugs** (the sweet cat) / **Percival** (the grumpy
+  cat). Art: Unsplash illustrations by Brenda Carolina Ortiz Diaz, resized to 512×512 PNG
+  (`Tugs.png` keeps alpha, `Percival.png` opaque) in `resources/achievements/` +
+  `dev-notes/achievements/`; `Angel.png` / `Devil.png` deleted.
+- Mode ids are now `tugs` / `percival` (`profiles.MODES`); a `profile.json` saying `angel` /
+  `devil` loads as the new ones (`_LEGACY_MODES`). An older app reads `percival` as unknown →
+  its default; accepted for the beta.
+- Achievement "Devil Mode" → **Percival Mode** (paw icon); table columns Desc Tugs / Desc
+  Percival. The slug changed, so `achievements._RENAMED_KEYS` maps old `devil-mode` unlocks /
+  reveals onto `percival-mode` when device files are read (no rewrite, no double unlock).
+- `/achievements`: the persona is twice the size in the page head (`sp-ach-persona-xl`,
+  capped at 30vw on phones) and the reveal dialog (14rem). `/help` gets a **Credits** section
+  (`help_ui.ART_CREDITS`): a card per cat with the Unsplash attribution links.
+- `dev-notes/copy/` export not regenerated: it was already stale (≈400-line drift); refresh
+  separately.
+- Gate: full suite green (+ legacy-mode and renamed-key tests), ruff, format, mypy,
+  `uv audit` clean. User click-through: OK.
 
 ## 🔄 2026-10-19 — In-app updates (branch `feat/in-app-updates`)
 

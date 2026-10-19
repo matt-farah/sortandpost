@@ -27,8 +27,8 @@ from sqlmodel import Session
 
 from sortandpost import profile_ui
 from sortandpost.achievements import (
-    EVENT_DEVIL_MODE,
     EVENT_KONAMI,
+    EVENT_PERCIVAL_MODE,
     Achievement,
     AchievementTracker,
     Unlock,
@@ -78,9 +78,11 @@ _CSS = """
   0%, 100% { box-shadow: 0 0 0 0 transparent; }
   50% { box-shadow: 0 0 14px 2px var(--q-primary); } }
 @media (prefers-reduced-motion: reduce) { .sp-ach-card.sp-ach-sealed { animation: none; } }
-.sp-ach-reveal { width: min(26rem, 92vw); padding: 1.5rem; text-align: center;
+.sp-ach-reveal { width: min(28rem, 92vw); padding: 1.5rem; text-align: center;
   animation: sp-ach-pop .28s ease-out; }
-.sp-ach-persona-lg { width: 7rem; height: 7rem; }
+/* the cats' art, shown big on /achievements (head + reveal dialog) */
+.sp-ach-persona-xl { width: min(9rem, 30vw); height: min(9rem, 30vw); }
+.sp-ach-persona-lg { width: 14rem; height: 14rem; }
 @keyframes sp-ach-pop {
   from { transform: scale(.85); opacity: 0; } to { transform: none; opacity: 1; } }
 """
@@ -112,7 +114,7 @@ def start(settings: Settings, engine: Engine) -> None:
     global TRACKER, _SETTINGS
     _SETTINGS = settings
     TRACKER = AchievementTracker(settings.paths, settings.device_id, settings.hostname)
-    for mode in ("angel", "devil"):
+    for mode in ("tugs", "percival"):
         nicegui_app.add_static_file(
             local_file=resource_path(f"{mode.capitalize()}.png"), url_path=art_url(mode)
         )
@@ -171,7 +173,7 @@ def current_mode() -> Mode:
 
 
 def art_url(mode: str) -> str:
-    return f"{_ART_URL}/{'devil' if mode == 'devil' else 'angel'}.png"
+    return f"{_ART_URL}/{'percival' if mode == 'percival' else 'tugs'}.png"
 
 
 # --------------------------------------------------------------------------- #
@@ -316,7 +318,7 @@ def _page_head(
 ) -> None:
     done = sum(1 for a in tracker.defs if a.key in unlocked)
     with ui.row().classes("w-full items-center gap-4 no-wrap"):
-        ui.image(art_url(mode)).classes("sp-ach-persona shrink-0")
+        ui.image(art_url(mode)).classes("sp-ach-persona sp-ach-persona-xl shrink-0")
         with ui.column().classes("gap-0 min-w-0"):
             ui.label("Achievements").classes("sp-display text-2xl font-semibold")
             who = f"{name} · " if name else ""
@@ -384,7 +386,7 @@ def _reveal_dialog(dialog: ui.dialog, a: Achievement, mode: Mode) -> None:
 # profile editor -- Settings + the welcome wizard
 # --------------------------------------------------------------------------- #
 def profile_editor(settings: Settings, *, notify: bool = True) -> None:
-    """Profile picture, name + Angel / Devil / Off. Saved as it changes to the
+    """Profile picture, name + Tugs / Percival / Off. Saved as it changes to the
     shared profile (caller gates on the write lock)."""
     profile = profile_ui.store(settings).get()
     state = {"name": profile.name, "mode": profile.mode}
@@ -396,7 +398,8 @@ def profile_editor(settings: Settings, *, notify: bool = True) -> None:
         )
     ui.label(
         "Achievements turn sorting and posting into a game. Your name and score show "
-        "at the top right. Angel cheers you on; Devil… doesn't. Shared by every "
+        "at the top right. Tugs, the sweet cat, cheers you on; Percival, the grumpy cat… "
+        "doesn't. Shared by every "
         "computer that uses this library."
     ).classes("text-xs sp-faint max-w-xl pt-2")
     with ui.row().classes("items-center gap-4 no-wrap"):
@@ -407,7 +410,7 @@ def profile_editor(settings: Settings, *, notify: bool = True) -> None:
         ).props("no-caps")
 
     def _save(what: str) -> None:
-        mode: Mode = mode_in.value if mode_in.value in MODE_LABELS else "angel"
+        mode: Mode = mode_in.value if mode_in.value in MODE_LABELS else "tugs"
         name = name_in.value or ""
         if name.strip() == state["name"] and mode == state["mode"]:
             return
@@ -420,8 +423,8 @@ def profile_editor(settings: Settings, *, notify: bool = True) -> None:
         state["name"], state["mode"] = saved.name, saved.mode
         persona.set_source(art_url(saved.mode))
         persona.set_visibility(saved.mode != "off")
-        if saved.mode == "devil" and was != "devil":
-            record_event(EVENT_DEVIL_MODE)
+        if saved.mode == "percival" and was != "percival":
+            record_event(EVENT_PERCIVAL_MODE)
         if notify:
             ui.notify(f"{what} saved", position="bottom")
 

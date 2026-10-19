@@ -3,7 +3,7 @@ which achievements are unlocked.
 
 **Definitions** come from a bundled copy of ``dev-notes/achievements/Achievements.md``
 (``resources/achievements/achievements.md``): one Markdown table row per
-achievement (name, trigger, points, shown, angel / devil text). The free-text
+achievement (name, trigger, points, shown, Tugs / Percival text). The free-text
 *Trigger* column is parsed into a :class:`Trigger`:
 
 * a **count** -- "Index 69 photos", "Rate 1 photo", "Post 10 posts",
@@ -12,7 +12,7 @@ achievement (name, trigger, points, shown, angel / devil text). The free-text
   unlocks the photo achievements the first time it is checked. "-- cannot be
   triggered on first day" holds the unlock back until the library's earliest
   ``photos.first_indexed_at`` is before today;
-* an **event** -- turning on Devil mode, the Konami code, searching "github" --
+* an **event** -- turning on Percival mode, the Konami code, searching "github" --
   recorded by :meth:`AchievementTracker.record_event`.
 
 **Unlocks** live per device, in ``sync/devices/<slug>-<id8>/achievements.json``
@@ -25,7 +25,7 @@ later never takes one away. Like collections and posts this is a deliberate
 exception to docs/architecture.md constraint #4 -- it is not ``pixel_hash`` state and does
 not go in the ``changes`` log.
 
-**Profile** -- the display name, the mode (Angel / Devil / Off) and the
+**Profile** -- the display name, the mode (Tugs / Percival / Off) and the
 profile picture -- lives in :mod:`sortandpost.profiles`.
 Mode Off hides achievements in the UI but they keep unlocking underneath.
 """
@@ -60,7 +60,7 @@ Metric = Literal["indexed", "rated", "posts", "collections"]
 METRICS: tuple[Metric, ...] = ("indexed", "rated", "posts", "collections")
 
 # Event triggers. The UI calls AchievementTracker.record_event with these.
-EVENT_DEVIL_MODE = "devil_mode"
+EVENT_PERCIVAL_MODE = "percival_mode"
 EVENT_KONAMI = "konami"
 EVENT_GITHUB_SEARCH = "github_search"
 
@@ -73,7 +73,7 @@ _COUNT_RE = re.compile(
 )
 _VERB_METRIC: dict[str, Metric] = {"index": "indexed", "rate": "rated", "post": "posts"}
 _EVENT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"devil mode", re.I), EVENT_DEVIL_MODE),
+    (re.compile(r"percival mode", re.I), EVENT_PERCIVAL_MODE),
     (re.compile(r"konami", re.I), EVENT_KONAMI),
     (re.compile(r"github", re.I), EVENT_GITHUB_SEARCH),
 )
@@ -84,7 +84,7 @@ _METRIC_ICONS: dict[str, str] = {
     "rated": "star",
     "posts": "send",
     "collections": "collections_bookmark",
-    EVENT_DEVIL_MODE: "local_fire_department",
+    EVENT_PERCIVAL_MODE: "pets",
     EVENT_KONAMI: "sports_esports",
     EVENT_GITHUB_SEARCH: "code",
 }
@@ -109,15 +109,15 @@ class Achievement:
     trigger: Trigger
     points: int
     shown: bool  # False = a gray "?" card until unlocked
-    angel: str  # Markdown, as written in the table (``\*`` escapes kept)
-    devil: str
+    tugs: str  # Markdown, as written in the table (``\*`` escapes kept)
+    percival: str
 
     @property
     def icon(self) -> str:
         return _METRIC_ICONS.get(self.trigger.metric or self.trigger.event or "", "emoji_events")
 
     def description(self, mode: Mode) -> str:
-        return self.devil if mode == "devil" else self.angel
+        return self.percival if mode == "percival" else self.tugs
 
 
 def slug(name: str) -> str:
@@ -162,7 +162,7 @@ def parse_definitions(markdown: str) -> list[Achievement]:
         if cells[0].casefold() == "name":
             continue  # header row
         name, trigger_text, points, shown = (_unescape(c) for c in cells[:4])
-        angel, devil = cells[4], cells[5]
+        tugs, percival = cells[4], cells[5]
         trigger = parse_trigger(trigger_text)
         key = slug(name)
         try:
@@ -181,8 +181,8 @@ def parse_definitions(markdown: str) -> list[Achievement]:
                 trigger=trigger,
                 points=pts,
                 shown=shown.strip().upper().startswith("Y"),
-                angel=angel,
-                devil=devil,
+                tugs=tugs,
+                percival=percival,
             )
         )
     return out
@@ -205,7 +205,7 @@ def definitions() -> list[Achievement]:
 
 
 def resource_path(name: str) -> Path:
-    """A file in ``resources/achievements/`` (the Angel / Devil art). Bundled as
+    """A file in ``resources/achievements/`` (the Tugs / Percival art). Bundled as
     a real file -- also under PyInstaller -- so it can be served statically."""
     return Path(str(resources.files("sortandpost.resources").joinpath("achievements", name)))
 
@@ -214,6 +214,8 @@ def resource_path(name: str) -> Path:
 # unlocks -- per device, union across devices
 # --------------------------------------------------------------------------- #
 _SECTIONS = ("unlocked", "revealed")
+# Achievements whose name (so key) changed: an unlock saved under the old key still counts.
+_RENAMED_KEYS = {"devil-mode": "percival-mode"}
 
 
 def _read_state(path: Path) -> dict[str, dict[str, str]]:
@@ -232,9 +234,11 @@ def _read_state(path: Path) -> dict[str, dict[str, str]]:
     for section in _SECTIONS:
         rows = data.get(section)
         if isinstance(rows, dict):
-            empty[section] = {
-                k: v for k, v in rows.items() if isinstance(k, str) and isinstance(v, str)
-            }
+            for k, v in rows.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    k = _RENAMED_KEYS.get(k, k)
+                    if k not in empty[section] or v < empty[section][k]:
+                        empty[section][k] = v
     return empty
 
 
@@ -360,7 +364,7 @@ class Unlock:
 class AchievementTracker:
     """Records this device's unlocks and keeps a short in-memory feed of the
     new ones so each open tab can toast them. Thread-safe: the background check
-    and UI events (Konami, Devil mode) can race."""
+    and UI events (Konami, Percival mode) can race."""
 
     paths: Paths
     device_id: str
@@ -447,7 +451,7 @@ class AchievementTracker:
             return self._unlock(due(self.defs, metrics, self.unlocked()))
 
     def record_event(self, event: str) -> list[Unlock]:
-        """An event trigger fired (Devil mode, Konami, "github" search)."""
+        """An event trigger fired (Percival mode, Konami, "github" search)."""
         with self._lock:
             have = self.unlocked()
             hits = [a for a in self.defs if a.trigger.event == event and a.key not in have]
