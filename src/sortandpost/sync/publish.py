@@ -81,6 +81,11 @@ def pull_published(published_db: Path, working_db: Path, *, device_id: str) -> N
 
 def read_generation(db_path: Path) -> int:
     """``meta.db_generation`` for any SQLite file; 0 if absent or unreadable."""
+    return read_meta_int(db_path, "db_generation")
+
+
+def read_meta_int(db_path: Path, key: str) -> int:
+    """An integer ``meta`` value of any SQLite file; 0 if absent or unreadable."""
     if not db_path.exists():
         return 0
     try:
@@ -88,7 +93,7 @@ def read_generation(db_path: Path) -> int:
     except sqlite3.Error:
         return 0
     try:
-        row = conn.execute("SELECT value FROM meta WHERE key = 'db_generation'").fetchone()
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     except sqlite3.Error:
         return 0
     finally:

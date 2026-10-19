@@ -39,6 +39,10 @@ RESTART_EXIT_CODE = 75
 # ...and when the user quit the whole app from Settings (a Linux session with no
 # tray icon has no other Quit): the tray ends too instead of reporting a crash.
 QUIT_EXIT_CODE = 76
+# ...and when it has shut down to install a verified update (written to
+# ``updates/pending.json``): the tray starts the installer helper and ends
+# (sortandpost.update.apply).
+UPDATE_EXIT_CODE = 77
 
 
 @dataclass

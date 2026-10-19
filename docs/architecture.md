@@ -4,7 +4,9 @@
 
 **sortandpost.photos** is a locally-run photo organization app. It scans one or more existing photo
 folders, lets the user rate photos 1–5 stars, auto-tags them with CLIP, and provides
-natural-language semantic search — all in a browser, with **no cloud service**.
+natural-language semantic search — all in a browser, with **no cloud service**. (One
+exception the user can switch off: a once-a-day update check that fetches a static file from
+github.com — see "Updates".)
 
 **Naming** (2026-10-16): the product's display name is **sortandpost.photos** (its website's
 domain) — every on-screen string, page titles, the tray menu, the macOS `CFBundleDisplayName`,
@@ -83,6 +85,7 @@ is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 | ML                 | `open_clip_torch`, default `ViT-B-32` / `laion2b_s34b_b79k`; `device: auto` (MPS/CUDA/CPU) |
 | Vector search      | NumPy brute-force cosine over a memory-mapped `float32` matrix (target ≤ ~25k photos) |
 | Compression        | `zstandard` for DB snapshots |
+| Update signing     | `cryptography` (Ed25519) checks each release manifest |
 | Filesystem watch   | `watchdog` |
 | Lint / format / types | `ruff check`, `ruff format`, `mypy` |
 | Tests              | `pytest` + `pytest-asyncio` |
@@ -617,7 +620,8 @@ The **only** module allowed to write under a library root. Wraps a persistent
 - `embedding_rows` — `pixel_hash` (pk), `row_index`, `model`.
 - `embeddings_meta` — `model`, `pretrained`, `dim`, `count`, `updated_at`.
 - `scan_state` — `path` (pk), `pixel_hash`, per-stage progress, `error`, `attempts`.
-- `meta` — key/value: `db_generation`, `schema_version`, etc.
+- `meta` — key/value: `db_generation`, `schema_version` (`db.meta.SCHEMA_VERSION`, see
+  "Updates" → mixed versions), etc.
 
 ---
 
@@ -1065,6 +1069,71 @@ uvicorn each want the main thread.
   checklist in dev-notes/V3Plan.md → P7.
 
 ---
+
+## Updates (`sortandpost.update`, `update_ui`)
+
+The desktop app updates itself from GitHub Releases on `matt-farah/sortandpost`; the user
+clicks once.
+
+- **Manifest** — every release carries `latest.json` (`{version, published_at, notes,
+  notes_url, assets: {macos-arm64 | windows-x64 | linux-x86_64 | linux-aarch64: {url,
+  sha256, size}}}`) + `latest.json.sig`, a base64 **Ed25519** signature of its exact bytes.
+  The app fetches `releases/latest/download/latest.json` (a redirect to the asset: no API, no
+  rate limit; never a draft or pre-release). A manifest counts only if it verifies against a
+  key in `update/pubkey.py` (a list, for rotation), and a download only if its size and sha256
+  match. HTTPS alone isn't trusted: anyone who could publish a release would otherwise push
+  code. Every request (redirects too) must go to `github.com` / `*.githubusercontent.com`
+  over https. `tools/release/make_manifest.py` makes the key (`keygen`; the private key stays
+  outside the repo, default `~/.sortandpost-release/update-signing-key.pem`), writes and signs
+  the manifest (`build`), and prints the Homebrew cask / winget values.
+- **Check** — `update.check.Updater`, a daemon thread: 2 min after boot, then whenever 24 h have
+  passed since the last success (1 h after a failure). Off with Settings → Overview → Updates
+  → "Check once a day" or `SORTANDPOST_NO_UPDATE_CHECK=1`. It sends no identifiers (a
+  `User-Agent: sortandpost/<version>` only). State is **per machine**, shared by every library
+  on it: `<default_local_root>/updates/state.json` (the switch, the last check / error, the
+  signed manifest bytes, which are re-verified on every load, and "Skip this version"). Testing:
+  `SORTANDPOST_UPDATE_URL` points at another folder (http only on loopback), and
+  `SORTANDPOST_UPDATE_PUBKEY` replaces the trusted key in a **source run only**.
+- **Prompt** — a banner on `/` ("X is available" · What's new · Update & restart · Skip this
+  version) and the Settings card. On the next boot, the last install's outcome is shown once.
+- **Install** (only where `update.source.can_self_update`):
+  - The server downloads into `updates/<version>/` and verifies it, then writes
+    `updates/pending.json` `{path, version, sha256}`.
+  - It shuts down the usual clean way (indexer stop, final publish, lock release) and exits
+    with `control.UPDATE_EXIT_CODE` (77).
+  - The tray (`TrayApp._install_update`) re-checks the file's sha256, starts the platform
+    helper (`update.apply`) detached, and ends.
+  - The helper waits for the tray's pid to go, then installs:
+    - **macOS** mounts the DMG, `ditto`s `sortandpost.app` to `<target>.new`, then swaps with two
+      `mv`s (the old app is put back if the second fails).
+    - **Linux** copies the AppImage beside `$APPIMAGE`, then `mv`s it over.
+    - **Windows** runs `setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`. The
+      installer's own close-and-wait logic runs, and its `[Run]` entry `RelaunchAfterUpdate`
+      starts the new version.
+  - The helper writes `updates/result.txt` (`ok <version>` / `failed <reason>`) and starts
+    the app: the new version, or the old one again on any failure. Its log is
+    `updates/helper.log`.
+  - A file the app downloaded itself has no quarantine / Mark-of-the-Web, so neither
+    Gatekeeper's "Open Anyway" nor SmartScreen returns. While builds are ad-hoc signed, each
+    update is a new signature, so the Keychain asks again for API keys.
+- **Who installed it** (`update.source.install_source`). A package manager owns its files, so
+  the app never replaces them:
+  - `direct` (DMG / Windows installer in `%LOCALAPPDATA%\Programs\sortandpost` / AppImage in a
+    writable folder) and `brew` (a `Caskroom/sortandpost` folder; the cask declares
+    `auto_updates true`, so `brew upgrade` leaves it alone) self-update. **winget** runs the
+    same Inno installer, so it reads as `direct`; winget picks up the new version from the
+    uninstall entry.
+  - **apt** (an `install-source` file containing `apt` beside the executable, written by a
+    future `.deb` build), `zip` (Windows, any other folder), `docker` and `source` only show
+    how to update (`manual_hint`).
+  - Self-update also needs the tray (`control_token()`), since only it can run the installer
+    after the server stops.
+- **Mixed versions** — machines sharing a library may run different versions for a while.
+  Merge already skips what it doesn't know. A schema change that would let an older app damage
+  the library bumps `db.meta.SCHEMA_VERSION`; a writer stamps it into `meta.schema_version`.
+  `SyncManager._check_schema` refuses to take the lock when the working or published DB
+  carries a higher number (`NeedsUpdate`: read-only, `needs_update`, header "update this
+  computer to edit", retried every minute like any `writer_error`).
 
 ## Suggested build order (to avoid rewrites)
 

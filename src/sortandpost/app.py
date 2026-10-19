@@ -43,7 +43,15 @@ from nicegui.events import KeyEventArguments, ValueChangeEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
 
-from sortandpost import __version__, achievements_ui, help_ui, missing, post_queue, profile_ui
+from sortandpost import (
+    __version__,
+    achievements_ui,
+    help_ui,
+    missing,
+    post_queue,
+    profile_ui,
+    update_ui,
+)
 from sortandpost.achievements import EVENT_GITHUB_SEARCH
 from sortandpost.auth import (
     LOGIN_PATH,
@@ -653,6 +661,7 @@ class State:
     lost_lock_to: str | None = None
     # Taking the lock failed part-way (e.g. a broken sync/ DB): stayed read-only.
     writer_error: str | None = None
+    needs_update = False  # ...because a newer app upgraded the library (sync.manager.NeedsUpdate)
     # Under Docker: files in sync/ the sync client turned online-only, which
     # the container can't read (sortandpost.sync.online_only). None = fine.
     sync_online_only: OnlineOnlyReport | None = None
@@ -669,6 +678,7 @@ class State:
         cls.denied_by = manager.denied_by
         cls.lost_lock_to = manager.lost_lock_to
         cls.writer_error = manager.writer_error
+        cls.needs_update = manager.needs_update
 
     @classmethod
     def get_clip_model(cls, settings: Settings) -> ClipModel:
@@ -868,6 +878,14 @@ def _edit_lock_controls() -> None:
                 return
             if State.denied_by:
                 ui.label(f"read-only · {State.denied_by} kept editing").classes(amber)
+            elif State.needs_update:
+                ui.link(
+                    "read-only · update this computer to edit", "/settings#sp-overview"
+                ).classes(amber + " no-underline hover:underline").tooltip(
+                    "Another computer updated sortandpost.photos and this library needs the "
+                    "new version. Settings → Updates."
+                )
+                return
             elif State.writer_error:
                 ui.label("read-only · couldn't open the library for editing").classes(
                     amber
@@ -1287,6 +1305,7 @@ def build_ui(settings: Settings) -> None:
     _start_lock_watch(settings, manager)
     _start_online_only_watch(settings)
     post_queue.start(settings, engine, writable=lambda: manager.writes_open)
+    update_ui.start()
     _install_onboarding_gate()
     _register_welcome(settings, engine, manager)
 
@@ -1436,6 +1455,7 @@ def build_ui(settings: Settings) -> None:
         _refresh_flag_link(flag_n)
 
         _storage_banners(settings)
+        update_ui.banner()
         if cloud_n > 0:
             cloud_banner = ui.row().classes(_WARN_BANNER)
             with cloud_banner:
@@ -3387,6 +3407,8 @@ def build_ui(settings: Settings) -> None:
                             ui.label("Read-only — indexer actions are disabled.").classes(
                                 "text-amber-600 text-sm"
                             )
+                    with _settings_card("Updates", "system_update_alt"):
+                        update_ui.settings_card()
                     if desktop_control.control_token() is not None:
                         with _settings_card("Desktop app", "power_settings_new"):
                             _quit_app_button()
@@ -6645,6 +6667,11 @@ def _reexec_if_requested() -> None:
     if _QUIT_APP.is_set() and desktop_control.control_token() is not None:
         logging.shutdown()
         raise SystemExit(desktop_control.QUIT_EXIT_CODE)
+    if update_ui.INSTALL_REQUESTED.is_set() and desktop_control.control_token() is not None:
+        # Clean shutdown done (final publish, lock release): the tray installs it.
+        log.info("exiting to install an update")
+        logging.shutdown()
+        raise SystemExit(desktop_control.UPDATE_EXIT_CODE)
     if not _RESTART.is_set():
         return
     log.info("restarting sortandpost")
@@ -6961,6 +6988,7 @@ def _register_welcome(settings: Settings, engine: Engine, manager: SyncManager) 
                     "sortandpost.photos is scanning your library in the background. Feel free to "
                     "click around while it works"
                 ).classes("sp-muted pt-2")
+                ui.label(update_ui.WELCOME_NOTE).classes("sp-faint text-xs")
 
         stepper.on_value_change(lambda e: _render_summary() if e.value == "finish" else None)
 

@@ -48,6 +48,8 @@ dependencies = [
     # Windows has no system tz database: without it ZoneInfo("UTC") raises
     # (scheduling a post).
     "tzdata>=2024.1; sys_platform == 'win32'",
+    # Ed25519: checks the signature on an update's release manifest.
+    "cryptography>=44",
 ]
 
 [project.urls]

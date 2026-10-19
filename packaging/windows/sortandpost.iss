@@ -62,6 +62,9 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\sortandpost.exe"; Description: "{cm:LaunchProgram,sortandpost.photos}"; Flags: nowait postinstall skipifsilent
+; The in-app updater (sortandpost.update.apply) runs this installer with
+; /VERYSILENT /RELAUNCH=1: start the new version once it's in place.
+Filename: "{app}\sortandpost.exe"; Flags: nowait; Check: RelaunchAfterUpdate
 
 [Code]
 const
@@ -93,6 +96,12 @@ begin
     Sleep(500);
   end;
   Sleep(500);  // the server child exited first; let the OS release its files
+end;
+
+// The in-app updater's /RELAUNCH=1 (only honoured on a silent run).
+function RelaunchAfterUpdate(): Boolean;
+begin
+  Result := WizardSilent() and (ExpandConstant('{param:RELAUNCH|0}') = '1');
 end;
 
 // Never replace or remove files under a running app: a half-replaced bundle
