@@ -1,5 +1,5 @@
-"""Render ``sortandpost.png`` (the AppImage / menu icon) from the same Pillow
-drawing the tray uses (``sortandpost.desktop.icon``).
+"""Render ``sortandpost.png`` (the AppImage / menu icon) from the bundled logo
+the tray also uses (``sortandpost.desktop.icon``).
 Usage: ``python make_icon.py <out_dir>``."""
 
 from __future__ import annotations

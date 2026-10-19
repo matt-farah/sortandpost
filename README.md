@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-dark.svg">
+    <img src="docs/brand/logo-light.svg" alt="" height="110">
+  </picture>
+</p>
+
 # sortandpost.photos
 
 **Rate, tag, search and post your photos — locally, in your browser, with no cloud service.**

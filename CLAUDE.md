@@ -45,6 +45,9 @@ uv run pytest tests/test_hashing.py::test_pixel_hash_stable_across_exif_write -q
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
 uv audit
 
+# Logo (after changing the source SVGs) -> resources/logo/ + docs/brand/
+uv run python tools/logo/render.py <light.svg> <dark.svg>
+
 # Tailwind (after changing utility classes in the UI)
 tools/tailwind/build.sh                # -> src/sortandpost/resources/tailwind.css
 

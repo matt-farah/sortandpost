@@ -627,6 +627,11 @@ The **only** module allowed to write under a library root. Wraps a persistent
 
 ## Frontend (NiceGUI pages)
 
+- **Logo** (every page): `_header` shows the light / dark logo SVG (swapped on `body--dark`)
+  before the name; the tab favicon is one adaptive SVG (`ui.run(favicon=…)`, served at the
+  open `/favicon.ico`), plus `/apple-touch-icon.png`. All logo files come from the two source
+  SVGs via `tools/logo/render.py` → `resources/logo/` (bundled) and `docs/brand/` (README +
+  website kit; a test keeps them identical).
 - `/` — the library **and** search (merged 2026-09-24). Virtualized thumbnail grid,
   keyboard-first: arrows navigate, `1`–`5` rate, `0` clears, `f` flags, `/` focuses search.
   A compact toolbar: search box, then icon buttons whose popovers hold each filter (★ stars
@@ -966,6 +971,9 @@ uvicorn each want the main thread.
     admin prompts / a certificate-issuing service, and no security gain on loopback.
   - Menu: status, Open, Pause/Resume indexing, Start at login (macOS: a LaunchAgent that
     runs `open -a …app`; Windows: an `HKCU\…\Run` value; packaged app only), Show logs, Quit.
+  - Icon: the logo PNGs in `resources/logo/` (`desktop.icon`). macOS uses a **template**
+    image (black + alpha; AppKit recolours it for the bar, `tray._icon_class`), Windows the
+    light / dark one matching the taskbar setting at startup, Linux the dark one.
   - Menu-bar only (`LSUIElement`). Relaunching from Finder opens the browser
     (`applicationShouldHandleReopen`).
 - **Server** = the normal web app. `desktop.control` mounts token-gated

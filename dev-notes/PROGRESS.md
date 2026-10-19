@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-19 (achievements personas are now cats Tugs / Percival; in-app updates from GitHub Releases; keyboard shortcuts help page; profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-19 (new logo: app icon, tray, favicon, header, README, web kit; achievements personas are now cats Tugs / Percival; in-app updates from GitHub Releases; keyboard shortcuts help page; profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
 _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 
 > **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
@@ -9,6 +9,25 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 > (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
 > installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
 > Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## 🖼️ 2026-10-19 — New logo everywhere (branch `feat/logo`)
+
+- The user's polaroid + paper-plane logo (light / dark SVGs) replaces the Pillow-drawn coral
+  star. Both SVGs are now **see-through** in the photo area: the card is one even-odd path with
+  the photo cut out, so the background shows behind the plane.
+- `tools/logo/render.py` (Playwright Chromium rasterizes, Pillow derives) writes
+  `resources/logo/` (bundled) + `docs/brand/` (README + website kit with a `<head>` snippet);
+  a test keeps the shared files identical.
+- App icon (`.icns` / `.ico` / AppImage PNG via `desktop.icon.render_icon`): the light logo on a
+  white rounded tile in the macOS grid margin. Tray: macOS **template** image (pystray subclass
+  `tray._icon_class`, also sharp on Retina), Windows light / dark from the taskbar setting,
+  Linux dark.
+- Web UI: adaptive `favicon.svg` via `ui.run(favicon=…)` (both runs), `/apple-touch-icon.png`
+  (open path, also linked from `/login`), header logo swapping on `body--dark`. The header's
+  season glyph is **removed** (cleaner; the season still drives the colours).
+- README: `<picture>` logo following GitHub's theme.
+- Gate: full suite green, ruff, format, mypy, `uv audit` clean. User reviewed the header and an
+  icon preview sheet; the real Dock / tray need the next desktop build.
 
 ## 🐈 2026-10-19 — Cat personas: Tugs / Percival (branch `feat/cat-personas`)
 

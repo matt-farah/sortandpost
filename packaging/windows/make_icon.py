@@ -1,4 +1,4 @@
-"""Render ``sortandpost.ico`` from the same Pillow drawing the tray uses
+"""Render ``sortandpost.ico`` from the bundled logo the tray also uses
 (``sortandpost.desktop.icon``). Usage: ``python make_icon.py <out_dir>``."""
 
 from __future__ import annotations
