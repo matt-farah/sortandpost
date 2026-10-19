@@ -646,6 +646,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/achievements` — achievement cards + score (see "Achievements"); reached from the header's
   name + 🏆 chip, hidden when the mode is Off.
+- `/help` — keyboard shortcuts, grouped by page (`sortandpost.help_ui.SECTIONS`, the one list —
+  keep it in step with the `ui.keyboard` handlers). Opened from the header's ⓘ icon, or `?` on any
+  page outside a text field (`HELP_KEY_JS`, added by `_header`; not in the wizard).
 - `/review` — pending CLIP predictions grouped by tag for bulk approve/reject (hidden when `clip.enabled` is false).
 - `/welcome` — first-run onboarding wizard (see "First-run onboarding"); every other page
   redirects here until this machine has finished it.

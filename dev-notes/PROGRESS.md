@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-17 (profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
+_Last updated: 2026-10-19 (keyboard shortcuts help page; profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
 _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 
 > **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
@@ -9,6 +9,16 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
 > (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
 > installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
 > Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+
+## ⌨️ 2026-10-19 — Keyboard shortcuts help page (branch `feat/help-page`)
+
+- New `/help` page (`help_ui`): every shortcut in cards by where it works — Everywhere, Library
+  grid, Photo page, Rate, the collection "Add photos" picker — with key caps. `SECTIONS` is the
+  one list; keep it in step with the `ui.keyboard` handlers in `app`.
+- Opened from a header ⓘ icon (tooltip "Keyboard shortcuts (?)") or `?` anywhere outside a text
+  field (a plain document listener, `HELP_KEY_JS`; the grid's `ui.keyboard` is untouched).
+- Gate: full suite green (5 new in `test_help.py`, incl. headless-Chromium checks of the `?`
+  key); ruff, format, mypy clean. User click-through: OK.
 
 ## 🙂 2026-10-17 — Profile picture (branch `feat/profile-picture`)
 
