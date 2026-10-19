@@ -1,54 +1,56 @@
-"""The app mark, drawn with Pillow: one source for the menu-bar icon (at
-runtime) and the ``.icns`` app icon (at build time, ``packaging/macos``) -- no
-binary image files in the repo."""
+"""The app mark, loaded from the bundled logo PNGs (``resources/logo/``,
+rendered from the source SVGs by ``tools/logo/render.py``): one source for the
+menu-bar / tray icon (at runtime) and the ``.icns`` / ``.ico`` / AppImage icon
+(at build time, ``packaging/*/make_icon.py``)."""
 
 from __future__ import annotations
 
-import math
+import sys
+from importlib import resources
+from typing import Literal
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
-# Summer palette (sortandpost.themes.PALETTES): deepened coral tile, cream star.
-TILE = (242, 92, 84, 255)  # #f25c54
-TILE_EDGE = (244, 132, 95, 255)  # #f4845f
-STAR = (255, 247, 237, 255)
+TrayVariant = Literal["template", "light", "dark"]
 
 
-def _star(cx: float, cy: float, r_out: float, r_in: float) -> list[tuple[float, float]]:
-    pts = []
-    for i in range(10):
-        r = r_out if i % 2 == 0 else r_in
-        a = -math.pi / 2 + i * math.pi / 5
-        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
-    return pts
+def _load(name: str) -> Image.Image:
+    ref = resources.files("sortandpost.resources").joinpath("logo", name)
+    with ref.open("rb") as f:
+        img = Image.open(f)
+        img.load()
+    return img.convert("RGBA")
 
 
 def render_icon(size: int = 1024) -> Image.Image:
-    """The full-colour app icon: a rounded coral tile with a rating star."""
-    scale = 4  # supersample for smooth edges
-    s = size * scale
-    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    pad = round(s * 0.09)  # macOS icon grid margin
-    d.rounded_rectangle(
-        (pad, pad, s - pad, s - pad),
-        radius=round(s * 0.2),
-        fill=TILE,
-        outline=TILE_EDGE,
-        width=max(1, round(s * 0.012)),
-    )
-    d.polygon(_star(s / 2, s * 0.53, s * 0.3, s * 0.13), fill=STAR)
+    """The full-colour app icon: the polaroid logo on a white rounded tile."""
+    img = _load("app-icon-1024.png")
+    return img if img.size == (size, size) else img.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def render_tray_icon(size: int = 44, variant: TrayVariant | None = None) -> Image.Image:
+    """The menu-bar / tray icon. ``template`` is black + alpha only (macOS
+    recolours it for the menu bar); ``light`` / ``dark`` suit a light / dark
+    taskbar. Defaults to :func:`tray_variant`."""
+    img = _load(f"tray-{variant or tray_variant()}.png")
     return img.resize((size, size), Image.Resampling.LANCZOS)
 
 
-def render_tray_icon(size: int = 44) -> Image.Image:
-    """The menu-bar / tray icon: the same star on a small coral disc, legible
-    on both light and dark menu bars."""
-    scale = 4
-    s = size * scale
-    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    m = round(s * 0.12)  # menu-bar glyphs sit inside the bar with a margin
-    d.ellipse((m, m, s - m, s - m), fill=TILE)
-    d.polygon(_star(s / 2, s * 0.54, s * 0.34, s * 0.15), fill=STAR)
-    return img.resize((size, size), Image.Resampling.LANCZOS)
+def tray_variant() -> TrayVariant:
+    """macOS: a template image. Windows: follows the taskbar's light / dark
+    setting (read once at startup). Linux panels are mostly dark."""
+    if sys.platform == "darwin":
+        return "template"
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            ) as key:
+                light, _ = winreg.QueryValueEx(key, "SystemUsesLightTheme")
+            return "light" if light else "dark"
+        except OSError:
+            return "dark"
+    return "dark"

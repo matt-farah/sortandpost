@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from sortandpost import binaries
 from sortandpost.desktop import control, login_item, runtime
-from sortandpost.desktop.icon import render_icon, render_tray_icon
+from sortandpost.desktop.icon import render_icon, render_tray_icon, tray_variant
 
 
 # --------------------------------------------------------------------------- #
@@ -534,9 +534,34 @@ def test_settings_quit_exits_for_the_tray_to_end(monkeypatch: pytest.MonkeyPatch
 # icon
 # --------------------------------------------------------------------------- #
 def test_icons_render() -> None:
-    assert render_icon(64).size == (64, 64)
-    tray = render_tray_icon()
-    assert tray.mode == "RGBA" and tray.getpixel((0, 0))[3] == 0  # transparent corner
+    icon = render_icon(64)
+    assert icon.size == (64, 64) and icon.getpixel((0, 0))[3] == 0  # transparent corner
+    assert render_icon().size == (1024, 1024)
+    for variant in ("template", "light", "dark"):
+        tray = render_tray_icon(variant=variant)
+        assert tray.size == (44, 44) and tray.mode == "RGBA"
+        assert tray.getpixel((0, 0))[3] == 0  # the portrait logo leaves the corners clear
+    # a macOS template image is black + alpha only (AppKit recolours it)
+    template = render_tray_icon(88, variant="template")
+    assert all(template.getchannel(c).getextrema() == (0, 0) for c in "RGB")
+    assert template.getchannel("A").getextrema()[1] == 255
+    assert render_tray_icon().size == (44, 44)  # the platform's own variant
+    assert tray_variant() in ("template", "light", "dark")
+
+
+def test_brand_kit_matches_the_bundled_logo() -> None:
+    """docs/brand/ (README + website kit) and resources/logo/ both come from
+    tools/logo/render.py -- re-run it after changing the logo."""
+    repo = Path(__file__).resolve().parents[1]
+    res, web = repo / "src/sortandpost/resources/logo", repo / "docs/brand"
+    for name in (
+        "logo-light.svg",
+        "logo-dark.svg",
+        "favicon.svg",
+        "app-icon-1024.png",
+        "apple-touch-icon.png",
+    ):
+        assert (res / name).read_bytes() == (web / name).read_bytes(), name
 
 
 # --------------------------------------------------------------------------- #

@@ -110,6 +110,34 @@ def trash_failure_message(res: dict[str, Any] | None) -> str | None:
     )
 
 
+def _icon_class(pystray: Any) -> Any:
+    """pystray's Icon -- on macOS a subclass whose menu-bar image is a template
+    (AppKit recolours it for a light / dark / tinted bar) at full Retina
+    resolution: pystray itself scales the PNG down to the bar's point size."""
+    if sys.platform != "darwin":
+        return pystray.Icon
+    import io
+
+    import AppKit
+    import Foundation
+
+    class TemplateIcon(pystray.Icon):  # type: ignore[misc]
+        def _assert_image(self) -> None:  # overrides pystray._darwin.Icon
+            side = self._status_bar.thickness()
+            current: Any = getattr(self, "_icon_image", None)
+            if current is not None and current.size() == (side, side):
+                return
+            buf = io.BytesIO()
+            self._icon.save(buf, "png")
+            image = AppKit.NSImage.alloc().initWithData_(Foundation.NSData(buf.getvalue()))
+            image.setSize_((side, side))  # points: a 44px PNG stays sharp on Retina
+            image.setTemplate_(True)
+            self._icon_image = image
+            self._status_item.button().setImage_(image)
+
+    return TemplateIcon
+
+
 class TrayApp:
     def __init__(
         self, server: ServerProcess, lock: InstanceLock, *, headless: bool = False
@@ -134,7 +162,7 @@ class TrayApp:
         import pystray
 
         item, sep = pystray.MenuItem, pystray.Menu.SEPARATOR
-        self.icon = pystray.Icon(
+        self.icon = _icon_class(pystray)(
             "sortandpost",
             render_tray_icon(),
             "sortandpost.photos",

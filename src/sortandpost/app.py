@@ -24,7 +24,6 @@ import subprocess
 import sys
 import threading
 import time
-import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
@@ -299,6 +298,9 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 # froze, dropped its websocket and reloaded. Hence `ui.run(tailwind=False)`.
 _TAILWIND_CSS = "tailwind.css"
 _TAILWIND_URL = "/_sp/tailwind.css"
+# The logo (resources/logo/, rendered by tools/logo/render.py): header + favicons.
+_LOGO_URL = "/_sp/logo"
+APPLE_TOUCH_URL = "/apple-touch-icon.png"
 
 # The grid's scroll position + loaded count live in this history entry's
 # ``history.state``. The browser keeps per-entry state across navigations and
@@ -447,7 +449,10 @@ body, .q-page, .nicegui-content {
   content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px;
   background: var(--sp-season-stripe, transparent); pointer-events: none;
 }
-.sp-season-glyph { color: var(--sp-primary); }
+/* the header logo: the dark-mode version (white frame) on a dark app bar */
+.sp-logo { height: 26px; width: auto; display: block; }
+.sp-logo-dark, body.body--dark .sp-logo-light { display: none; }
+body.body--dark .sp-logo-dark { display: block; }
 .sp-nav {
   color: var(--sp-text-dim);
   text-decoration: none !important;
@@ -690,33 +695,13 @@ class State:
 _THEME_TO_DARK: dict[Theme, bool | None] = {"system": None, "light": False, "dark": True}
 
 
-# Each tab's app-bar season glyph + its tooltip, so a season picked in Settings
-# updates the header in place instead of on the next page load.
-_SEASON_GLYPHS: weakref.WeakKeyDictionary[Any, tuple[ui.icon, ui.tooltip]] = (
-    weakref.WeakKeyDictionary()
-)
-
-
-def _season_tooltip(choice: SeasonChoice) -> str:
-    return f"{SEASON_LABELS[resolve_season(choice)]} theme" + (
-        " (auto)" if choice == "auto" else ""
-    )
-
-
-def _apply_season(choice: SeasonChoice) -> str:
-    """Put the season's class on <body> (dropping any other season's) and
-    update this tab's header glyph; returns the Material icon for the resolved
-    season. The token CSS is keyed on the class."""
+def _apply_season(choice: SeasonChoice) -> None:
+    """Put the season's class on <body> (dropping any other season's). The
+    token CSS is keyed on the class."""
     season = resolve_season(choice)
     ui.query("body").classes(
         add=body_class(season), remove=" ".join(body_class(s) for s in SEASONS)
     )
-    glyph = _SEASON_GLYPHS.get(ui.context.client)
-    if glyph is not None:
-        icon, tip = glyph
-        icon.set_name(SEASON_ICONS[season])
-        tip.set_text(_season_tooltip(choice))
-    return SEASON_ICONS[season]
 
 
 # Publishes the app bar's rendered height as `--sp-appbar-h` so sticky elements
@@ -744,7 +729,7 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
     # primary / secondary / accent come from the season (sortandpost.themes)
     ui.colors(positive="#3f9d6d", negative="#c0392b")
     dark = ui.dark_mode(_THEME_TO_DARK[State.theme])  # per-machine; None = follow the OS
-    glyph_icon = _apply_season(State.season)
+    _apply_season(State.season)
     # right background on the first paint, before the body classes arrive via JS
     paint = first_paint_css(resolve_season(State.season), _THEME_TO_DARK[State.theme])
     ui.add_head_html(f"<style>{paint}</style>")
@@ -753,9 +738,11 @@ def _header(active: str, *, minimal: bool = False) -> ui.dark_mode:
         ui.add_body_html(help_ui.HELP_KEY_JS)  # `?` opens /help
     with ui.header().classes("sp-appbar items-center justify-between gap-4"):
         with ui.row().classes("items-center gap-2 no-wrap"):
-            with ui.icon(glyph_icon).classes("sp-season-glyph text-lg") as glyph:
-                tip = ui.tooltip(_season_tooltip(State.season))
-            _SEASON_GLYPHS[ui.context.client] = (glyph, tip)
+            with ui.link("", "/").classes("flex items-center").props('aria-label="Library"'):
+                for tone in ("light", "dark"):
+                    ui.element("img").props(f'src="{_LOGO_URL}/logo-{tone}.svg" alt=""').classes(
+                        f"sp-logo sp-logo-{tone}"
+                    )
             ui.link("sortandpost.photos", "/").classes("sp-display text-xl font-semibold sp-nav")
             ui.label(__version__).classes("sp-faint text-[11px]")
         if minimal:  # the welcome wizard: nothing else to navigate to yet
@@ -1129,6 +1116,30 @@ def _add_tailwind_css() -> None:
     ui.add_head_html(f'<link rel="stylesheet" href="{_TAILWIND_URL}?v={digest}">', shared=True)
 
 
+def _logo_file(name: str) -> str:
+    return (
+        resources.files("sortandpost.resources").joinpath("logo", name).read_text(encoding="utf-8")
+    )
+
+
+def _add_logo() -> None:
+    """Serve the logo for the header and the iPhone home-screen icon. The tab
+    favicon is ``ui.run(favicon=…)`` (one adaptive SVG, :func:`_favicon`)."""
+    folder = resources.files("sortandpost.resources").joinpath("logo")
+    with resources.as_file(folder) as path:
+        nicegui_app.add_static_files(_LOGO_URL, path)
+        nicegui_app.add_static_file(
+            local_file=path / "apple-touch-icon.png", url_path=APPLE_TOUCH_URL
+        )
+    ui.add_head_html(f'<link rel="apple-touch-icon" href="{APPLE_TOUCH_URL}">', shared=True)
+
+
+def _favicon() -> str:
+    """The tab icon: black-on-white, swapped for the dark logo when the browser
+    is in dark mode (an SVG ``prefers-color-scheme`` rule)."""
+    return _logo_file("favicon.svg")
+
+
 _WARN_BANNER = (
     "mx-4 mt-2 items-center gap-3 rounded-md border border-amber-300 "
     "bg-amber-50 px-3 py-2 text-sm text-amber-800 "
@@ -1249,6 +1260,7 @@ def _config_problem_text(settings: Settings) -> str:
 
 def build_ui(settings: Settings) -> None:
     _add_tailwind_css()  # stands in for NiceGUI's in-browser Tailwind (see ui.run)
+    _add_logo()
     ui.add_css(_GRID_KB_CSS, shared=True)  # grid keyboard-focus styling, all pages
     ui.add_css(_THEME_CSS, shared=True)  # design tokens + component polish, all pages
     ui.add_css(theme_css(), shared=True)  # seasonal token sets (sortandpost.themes)
@@ -7142,6 +7154,7 @@ def run(settings: Settings) -> None:
         host=settings.env.host,
         port=settings.env.port,
         title="sortandpost.photos",
+        favicon=_favicon(),
         reload=False,
         show=False,
         storage_secret=secret,
@@ -7160,6 +7173,7 @@ def run_setup(env: Env, problem: LibraryUnavailable | None = None) -> None:
     setup_secret = secrets.token_hex(32)
     _install_server_guard(setup_secret, env.port)
     _add_tailwind_css()
+    _add_logo()
     ui.add_css(_THEME_CSS, shared=True)
     ui.add_css(theme_css(), shared=True)
 
@@ -7207,6 +7221,7 @@ def run_setup(env: Env, problem: LibraryUnavailable | None = None) -> None:
         host=env.host,
         port=env.port,
         title="sortandpost.photos — welcome",
+        favicon=_favicon(),
         reload=False,
         show=False,
         storage_secret=setup_secret,

@@ -55,7 +55,7 @@ LOGIN_PATH = "/login"
 LOGOUT_PATH = "/logout"
 # Reachable without a session: the login form itself, the Docker healthcheck, and
 # the desktop tray's control API (which checks its own token).
-_OPEN_PATHS = frozenset({LOGIN_PATH, "/healthz", "/favicon.ico"})
+_OPEN_PATHS = frozenset({LOGIN_PATH, "/healthz", "/favicon.ico", "/apple-touch-icon.png"})
 _OPEN_PREFIXES = ("/_desktop/",)
 _SOCKET_PREFIX = "/_nicegui_ws/"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -309,6 +309,8 @@ def login_page_html(
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · sortandpost.photos</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
 :root{{{tokens(light)}color-scheme:light}}
 @media (prefers-color-scheme: dark){{:root{{{tokens(dark)}color-scheme:dark}}}}
