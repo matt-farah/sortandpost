@@ -705,23 +705,25 @@ _Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
   renders while a read hangs. Also check `posts_ui.py:600` (send dialog) and `post_send.py`.
   A Developer-ID-signed app keeps the Keychain "Always Allow" across updates; ad-hoc doesn't.
 
-### Release process (GitHub) — agreed outline, not done yet
-1. ~~Decide public/private~~ — going **public** on `matt-farah/sortandpost` (2026-10-19). Was: the repo is **private** (release assets need repo access) → make it public or
-   publish from a separate public `sortandpost-releases` repo. Apple Developer Program
+### Release process (GitHub) — used for 3.0.0 (beta), 2026-10-19
+1. Repo `matt-farah/sortandpost`, public from launch (2026-10-20). Apple Developer Program
    ($99/yr) for Developer ID + notarization (`SORTANDPOST_SIGN_ID` + `NOTARY_PROFILE`;
-   `build.sh` already handles both) — user deciding later. Windows ships unsigned at first
+   `build.sh` already handles both) — user deciding later. Windows ships unsigned
    (SmartScreen "More info → Run anyway").
-2. Release PR: `__version__` → **2.0.0** (V2 = 2.0.0 per "Versioning"), release notes.
-3. Build each platform from merged `main` (both scripts `uv sync --locked`; the Windows
-   machine now needs `uv`): `.dmg` on the Mac, `setup.exe` + `win-x64.zip` on Windows.
-4. Smoke-test each installer on a clean account (wizard, quit, relaunch).
-5. `git tag -a v2.0.0` → push → `gh release create v2.0.0 … *.dmg *setup.exe *.zip
-   SHA256SUMS.txt` with per-platform install notes (macOS 15+: Gatekeeper → System Settings
-   → Privacy & Security → Open Anyway when unsigned; Apple Silicon only).
-6. **Update manifest** (in-app updates): gather every platform's file in one `dist/`, then
-   `uv run python tools/release/make_manifest.py build --notes notes.md`, and upload
-   `latest.json` + `latest.json.sig` with the build files. Never mark a release as a
-   pre-release if it should reach installed apps (`releases/latest` skips them).
+2. Release PR: bump `__version__` (plain X.Y.Z — the updater and the Windows spec reject
+   pre-release strings; "beta" goes in the release title only), release notes.
+3. Full suite on macOS + Linux (Lima VM, `xvfb-run -a`) + Windows, from merged `main`.
+4. Build each platform from merged `main`: `.dmg` on the Mac, both AppImages via
+   `packaging/linux/build.sh --arch aarch64|x86_64` in the VM, `setup.exe` + `win-x64.zip`
+   on Windows. Smoke-test each (clean data dirs: wizard, quit, relaunch).
+5. `git tag -a vX.Y.Z` → push → `gh release create vX.Y.Z --latest` (never `--prerelease`:
+   `releases/latest` skips them) with the files + `SHA256SUMS.txt` and per-platform install
+   notes (macOS 15+: Gatekeeper → Privacy & Security → Open Anyway when unsigned).
+6. **Update manifest** (in-app updates; the signing key lives on the Mac only): gather every
+   platform's file in one folder, `uv run python tools/release/make_manifest.py build --dist
+   <folder> --notes notes.md`, `verify`, upload `latest.json` + `latest.json.sig`. When
+   Windows builds on another machine, it `gh release upload`s its two files only; the Mac
+   then downloads them, re-runs `build` (4 assets) and re-uploads with `--clobber`.
 7. Later: brew cask (own tap, `auto_updates true`) / winget (`wingetcreate update`) from
    the values `make_manifest.py build` prints; a `.deb` + apt repo; optional GitHub Actions
    build on tag.
