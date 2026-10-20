@@ -50,7 +50,7 @@ from sortandpost.grouping import (
     parse_folder_sort,
     parse_mode,
 )
-from sortandpost.library_roots import LibraryRoot
+from sortandpost.library_roots import LibraryRoot, container_roots, other_device_roots
 from sortandpost.posts import posted_hashes
 from sortandpost.search.filters import PhotoFilter, allowed_hashes, text_match
 from sortandpost.search.service import TextEncoder, semantic_search
@@ -422,20 +422,16 @@ def resolve_view(
     if lq.q and not settings.config.clip.enabled:
         # AI search is off: plain match on file names, tags and camera, kept in
         # the library's own order (there is no relevance score to rank by).
-        matched = text_match(session, lq.q)
-        match_reps = {rep(m) for m in matched}
-        ids = [h for h in reps_all if h in match_reps]
-        if lq.has_filters():
-            allowed = allowed_hashes(session, lq.to_filter(suggestions=suggest))
-            if allowed is not None:
-                reps = {rep(h) for h in allowed}
-                ids = [h for h in ids if h in reps]
+        ids = _text_matches(session, settings, lq, reps_all, rep)
     elif lq.q:
+        # File name / folder / tag / camera matches first (library order), then
+        # the CLIP results that aren't already among them.
+        named = _text_matches(session, settings, lq, reps_all, rep)
         hits: list[str] = []
         if encoder is None:
             notice = (
-                "Text search needs CLIP (torch + open-clip-torch), which isn't installed "
-                "here — filters still work."
+                "AI search needs CLIP (torch + open-clip-torch), which isn't installed "
+                "here — showing file name, tag and camera matches only."
             )
         else:
             try:
@@ -449,8 +445,12 @@ def resolve_view(
                 )
                 hits = [h.pixel_hash for h in found]
             except ClipModelUnavailable:
-                notice = "The CLIP model couldn't be loaded — text search is unavailable."
-        ids = _first_rep_order(hits, rep)
+                notice = (
+                    "The CLIP model couldn't be loaded — showing file name, tag and "
+                    "camera matches only."
+                )
+        seen = set(named)
+        ids = named + [h for h in _first_rep_order(hits, rep) if h not in seen]
     elif lq.has_filters():
         allowed = allowed_hashes(session, lq.to_filter(suggestions=suggest))
         if allowed is None:
@@ -477,6 +477,25 @@ def resolve_view(
         ids = [h for g in groups for h in g.hashes]
 
     return LibraryView(ids=ids, stacks=stacks, total=len(reps_all), groups=groups, notice=notice)
+
+
+def _text_matches(
+    session: Session,
+    settings: Settings,
+    lq: LibraryQuery,
+    reps_all: list[str],
+    rep: Callable[[str], str],
+) -> list[str]:
+    """Representatives whose file name / folder / tag / camera match ``lq.q``
+    (``text_match``), with the query's filters applied, in library order."""
+    roots = [str(r) for r in container_roots(settings.library_roots)]
+    roots += other_device_roots(settings.paths, settings.device_id)
+    match_reps = {rep(m) for m in text_match(session, lq.q, roots)}
+    if lq.has_filters():
+        allowed = allowed_hashes(session, lq.to_filter(suggestions=settings.config.clip.enabled))
+        if allowed is not None:
+            match_reps &= {rep(h) for h in allowed}
+    return [h for h in reps_all if h in match_reps]
 
 
 def _no_stacks(pixel_hash: str) -> str:

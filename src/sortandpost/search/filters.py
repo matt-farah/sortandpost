@@ -9,6 +9,7 @@ slot in behind ``semantic_search`` without touching filtering.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -179,30 +180,47 @@ def browse_photos(
     return list(session.exec(stmt).all())
 
 
-def text_match(session: Session, query: str) -> set[str]:
-    """Plain (non-CLIP) text search, used when ``clip.enabled`` is off: every
-    whitespace-separated term must appear (case-insensitive) in the photo's file
-    path, an applied tag name, or its camera make / model."""
+def _like_pattern(term: str) -> str:
+    """``%term%`` with LIKE's wildcards escaped (``\\`` is the escape char), so a
+    file name like ``IMG_1234`` matches literally."""
+    esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{esc}%"
+
+
+def text_match(session: Session, query: str, roots: Iterable[str] = ()) -> set[str]:
+    """Plain (non-CLIP) text search: every whitespace-separated term must appear
+    (case-insensitive) in the photo's file name / folders, an applied tag name,
+    or its camera make / model. Used on its own when ``clip.enabled`` is off, and
+    ahead of the CLIP results when it's on. A path is matched only on its part
+    below the deepest of *roots* it's under, so a word in the library folder's
+    own location (``~/Pictures``) doesn't match every photo."""
     terms = [t.lower() for t in query.split() if t]
     if not terms:
         return set()
+    root_list = list(roots)
     out: set[str] | None = None
     for term in terms:
-        like = f"%{term.replace('%', '').replace('_', '')}%"
-        hit = set(
-            session.exec(
-                select(PhotoPath.pixel_hash).where(func.lower(PhotoPath.path).like(like))
+        like = _like_pattern(term)
+        hit = {
+            h
+            for h, path in session.exec(
+                select(PhotoPath.pixel_hash, PhotoPath.path).where(
+                    func.lower(PhotoPath.path).like(like, escape="\\")
+                )
             ).all()
-        )
+            if term in missing.below_root(path, root_list).lower()
+        }
         hit |= set(
             session.exec(
                 select(PhotoTag.pixel_hash)
                 .join(Tag, col(PhotoTag.tag_id) == col(Tag.id))
-                .where(func.lower(Tag.name).like(like))
+                .where(func.lower(Tag.name).like(like, escape="\\"))
             ).all()
         )
         make_model = _lower_coalesce(Photo.camera_make) + " " + _lower_coalesce(Photo.camera_model)
-        hit |= set(session.exec(select(Photo.pixel_hash).where(make_model.like(like))).all())
+        hit |= set(
+            session.exec(select(Photo.pixel_hash).where(make_model.like(like, escape="\\"))).all()
+        )
         out = hit if out is None else out & hit
     return out or set()
 

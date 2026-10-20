@@ -651,7 +651,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   saved searches and clear. Active filters also show as removable chips under the bar
   (`LibraryQuery.chips()`). All state lives in the URL (`sortandpost.library_view.LibraryQuery`).
   **Group-by defaults to Month** (no `group` param); `group=flat` is the ungrouped grid.
-  Filters keep `taken_at` order + group-by; a text query ranks by CLIP relevance with group-by off.
+  Filters keep `taken_at` order + group-by; a text query (group-by off) shows plain matches
+  first — every term in the file name / folders below the library root, an applied tag or the
+  camera (`search.filters.text_match`), in library order — then the CLIP results by relevance.
   Subject/tag also matches un-rejected CLIP suggestions.
 - `/photo/{pixel_hash}` — large preview, star widget, EXIF panel, a **Tags** section between
   the facts and Paths (applied pills; dashed ghost pills for pending CLIP suggestions with
