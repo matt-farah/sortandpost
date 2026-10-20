@@ -7,39 +7,30 @@
 
 # sortandpost.photos
 
-**Rate, tag, search and post your photos — locally, in your browser, with no cloud service.**
+**Take your photos from 'living on my hard drive' to organized and posted to social media all locally and open sourced.**
 
-sortandpost.photos scans the photo folders you already have and gives you a fast, keyboard-first
-library on top of them: rate photos 1–5 stars, let CLIP suggest tags, and find anything by
-describing it ("dog on a beach at sunset"). It never reorganizes your files. Your library's
-state (database, thumbnails, search index) lives in one shared folder you keep in any
-file-sync tool (OneDrive, Google Drive, Synology Drive, Dropbox), so another computer picks
-it up with no rebuild.
+sortandpost.photos helps you sort through all the photos you have taken, edit them using your favorite editing app, and post them to social media. 
 
-<!-- Screenshots: add docs/images/library.png, photo.png, search.png and uncomment.
+sortandpost.photos has a privacy by design focus that can be run completely locally and offline, and never sends your data to anyone else. You can choose to sync your photos between computers using OneDrive, Google Drive, or another file-syncing service. 
+
+sortandpost.photos believes that you should be in charge of your files. sortandpost.photos will never lock you into using our product. Most data is stored in the EXIF data of the files and can be moved to another organization software. Also sortandpost.photos never change your file structure that you already have. 
+
 ![The library grid](docs/images/library.png)
--->
+
 
 ## Features
-
-- **Keyboard-first rating.** Arrow keys to move, `1`–`5` to rate, `0` to clear, `f` to flag.
-- **AI tagging you approve.** CLIP (open_clip, runs on your machine — Apple MPS / CUDA / CPU)
-  suggests tags from an editable vocabulary; only tags you approve are kept.
-- **Semantic search.** Natural-language search and "more like this", plus filters for stars,
-  camera, date range, folder, tag, GPS, duplicates and more. Group by month, day, folder or
-  camera.
-- **Your files stay yours.** Photos are never renamed or moved. Ratings and approved tags are
-  written into the file's standard XMP / IPTC metadata (JPEG, HEIC, TIFF, PNG) so Lightroom
-  and Windows Explorer see them. RAW files are read-only.
-- **Multi-computer, no server.** Pick the same shared folder on another computer and your
-  ratings, tags and search index are there. One computer edits at a time; the others can hand
-  editing over with one click. Conflicting copies from a slow sync are merged automatically.
-- **Stacks, duplicates, collections.** RAW+JPEG pairs and "copy" files stack together;
-  identical photos at several paths are recognised by their pixels; build ordered collections.
-- **Post to social media** through a scheduling service you already use (robopost, Postiz,
-  Zernio, Upload-Post), with clean exported JPEGs (no EXIF / GPS) and Instagram-ready crops.
+- **Your file system** sortandpost.photos never moves your folders from your existing structure. Organize your files how you like and let sortandpost help you find the best ones
+- **Works fully offline** sortandpost.photos works fully offline. You can rate and sort your photos and even create draft posts offline.
+- **Keyboard shortcuts.** Arrow keys to move, `1`–`5` to rate, `0` to clear, `f` to flag. This can help you move through your library quickly
+- **AI tagging you approve.** A local machine learning model called CLIP is used to suggest tags for your photos that you can approve. This feature can be disabled at any time.
+- **Ratings and tags stay with your files** Ratings and tags are applied to the EXIF data on your photos so it can be imported into other software and you won't lose data
+- **Multi-computer, no server.** Sync your library using your own method *i.e. Google Drive, OneDrive, Dropbox* and sortandpost.photos keeps your information in sync between your PC, Mac, and Linux computers
+- **Stacks** RAW+JPEG pairs and similarly-named files stack together. The files share ratings and tags and are recognized by having similar pixels in the images.
+- **Collections** Create collections to put together a project images for a book, a social media post, or just for fun
+- **Post to social media** through a scheduling service (robopost, Postiz, Zernio, Upload-Post). These apps all have free tiers to try out and their free tiers may meet your needs. Try them all and see what fits best.
 - **Safe deletes.** "Delete" moves files into a recoverable trash with one-click undo.
-- Seasonal light / dark themes, and optional achievements to make sorting a bit of a game.
+- **Rate Photos** A rating page that chooses random photos for you to look through and rate quickly using your keyboard or mouse
+- **Achievements** An optional achievements feature to help motivate you to organize and sort your photos
 
 > [!WARNING]
 > **Opening sortandpost.photos to other devices needs a password.** By default it only answers on
@@ -51,8 +42,7 @@ it up with no rebuild.
 
 ## Install
 
-### macOS app (easiest)
-
+### macOS app
 Download `sortandpost-<version>-arm64.dmg` (Apple Silicon) from
 [Releases](https://github.com/matt-farah/sortandpost/releases), drag **sortandpost** to
 Applications and open it. No Python or exiftool needed. It lives in the **menu bar**: the ★
@@ -69,11 +59,12 @@ run `packaging/macos/build.sh` (see
 [docs/architecture.md → Desktop app](docs/architecture.md#desktop-app-v2-p5-sortandpostdesktop-packaging)).
 
 ### Windows app
-
 Download `sortandpost-<version>-setup.exe` from
 [Releases](https://github.com/matt-farah/sortandpost/releases) and run it. It installs for
 your user only (no admin prompt) and lives in the system tray, like the macOS app. It isn't
 code-signed yet, so Windows SmartScreen may ask you to confirm (**More info → Run anyway**).
+
+#### Advanced
 To build it yourself: `pwsh packaging\windows\build.ps1`.
 
 ### Linux app (AppImage)
