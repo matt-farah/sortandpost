@@ -293,6 +293,11 @@ def test_login_item_packaged_windows_exe(monkeypatch: pytest.MonkeyPatch) -> Non
     assert login_item.run_command(exe) == f'"{exe}"'  # quoted: the path may hold spaces
 
 
+# Linux-only code fed POSIX paths; on Windows Path() turns them into backslashes.
+linux_paths = pytest.mark.skipif(sys.platform == "win32", reason="Linux paths")
+
+
+@linux_paths
 def test_login_item_autostart_entry_on_linux(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -319,6 +324,7 @@ def test_login_item_autostart_follows_xdg_config_home(
     assert login_item.autostart_path() == tmp_path / "cfg" / "autostart" / "app.sortandpost.desktop"
 
 
+@linux_paths
 def test_login_item_exec_quoting() -> None:
     # The desktop-entry spec: quote, escape " ` $ \ inside the quotes, double %,
     # then double every backslash for the string-value layer.
@@ -387,6 +393,7 @@ def test_frozen_without_bundled_exiftool_falls_back_to_path(
     assert binaries.exiftool_path() == "exiftool"
 
 
+@linux_paths
 def test_host_env_takes_the_bundle_out_of_a_host_programs_environment() -> None:
     bundle = Path("/tmp/.mount_abc/usr/bin/sortandpost/_internal")
     b = str(bundle)
@@ -427,6 +434,7 @@ def test_host_env_is_a_plain_copy_outside_a_frozen_linux_app(
     assert env == dict(os.environ) and env is not os.environ
 
 
+@linux_paths
 def test_linux_opener_never_falls_back_to_webbrowser(tmp_path: Path) -> None:
     """No xdg-open (a minimal install): the host's own openers run, never
     Python's webbrowser (it would start them with the bundle's libraries)."""

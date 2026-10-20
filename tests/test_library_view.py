@@ -572,17 +572,16 @@ def test_subject_filter_ignores_clip_suggestions_when_disabled(
 def test_text_match_file_names_are_literal_and_below_the_root(
     session: Session, settings: Settings
 ) -> None:
-    _add(session, "a", "/Users/me/Pictures/2024/IMG_1234.jpg")
-    _add(session, "b", "/Users/me/Pictures/2024/IMGx1234.jpg")
-    _add(session, "c", "/Users/me/Pictures/home/50%off.jpg")
+    pics = Path("/Users/me/Pictures")  # this OS's spelling, like the scanner stores
+    _add(session, "a", str(pics / "2024" / "IMG_1234.jpg"))
+    _add(session, "b", str(pics / "2024" / "IMGx1234.jpg"))
+    _add(session, "c", str(pics / "home" / "50%off.jpg"))
     session.commit()
     settings.config.clip.enabled = False
     assert _ids(session, settings, "q=img_1234") == ["a"]  # "_" is not a wildcard
     assert _ids(session, settings, "q=50%25") == ["c"]  # nor "%"
     assert _ids(session, settings, "q=2024") == ["a", "b"]  # a sub-folder name
     assert _ids(session, settings, "q=pictures") == ["a", "b", "c"]  # no roots known yet
-    settings.library_roots = [
-        LibraryRoot(container="/Users/me/Pictures", host="/Users/me/Pictures")
-    ]
+    settings.library_roots = [LibraryRoot(container=str(pics), host=str(pics))]
     assert _ids(session, settings, "q=pictures") == []  # only in the library folder's path
     assert _ids(session, settings, "q=home") == ["c"]
