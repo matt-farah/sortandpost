@@ -72,6 +72,16 @@ def _is_under(path: str, root: str) -> bool:
     return path == root or path.startswith(_prefix(root))
 
 
+def below_root(path: str, roots: Iterable[str]) -> str:
+    """The part of *path* below the deepest of *roots* it's under (the whole
+    path when it's under none), e.g. for matching search terms against a file's
+    own name and sub-folders but not the library folder's location."""
+    hits = [r for r in map(_clean, roots) if r and path != r and _is_under(path, r)]
+    if not hits:
+        return path
+    return path[len(_prefix(max(hits, key=len))) :]
+
+
 def _under_clause(column: ColumnElement[str], roots: Iterable[str]) -> ColumnElement[bool]:
     # substr, not LIKE: SQLite's LIKE is case-insensitive
     clauses = [

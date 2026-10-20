@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-20 (file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-10-20 (search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,21 @@ _Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not 
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## 🔎 2026-10-20 — Search by file name / folder (branch `feat/filename-search`)
+
+- With CLIP on, a text query only ran `semantic_search`; the plain matcher (`text_match`)
+  ran only with `clip.enabled: false`, and it stripped `_` / `%` from terms (`IMG_1234` →
+  `img1234`), so filename search never worked.
+- Now `resolve_view` shows `text_match` hits first (every term in the file name / folders,
+  an applied tag or the camera; filters applied; library order), then the CLIP results not
+  already shown. Without CLIP (not installed / model won't load) the plain matches still show,
+  with a notice.
+- `text_match`: LIKE wildcards escaped (`escape="\\"`); a path matches only on its part below
+  the deepest library root (this device's + other devices', `missing.below_root`), so a word in
+  `~/Pictures` doesn't match every photo. Placeholder: "Search photos or file names — …".
+- Tests in `tests/test_library_view.py`; full suite, ruff, format, mypy, `uv audit` green.
+  Browser-tested by the user on :8081.
 
 ## 🔁 2026-10-20 — A file saved over in place (branch `fix/replaced-file-carryover`)
 

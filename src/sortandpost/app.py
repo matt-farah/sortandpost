@@ -5885,7 +5885,7 @@ def _filter_bar(
         box = (
             ui.input(
                 placeholder=(
-                    "Search photos — e.g. dog on the beach"
+                    "Search photos or file names — e.g. dog on the beach"
                     if settings.config.clip.enabled
                     else "Search file names, tags, camera"
                 ),
