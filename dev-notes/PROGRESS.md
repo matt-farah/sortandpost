@@ -1,14 +1,38 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-19 (new logo: app icon, tray, favicon, header, README, web kit; achievements personas are now cats Tugs / Percival; in-app updates from GitHub Releases; keyboard shortcuts help page; profile picture + profile store seam; alt text on posts; background post sending + "Send when online"; V3 P7 Linux AppImage; before that P5b + rename to sortandpost.photos; V3.md #10, #12 and #9 done; stress-test fixes S1–S10 done)._
-_Working branch: `feat/linux-appimage`. V3 through P7 done (P7 in review)._
+_Last updated: 2026-10-19 (**v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
-> **▶️ Next:** V3 **P8 pywebview** (stretch) is the only V3 phase left. Linux is tested
-> headless in the Lima VM only: the real-desktop checklist (GNOME / KDE tray, keyring, autostart,
-> x86_64 hardware) is in V3Plan.md → P7. Untested Docker shapes: a real Synology
-> (`PUID`/`PGID`) and Docker Desktop on Windows. The macOS + Windows rebuild (the rename's tray /
-> installer / DMG names, and the restart-port fix below) and the GitHub release wait on the Apple
-> Developer ID / public-repo decisions (ToDo.md). Backlog (#12, #17, #18) stays "fix if it bites".
+> **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
+> that `releases/latest/download/latest.json` loads logged-out and verifies (ToDo.md). Fixes
+> ship as 3.0.1, 3.0.2, … with the same release process. Still open: a real packaged
+> old → new update on each OS, Linux on a real desktop (V3Plan.md → P7 checklist), a real
+> Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
+> V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
+> "fix if it bites".
+
+## 🚀 2026-10-19 — v3.0.0 (beta) released
+
+- **https://github.com/matt-farah/sortandpost/releases/tag/v3.0.0**, title
+  "sortandpost.photos 3.0.0 (beta)", a normal release marked Latest (not a pre-release, so the
+  updater sees it). The repo is still private until launch day; installed apps can't reach the
+  manifest until then (they just show "couldn't check").
+- PR #90 bumped `__version__` to 3.0.0. PR #91 (Windows: `timeout_graceful_shutdown=5` so
+  Quit can't hang on a reset browser connection) landed during the release, so every
+  platform was rebuilt from it. Tag `v3.0.0` = `2987247`.
+- Tests on `2987247`: full suite on macOS (1095 passed, 13 skipped), on Linux arm64 in the Lima
+  VM on `bf3724b` (1082 passed, 26 skipped; the only later change is #91), Windows in its own
+  session, CI green on #90 / #91; ruff, format, mypy, `uv audit`, `alembic check` clean.
+- Builds: `sortandpost-3.0.0-arm64.dmg` (ad-hoc signed), `-aarch64.AppImage`,
+  `-x86_64.AppImage`, `-setup.exe`, `-win-x64.zip`. Each was smoke-tested on clean data dirs
+  (boots to `/welcome`, stops cleanly). The rebuilt Mac app
+  stopped 0.2 s after SIGTERM with a tab open. x86_64 AppImage smoke runs in an amd64
+  container from a copy with bytes 8–10 zeroed (Rosetta binfmt refuses AppImage magic).
+- `latest.json` + `.sig` list all four platforms and verify after download; `SHA256SUMS.txt`
+  covers the five files. Staging folder: `dist/release-3.0.0/`.
+- Package-manager values (for later):
+  - Homebrew cask: `version "3.0.0"`, `sha256 "fbec2067d929a650e41ef0ab8106db99850cfc1869a0b1d2a4f7cc176f20634a"`
+  - winget: `InstallerSha256: E47B345AB7B8065EDE301CAF9D2AA8C9117E53D8F326C09211AFB0ADD88288CE`
 
 ## 🖼️ 2026-10-19 — New logo everywhere (branch `feat/logo`)
 

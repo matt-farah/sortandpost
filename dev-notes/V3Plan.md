@@ -4,8 +4,10 @@
 _Drafted 2026-10-05. The feature list is in [`V3.md`](V3.md); this file gives the build order and the model for each phase.
 Target: ship V3 in about two weeks (by ~2026-10-19). Anything below the cut line moves to V4._
 
+**Status (2026-10-19): shipped as [v3.0.0 (beta)](https://github.com/matt-farah/sortandpost/releases/tag/v3.0.0) — macOS, Windows, Linux.** P8 pywebview (stretch) not started.
+
 ## Context
-V2 shipped (v2.0.0: macOS + Windows apps, onboarding, seasonal themes, robopost composer).
+V2 was finished as 2.0.0 (never tagged; its features first shipped in v3.0.0: macOS + Windows apps, onboarding, seasonal themes, robopost composer).
 V3.md collects the next batch: an Instagram sizing pipeline, a CLIP off-switch,
 achievements with an Angel/Devil persona, more posting back ends, a copy rewrite, Linux, and
 a real Docker/NAS server mode. Each phase ends with the CLAUDE.md workflow: quality gate,
