@@ -156,14 +156,23 @@ def remove_manual_tag(
     return True
 
 
-def move_tags(session: Session, *, src: str, dst: str, device_id: str, now: datetime) -> list[str]:
+def move_tags(
+    session: Session,
+    *,
+    src: str,
+    dst: str,
+    device_id: str,
+    now: datetime,
+    keep_src: bool = False,
+) -> list[str]:
     """Move *src*'s tags onto *dst*, keeping each one's source (manual / clip):
     in a stack, tags live on its top photo only, so making another member the
     top carries them over. DB only -- the caller writes *dst*'s file, and *src*'s
     file is never touched (writing it would flip the top back). Reserved
     workflow markers stay put (they fan out to every member already). Emits
     ``tag_add`` / ``clip_approve`` for *dst* and ``tag_remove`` for *src*
-    (hard constraint #4). Returns the names moved. The caller commits."""
+    (hard constraint #4). *keep_src* copies instead: *src* keeps its tags.
+    Returns the names moved (or copied). The caller commits."""
     rows = session.exec(
         select(PhotoTag, Tag)
         .join(Tag, col(PhotoTag.tag_id) == col(Tag.id))
@@ -197,6 +206,9 @@ def move_tags(session: Session, *, src: str, dst: str, device_id: str, now: date
                 field=tag.name,
                 new_value=tag.name,
             )
+        moved.append(tag.name)
+        if keep_src:
+            continue
         session.delete(row)
         record_change(
             session,
@@ -207,7 +219,6 @@ def move_tags(session: Session, *, src: str, dst: str, device_id: str, now: date
             field=tag.name,
             old_value=tag.name,
         )
-        moved.append(tag.name)
     session.flush()
     return moved
 

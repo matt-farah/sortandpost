@@ -26,6 +26,7 @@ from sqlmodel import Session, col, select
 from sortandpost.config import StackingConfig
 from sortandpost.db.models import Photo, PhotoPath, ScanState, Tombstone
 from sortandpost.indexer.reconcile import ReconcileOutcome, reconcile_metadata
+from sortandpost.indexer.replaced import carry_over
 from sortandpost.indexer.thumbnails import ThumbPathFn
 from sortandpost.indexer.workers import DecodedFile, decode_local
 from sortandpost.metadata import EmbeddedMetadata, ExiftoolClient, MetadataError, is_raw
@@ -57,6 +58,7 @@ class IndexOutcome:
     tombstoned: bool = False  # pixel_hash was deleted by the user; not re-indexed
     online_only: bool = False  # a cloud placeholder we recorded but did not download
     new_photo: bool = False
+    replaced: str | None = None  # a new photo saved over this one's file (indexer.replaced)
     thumbnails_written: tuple[int, ...] = ()
     reconcile: ReconcileOutcome | None = None
     error: str | None = None
@@ -191,7 +193,7 @@ def persist_decoded(
         decoded.fmt,
         now,
     )
-    _upsert_path(session, pixel_hash, path, decoded.size, decoded.mtime_ns)
+    prev_hash = _upsert_path(session, pixel_hash, path, decoded.size, decoded.mtime_ns)
     scan.pixel_hash = pixel_hash
 
     photo_row = session.get(Photo, pixel_hash)
@@ -227,6 +229,12 @@ def persist_decoded(
         except MetadataError as exc:
             log.warning("metadata reconcile failed for %s: %s", path, exc)
 
+    # -- the file was saved over: a brand-new photo keeps the old one's state.
+    # After reconcile, so a rating the file itself carries wins.
+    replaced = prev_hash if new_photo and prev_hash not in (None, pixel_hash) else None
+    if replaced is not None:
+        carry_over(session, old=replaced, new=pixel_hash, device_id=device_id, now=now)
+
     scan.stages_done = int(Stage.BROWSABLE)
     scan.indexed_at = now
     scan.attempts = 0
@@ -234,6 +242,7 @@ def persist_decoded(
         path=path,
         pixel_hash=pixel_hash,
         new_photo=new_photo,
+        replaced=replaced,
         thumbnails_written=decoded.thumbnails_written,
         reconcile=reconcile,
     )
@@ -308,7 +317,11 @@ def _upsert_photo(
     return False
 
 
-def _upsert_path(session: Session, pixel_hash: str, path: Path, size: int, mtime_ns: int) -> None:
+def _upsert_path(
+    session: Session, pixel_hash: str, path: Path, size: int, mtime_ns: int
+) -> str | None:
+    """Record *path* as a copy of *pixel_hash*. Returns the photo the path held
+    before (``None`` for a new path)."""
     key = str(path)
     row = session.exec(select(PhotoPath).where(PhotoPath.path == key)).first()
     if row is None:
@@ -321,13 +334,15 @@ def _upsert_path(session: Session, pixel_hash: str, path: Path, size: int, mtime
                 present=True,
             )
         )
-        return
+        return None
     # Content at a known path changed identity: repoint it. The now-possibly
     # orphaned old Photo is picked up by the end-of-scan presence sweep.
+    prev = row.pixel_hash
     row.pixel_hash = pixel_hash
     row.size = size
     row.mtime_ns = mtime_ns
     row.present = True
+    return prev
 
 
 def _apply_metadata(session: Session, pixel_hash: str, md: EmbeddedMetadata) -> None:
