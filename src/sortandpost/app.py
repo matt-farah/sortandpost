@@ -3618,6 +3618,13 @@ def _start_indexer_thread(settings: Settings, manager: SyncManager) -> None:
 
 _INDEXER_JOIN_SEC = 60.0
 _POST_SEND_JOIN_SEC = 45.0  # a send in flight finishes before a handover / the final publish
+# uvicorn waits for every open connection to close before it runs the shutdown
+# hooks (_shutdown_all), with no limit by default. On Windows a browser
+# connection reset mid-flight (ConnectionResetError in the Proactor's
+# _call_connection_lost) never detaches from the server, so that wait never
+# ended: Quit hung until the tray killed the server after 60 s -- no final
+# publish, and the write lock left to go stale. Bound it so the hooks always run.
+_GRACEFUL_SHUTDOWN_SEC = 5
 
 
 def _stop_indexer() -> None:
@@ -7159,6 +7166,7 @@ def run(settings: Settings) -> None:
         show=False,
         storage_secret=secret,
         tailwind=False,  # prebuilt instead -- see _TAILWIND_URL
+        timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_SEC,
     )
     _reexec_if_requested()
 
@@ -7226,5 +7234,6 @@ def run_setup(env: Env, problem: LibraryUnavailable | None = None) -> None:
         show=False,
         storage_secret=setup_secret,
         tailwind=False,
+        timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_SEC,
     )
     _reexec_if_requested()
