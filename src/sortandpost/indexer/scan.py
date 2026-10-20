@@ -56,6 +56,8 @@ from sortandpost.indexer.pipeline import (
     sweep_presence,
 )
 from sortandpost.indexer.progress import PROGRESS
+from sortandpost.indexer.replaced import backfill as backfill_replaced
+from sortandpost.indexer.replaced import carry_collections
 from sortandpost.indexer.scanner import collapse_scope, iter_image_files, iter_scoped_files
 from sortandpost.indexer.workers import DecodedFile, DecodeJob, decode_file, decode_local
 from sortandpost.library_roots import container_roots, running_in_docker
@@ -276,6 +278,8 @@ def _scan_once_locked(
                     stacking=pcfg.stacking,
                 )
                 session.commit()
+                if outcome.replaced is not None and outcome.pixel_hash is not None:
+                    carry_collections(paths, old=outcome.replaced, new=outcome.pixel_hash)
             except Exception as exc:  # never let one bad file kill the pass
                 session.rollback()
                 log.exception("unhandled error indexing %s", decoded.path)
@@ -304,6 +308,9 @@ def _scan_once_locked(
         stats.marked_absent = result.marked_absent
         stats.marked_missing = result.marked_missing
         stats.paths_pruned = result.pruned
+        # once per library: files saved over before carry-over existed
+        backfill_replaced(session, paths=paths, device_id=settings.device_id, now=_utcnow())
+        session.commit()
 
         # Apply any not-yet-applied tombstones (from a user delete on this
         # machine, or one that arrived via merge): purge the derived rows and

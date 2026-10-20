@@ -261,6 +261,22 @@ def add_to_collection(paths: Paths, coll_id: str, pixel_hashes: list[str]) -> in
     return added
 
 
+def copy_into_collections(paths: Paths, src: str, dst: str) -> int:
+    """Add *dst* right after *src* in every collection that has *src* and not
+    *dst* (a file saved over in place: the new version joins the old one's
+    collections). Returns how many collections changed; writes nothing if none."""
+    colls = load_collections(paths)
+    changed = 0
+    for c in colls:
+        if src in c.photos and dst not in c.photos:
+            c.photos.insert(c.photos.index(src) + 1, dst)
+            c.updated_at = _now()
+            changed += 1
+    if changed:
+        _write_sorted(paths, colls)
+    return changed
+
+
 def remove_from_collection(paths: Paths, coll_id: str, pixel_hashes: list[str]) -> int:
     drop = {h for h in pixel_hashes}
     colls = load_collections(paths)

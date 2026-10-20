@@ -517,11 +517,21 @@ sweep, trashes the still-present local file and purges the derived rows.
 so the presence sweep only judges paths under **this** machine's roots, plus orphans under no
 device's roots (a removed folder); a path under another device's roots
 (`sync/devices/*/library.json`) is never marked absent by this machine. A photo is **missing
-here** when it has a judged path and none is present — that is what the grid hides, the ⋯
-"Missing photos only" filter shows (reason: folder offline / file gone / folder removed) and
+here** when it has a judged path and none is present, or no path at all and `missing_since`
+set (its file was saved over, below) — that is what the grid hides, the ⋯ "Missing photos
+only" filter shows (reason: folder offline / file gone / folder removed / file replaced) and
 Rate / collections skip; a photo whose files are only on another computer shows normally.
 `missing_since` keeps the shared meaning "no present copy anywhere". Two machines with the
 *same* root spelling can't be told apart (accepted limitation).
+
+**A file saved over in place** (`sortandpost.indexer.replaced`): an edit / re-export written
+over the same file has new pixels, so it is a new photo and the path's `photo_paths` row moves
+to it; the old photo is left with no path (missing, "file replaced", its photo page links the
+new version — never purged). When the new photo is brand-new to the library it takes the old
+one's state where it has none: the rating (only if the file brought none — runs after
+reconcile), tags (added; not the `to-edit` flag) and collections (inserted after the old one),
+with `changes` rows; nothing is written into the file then. The old photo keeps its own state.
+`replaced.backfill` applied the rule once to earlier pairs (`meta.replaced_carryover_backfill`).
 
 **One bad file never stops a pass**: any decode failure (incl. a decompression bomb) is recorded
 on that file's `scan_state` (`attempts` caps the retries) and the pass goes on. A file in flight

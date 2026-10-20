@@ -12,8 +12,11 @@ path is judged by its owner, told apart by where it sits:
   judged by whichever computer scans, so its photos still go missing.
 
 A photo is **missing here** when it has a judged path and none of them is
-present. A photo whose files are only on another computer is not missing here;
-it shows in the grid like any other (Reveal / Open / posting skip it).
+present -- or when it has no path at all and no present copy anywhere
+(``missing_since``): its only file was saved over with different pixels, which
+made a new photo and moved the ``photo_paths`` row to it (``replaced``). A
+photo whose files are only on another computer is not missing here; it shows in
+the grid like any other (Reveal / Open / posting skip it).
 ``photos.missing_since`` keeps its shared meaning -- no present copy anywhere --
 and is what the scanner and merge maintain.
 
@@ -49,6 +52,7 @@ class MissingReason(StrEnum):
     offline = "folder offline"  # its library folder isn't there right now
     gone = "file gone"  # the folder is there, the file isn't
     removed = "folder removed"  # no longer under any library folder
+    replaced = "file replaced"  # its file was saved over with a different picture
 
 
 def _clean(root: str) -> str:
@@ -185,7 +189,12 @@ def missing_here_clause(scope: PathScope | None = None) -> ColumnElement[bool]:
         present.c.present.is_(True),
         scope.judged_clause(present.c.path),
     )
-    return and_(has_judged, not_(has_present))
+    any_path = table.alias("any_path")
+    pathless = and_(
+        not_(exists().where(any_path.c.pixel_hash == photo_hash)),
+        col(Photo.missing_since).is_not(None),
+    )
+    return or_(and_(has_judged, not_(has_present)), pathless)
 
 
 def shown_clause(scope: PathScope | None = None) -> ColumnElement[bool]:
@@ -248,7 +257,38 @@ def missing_reasons(
     for h, rows in by_hash.items():
         if h in keep and not any(r.present for r in rows):
             out[h] = scope.reason(r.path for r in rows)
+    for h, replaced in _pathless(session, [h for h in wanted if h not in by_hash]).items():
+        out[h] = MissingReason.replaced if replaced else MissingReason.gone
     return out
+
+
+def _pathless(session: Session, hashes: list[str]) -> dict[str, bool]:
+    """``{pixel_hash: replaced}`` for those of *hashes* that have no
+    ``photo_paths`` row at all and no present copy anywhere. *replaced* = its
+    ``primary_path`` now belongs to another photo (the file was saved over)."""
+    out: dict[str, bool] = {}
+    for i in range(0, len(hashes), 500):
+        chunk = hashes[i : i + 500]
+        rows = session.exec(
+            select(Photo.pixel_hash, Photo.primary_path).where(
+                col(Photo.pixel_hash).in_(chunk),
+                col(Photo.missing_since).is_not(None),
+                not_(exists().where(col(PhotoPath.pixel_hash) == col(Photo.pixel_hash))),
+            )
+        ).all()
+        for h, primary in rows:
+            out[h] = replaced_by(session, h, primary) is not None
+    return out
+
+
+def replaced_by(session: Session, pixel_hash: str, primary_path: str) -> str | None:
+    """The photo now at *pixel_hash*'s old ``primary_path``, if another one is."""
+    other = session.exec(
+        select(PhotoPath.pixel_hash).where(
+            PhotoPath.path == primary_path, PhotoPath.pixel_hash != pixel_hash
+        )
+    ).first()
+    return other
 
 
 def missing_here_set(session: Session, hashes: Iterable[str]) -> set[str]:
@@ -273,6 +313,11 @@ REASON_HINTS: dict[MissingReason, str] = {
         "Its library folder is here, but the file isn't. It was moved out of your "
         "library folders or deleted outside the app. A file moved within your library "
         "folders is found again on the next scan."
+    ),
+    MissingReason.replaced: (
+        "Its file was saved over with a different picture (an edit or re-export), "
+        "which is now a photo of its own. This version is kept so nothing is lost. "
+        "A new version gets this one's rating, tags and collections when it first appears."
     ),
     MissingReason.removed: (
         "Its folder isn't one of this computer's library folders any more (Settings → Library)."

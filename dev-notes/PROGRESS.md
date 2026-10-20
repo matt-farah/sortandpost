@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-19 (**v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-10-20 (file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,22 @@ _Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not 
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## 🔁 2026-10-20 — A file saved over in place (branch `fix/replaced-file-carryover`)
+
+- Found in prod: 4 ★5 photos showing twice, one copy with no path. Each JPEG had been saved
+  over (edited / re-exported) with new pixels → a new photo; `_upsert_path` moved the path row
+  to it, leaving the old photo pathless. The sweep set `missing_since`, but V3 P9's
+  `missing_here_clause` needs a judged path, so the old one still showed. Two of the edits had
+  also dropped the XMP rating, so the new versions came in unrated.
+- Fix 1 (`missing.py`): a pathless photo with `missing_since` is missing here, reason
+  **file replaced**; the photo page shows "Was at …" + **Open the new version**.
+- Fix 2 (`indexer/replaced.py`): a brand-new photo at a path that held another one takes its
+  rating (if the file brought none), tags (not `to-edit`) and collections; `changes` rows for
+  the DB part. One-time `backfill` (meta flag) for older pairs — on a copy of the prod DB it
+  carried 3 (the Oct-12 ones) and skipped `1845dafa` (its "new" version pre-dated it).
+- Tests: `tests/test_replaced.py` (4); full suite, ruff, format, mypy green. Browser-tested by
+  the user on :8090 (rotate in place with / without the rating stripped).
 
 ## 🚀 2026-10-19 — v3.0.0 (beta) released
 

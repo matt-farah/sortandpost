@@ -2128,6 +2128,11 @@ def build_ui(settings: Settings) -> None:
             stacks = build_stacks(session, settings.config.stacking) if stacking_on else None
             members = stacks.members(pixel_hash) if stacks else [pixel_hash]
             missing_reason = missing.missing_reasons(session, [pixel_hash]).get(pixel_hash)
+            newer = (
+                missing.replaced_by(session, pixel_hash, photo.primary_path)
+                if photo is not None and missing_reason is MissingReason.replaced
+                else None
+            )
         path_scope = missing.current()
 
         if photo is None:
@@ -2210,6 +2215,11 @@ def build_ui(settings: Settings) -> None:
                             "text-xs font-medium text-amber-600"
                         )
                         ui.label(missing.REASON_HINTS[missing_reason]).classes("text-xs sp-muted")
+                        if newer is not None:
+                            ui.label(f"Was at {photo.primary_path}").classes(
+                                "text-xs sp-muted break-all"
+                            )
+                            ui.link("Open the new version", f"/photo/{newer}").classes("text-xs")
                 native_reveal = reveal_supported() and not running_in_docker()
                 for pp in paths:
                     elsewhere = path_scope is not None and not path_scope.judged(pp.path)
