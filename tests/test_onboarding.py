@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -285,7 +286,8 @@ def test_gated_pages() -> None:
 # Issues.md S4 / S5: bad folders and a saved folder that went away
 # --------------------------------------------------------------------------- #
 needs_non_root = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores folder permissions"
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod 0o555 doesn't make a folder unwritable here (root, or Windows)",
 )
 
 

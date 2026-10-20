@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -262,7 +263,10 @@ def test_check_warns_for_a_missing_folder(tmp_path: Path, paths: Paths) -> None:
 def test_check_refuses_duplicates_and_folders_inside_a_root(tmp_path: Path, paths: Paths) -> None:
     lib = tmp_path / "lib"
     (lib / "normal").mkdir(parents=True)
-    (tmp_path / "link").symlink_to(lib)
+    try:
+        (tmp_path / "link").symlink_to(lib)
+    except OSError:  # Windows without Developer Mode / elevation
+        pytest.skip("can't create symlinks here")
     existing = [_native(lib)]
     for dup in [f"{lib}/", tmp_path / "link", tmp_path / "lib" / "normal" / ".."]:
         assert (
@@ -287,6 +291,7 @@ def test_check_replaces_roots_inside_the_new_one(tmp_path: Path, paths: Paths) -
     assert "B" in check.warning
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Docker paths are POSIX")
 def test_check_under_docker_checks_the_mount_point(paths: Paths) -> None:
     app_dirs = [Path("/data/local"), Path("/data/sync")]
     ok = check_new_root(

@@ -26,6 +26,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import warnings
 from collections.abc import Callable
@@ -152,8 +153,9 @@ def install_session_end(on_end: Callable[[], None]) -> None:
         log.info("signal %d: quitting", signum)
         threading.Thread(target=on_end, name="sortandpost-signal-quit").start()
 
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+    if sys.platform != "win32":  # no SIGHUP there (mypy checks this module on Windows too)
+        signal.signal(signal.SIGHUP, _handler)
 
 
 # Tried in order when there's no xdg-open (xdg-utils isn't on every minimal
