@@ -35,9 +35,9 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from nicegui import Client, ui
 from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
-from nicegui import ui
 from nicegui.events import KeyEventArguments, ValueChangeEventArguments
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, func, select
@@ -1414,6 +1414,11 @@ def build_ui(settings: Settings) -> None:
         with ui.row().classes("w-full items-center justify-between px-4 pt-2 gap-2 no-wrap"):
             with ui.row().classes("items-center gap-2 flex-wrap min-w-0"):
                 counter = ui.label(f"{total} {noun}").classes("text-sm sp-muted")
+                if total:
+                    # `sel` is created further down, before any click can land
+                    ui.button(
+                        "Select all", icon="select_all", on_click=lambda: sel.select_all()
+                    ).props("flat dense no-caps size=sm").tooltip("select every photo shown (⌘A)")
                 if lq.missing:
                     ui.label("missing on this computer").classes("text-xs sp-faint")
                 elif lq.has_filters():
@@ -1569,24 +1574,39 @@ def build_ui(settings: Settings) -> None:
             restoring = False
 
         # -- multi-select + bulk toolbar ----------------------------------- #
-        sel = _GridSelection(rep_ids, lambda: _render_toolbar())
-        toolbar = (
-            ui.element("div")
-            .classes(
-                "fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 "
-                "rounded-full px-4 py-2 text-white shadow-lg backdrop-blur"
-            )
-            .style("background-color: rgba(32,27,21,.96)")
+        def _after_bulk_flag(hashes: list[str], marked: bool) -> None:
+            for h in hashes:
+                setter = flag_setters.get(h)
+                if setter is not None:
+                    setter(marked)
+            _recount_flags()
+
+        def _after_bulk_delete(hashes: list[str], result: DeleteResult) -> None:
+            nonlocal total
+            _clear_focus()
+            removed = 0
+            for h in hashes:
+                el = cell_els.pop(h, None)
+                if el is not None:
+                    el.delete()  # drop the tile in place -- it's above the load cursor
+                    removed += 1
+                flag_setters.pop(h, None)
+                rating_setters.pop(h, None)
+                flag_toggles.pop(h, None)
+            total = max(0, total - removed)
+            counter.set_text(f"{loaded} of {total} {noun}" if loaded < total else f"{total} {noun}")
+            _recount_flags()
+
+        toolbar = _BulkToolbar(
+            settings,
+            engine,
+            client=client,
+            on_flagged=_after_bulk_flag,
+            on_deleted=_after_bulk_delete,
         )
-        toolbar.set_visibility(False)
+        sel: _GridSelection = toolbar.attach(_GridSelection(rep_ids, toolbar.render))
         # shift-state for _GridSelection ranges is tracked in the single _grid_key
         # handler below (one ui.keyboard per page -- two of them don't both fire).
-
-        async def _bulk_rate(stars: int) -> None:
-            hashes = list(sel.selected)
-            n = await _io_write(_apply_bulk_rating, settings, engine, hashes, stars)
-            _notify_late(f"{stars}★ · {n} photo(s)" if stars else f"rating cleared · {n} photo(s)")
-            sel.clear()
 
         async def _rate_one(pixel_hash: str, stars: int) -> None:
             if State.write_mode != WriteMode.writable:
@@ -1603,215 +1623,11 @@ def build_ui(settings: Settings) -> None:
             _notify_late("added to edit list" if marked else "removed from edit list")
             _recount_flags()
 
-        async def _bulk_tag(box: ui.input) -> None:
-            name = _typed_tag_name(box.value)
-            if name is None:
-                return
-            hashes = list(sel.selected)
-            n = await _io_write(_apply_bulk_tag, settings, engine, hashes, name)
-            _notify_late(f'"{name}" · {n} photo(s)')
-            box.set_value("")
-            sel.clear()
-
-        async def _bulk_flag(marked: bool) -> None:
-            hashes = list(sel.selected)
-            n = await nicegui_run.io_bound(_apply_bulk_flag, settings, engine, hashes, marked)
-            verb = "marked for editing" if marked else "unmarked"
-            _notify_late(f"{verb} · {n} photo(s)")
-            for h in hashes:
-                setter = flag_setters.get(h)
-                if setter is not None:
-                    setter(marked)
-            sel.clear()
-            _recount_flags()
-
-        async def _do_bulk_delete() -> None:
-            nonlocal total
-            hashes = list(sel.selected)
-            result = await nicegui_run.io_bound(_apply_bulk_delete, settings, engine, hashes)
-            if result is None:  # io_bound cancelled / app shutting down
-                return
-            with client:  # the awaited gap + tile deletes can invalidate the ambient slot
-                sel.clear()
-                _clear_focus()
-                removed = 0
-                for h in hashes:
-                    el = cell_els.pop(h, None)
-                    if el is not None:
-                        el.delete()  # drop the tile in place -- it's above the load cursor
-                        removed += 1
-                    flag_setters.pop(h, None)
-                    rating_setters.pop(h, None)
-                    flag_toggles.pop(h, None)
-                total = max(0, total - removed)
-                counter.set_text(
-                    f"{loaded} of {total} {noun}" if loaded < total else f"{total} {noun}"
-                )
-                _recount_flags()
-                ui.notify(_delete_summary(result))
-
-        async def _confirm_bulk_delete() -> None:
-            count = len(sel.selected)
-            if not count:
-                return
-            files = await nicegui_run.io_bound(
-                _delete_preview, settings, engine, list(sel.selected)
-            )
-            if files is None:  # io_bound cancelled / app shutting down
-                return
-            with client, ui.dialog() as dialog, ui.card().classes("gap-2"):
-                ui.label(f"Delete {count} selected photo(s)?").classes("font-medium")
-                _delete_files_note(files)
-                ui.label(f"The photo files will be {_delete_where_note()}.").classes(
-                    "text-xs sp-muted"
-                )
-                if settings.config.stacking.enabled:
-                    ui.label(
-                        "Whole stacks will be deleted."
-                        if settings.config.deletion.stack_scope == "whole_stack"
-                        else "Only the shown photo of each stack is deleted."
-                    ).classes("text-xs sp-muted")
-                ui.label("Their ratings, tags and thumbnails are removed too.").classes(
-                    "text-xs sp-muted"
-                )
-                with ui.row().classes("w-full justify-end gap-2"):
-                    ui.button("Cancel", on_click=dialog.close).props("flat")
-
-                    async def _go() -> None:
-                        # close after the work so ui.notify still has a live slot context
-                        await _do_bulk_delete()
-                        dialog.close()
-
-                    ui.button("Delete", on_click=_go).props("color=negative")
-            dialog.open()
-
-        async def _do_bulk_reveal_or_open(open_mode: bool, app: str | None = None) -> None:
-            """Reveal every selected photo in the host file manager, or open it
-            in *app* (or the OS default app when ``app`` is ``None``) -- via
-            the native openers. Works read-only: it doesn't touch the DB."""
-            hashes = list(sel.ordered())
-            if not hashes:
-                return
-            resolved = await nicegui_run.io_bound(resolve_sources, engine, hashes)
-            if resolved is None:  # io_bound cancelled / app shutting down
-                return
-            roots = settings.library_roots
-            host_paths = [to_host_path(p, roots) for p in resolved.values() if p]
-            missing = len(hashes) - len(host_paths)
-            if not host_paths:
-                _notify_late("No present copies to open on this machine.", type="warning")
-                return
-            app_for = app if open_mode else None
-            if reveal_supported():
-                path_objs = [Path(p) for p in host_paths]
-                if not open_mode:
-                    reveal_multiple_in_file_manager(path_objs)
-                elif app_for:
-                    open_multiple_with_app(path_objs, app_for)
-                else:
-                    open_multiple_in_default_app(path_objs)
-            else:
-                _notify_late("Reveal/open isn't available in this environment.", type="warning")
-                return
-            if missing:
-                _notify_late(
-                    f"{missing} photo(s) have no present copy on this machine.", type="warning"
-                )
-
-        async def _bulk_copy_paths() -> None:
-            """Docker: copy the selected photos' paths, one per line -- network
-            paths where Settings has one for the folder (see :func:`_copy_paths`)."""
-            hashes = list(sel.ordered())
-            resolved = await nicegui_run.io_bound(resolve_sources, engine, hashes)
-            if not resolved:
-                _notify_late("No present copies of these photos.", type="warning")
-                return
-            await _copy_paths([p for p in resolved.values() if p], settings.library_roots)
-
-        async def _bulk_reveal_or_open(open_mode: bool, app: str | None = None) -> None:
-            count = len(sel.selected)
-            if not count:
-                return
-            threshold = (
-                _BULK_OPEN_CONFIRM_THRESHOLD if open_mode else _BULK_REVEAL_CONFIRM_THRESHOLD
-            )
-            if count <= threshold:
-                await _do_bulk_reveal_or_open(open_mode, app)
-                return
-            verb = "Open" if open_mode else "Reveal"
-            with ui.dialog() as dialog, ui.card().classes("gap-2"):
-                ui.label(f"{verb} {count} photos?").classes("font-medium")
-                ui.label(f"This opens {count} windows or apps at once.").classes("text-xs sp-muted")
-                with ui.row().classes("w-full justify-end gap-2"):
-                    ui.button("Cancel", on_click=dialog.close).props("flat")
-
-                    async def _go() -> None:
-                        dialog.close()
-                        await _do_bulk_reveal_or_open(open_mode, app)
-
-                    ui.button(verb, on_click=_go).props("color=primary")
-            dialog.open()
-
-        def _render_toolbar() -> None:
-            count = len(sel.selected)
-            toolbar.set_visibility(count > 0)
-            toolbar.clear()
-            if count == 0:
-                return
-            with toolbar:
-                ui.label(f"{count} selected").classes("text-sm font-medium")
-                if State.write_mode == WriteMode.writable:
-                    for stars in (1, 2, 3, 4, 5):
-                        ui.button(str(stars), on_click=lambda s=stars: _bulk_rate(s)).props(
-                            "flat dense round color=amber-4"
-                        )
-                    ui.button(icon="star_border", on_click=lambda: _bulk_rate(0)).props(
-                        "flat dense round"
-                    ).tooltip("clear rating")
-                    tag_in = _tag_input("tag…").props("dense dark").classes("w-28")
-                    tag_in.on("keydown.enter", lambda: _bulk_tag(tag_in))
-                    ui.button("Tag", on_click=lambda: _bulk_tag(tag_in)).props("flat dense")
-                    ui.button(icon="flag", on_click=lambda: _bulk_flag(True)).props(
-                        "flat dense round color=amber-6"
-                    ).tooltip("mark for editing")
-                    ui.button(icon="outlined_flag", on_click=lambda: _bulk_flag(False)).props(
-                        "flat dense round"
-                    ).tooltip("remove from edit list")
-                    ui.separator().props("vertical dark")
-                    ui.button(icon="delete", on_click=_confirm_bulk_delete).props(
-                        "flat dense round color=red-4"
-                    ).tooltip("delete — move files to trash")
-                else:
-                    ui.label("read-only").classes("text-xs text-amber-300")
-                ui.separator().props("vertical dark")
-                if running_in_docker():
-                    ui.button(icon="content_copy", on_click=_bulk_copy_paths).props(
-                        "flat dense round"
-                    ).tooltip("copy file paths")
-                else:
-                    ui.button(
-                        icon="folder_open", on_click=lambda: _bulk_reveal_or_open(False)
-                    ).props("flat dense round").tooltip("reveal in file manager")
-                    _open_with_button(lambda app: _bulk_reveal_or_open(True, app))
-                _collection_add_button(
-                    settings, lambda: list(sel.selected), label=None, on_added=sel.clear
-                )
-                compose_button(
-                    settings,
-                    sel.ordered,
-                    title=lambda: f"Post · {utcnow():%d %b %Y}",
-                    label=None,
-                )
-                ui.button(icon="close", on_click=sel.clear).props("flat dense round").tooltip(
-                    "deselect all"
-                )
-
         if lq.mark and rep_ids:
             # the "marked for editing" view IS the flagged set -- pre-select
             # everything so bulk actions (rate, tag, open, delete, …) need no
             # manual checkbox clicking first.
-            sel.selected = set(rep_ids)
-            _render_toolbar()
+            sel.select_all()
 
         def _render_tiles(container: ui.element, hashes: list[str]) -> None:
             """Draw the tiles for *hashes* into *container* (one grid). Shared by
@@ -2028,6 +1844,9 @@ def build_ui(settings: Settings) -> None:
             sel.shift_down = bool(e.modifiers.shift)  # for shift-click / shift-space ranges
             if not e.action.keydown or e.action.repeat or restoring:
                 return
+            if _is_select_all(e):
+                sel.select_all()
+                return
             if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
                 return
             key = e.key
@@ -2065,6 +1884,7 @@ def build_ui(settings: Settings) -> None:
 
         ui.keyboard(on_key=_grid_key)
         ui.run_javascript(_KEY_FOCUS_GUARD_JS)  # keep shortcuts alive after Esc
+        ui.run_javascript(_SELECT_ALL_GUARD_JS)  # ⌘/Ctrl+A selects photos, not page text
         # Space would otherwise scroll the page -- swallow its default over the
         # grid (but not while typing in a field or on a focused button).
         ui.run_javascript(
@@ -2825,6 +2645,8 @@ def build_ui(settings: Settings) -> None:
                     ui.button("Delete", on_click=_go).props("color=negative")
             dialog.open()
 
+        picker: list[ui.dialog | None] = [None]  # the open "add photos" picker, if any
+
         def _add_photos_dialog() -> None:
             c = get_collection(settings.paths, coll_id)
             if c is None:
@@ -2932,6 +2754,9 @@ def build_ui(settings: Settings) -> None:
                     sel.shift_down = bool(e.modifiers.shift)
                     if not e.action.keydown or e.action.repeat:
                         return
+                    if _is_select_all(e):
+                        sel.select_all()
+                        return
                     if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
                         return
                     key = e.key
@@ -3009,6 +2834,7 @@ def build_ui(settings: Settings) -> None:
                     "},true);}"
                 )
             dialog.open()
+            picker[0] = dialog  # the page's own shortcuts stand down while it's open
             # When opened from the "Add photos" button, that <button> keeps DOM
             # focus -- and ui.keyboard ignores keys while a button is focused, so
             # the arrow/space shortcuts silently do nothing. Blur it; q-dialog's
@@ -3022,6 +2848,9 @@ def build_ui(settings: Settings) -> None:
             ui.button("Add photos", icon="add_photo_alternate", on_click=_add_photos_dialog).props(
                 "color=primary flat"
             )
+            ui.button("Select all", icon="select_all", on_click=lambda: sel.select_all()).props(
+                "flat dense no-caps"
+            ).tooltip("select every photo here (⌘A)")
             compose_button(
                 settings,
                 lambda: _members_ids(),
@@ -3035,6 +2864,29 @@ def build_ui(settings: Settings) -> None:
             )
 
         grid_wrap = ui.element("div").classes("w-full")
+
+        # -- multi-select + the library's bulk toolbar (+ Remove) ------------ #
+        def _remove_selected() -> None:
+            hashes = sel.ordered()
+            sel.clear()
+            _remove(hashes)
+
+        def _toolbar_extra() -> None:
+            ui.button(icon="bookmark_remove", on_click=_remove_selected).props(
+                "flat dense round"
+            ).tooltip("remove from this collection (no files are touched)")
+
+        toolbar = _BulkToolbar(
+            settings,
+            engine,
+            client=ui.context.client,
+            on_deleted=lambda _hashes, _result: _render_grid(),
+            compose_title=lambda: title.text,
+            compose_caption=lambda: notes_box.value or "",
+            collection_id=coll_id,
+            extra=_toolbar_extra,
+        )
+        sel: _GridSelection = toolbar.attach(_GridSelection([], toolbar.render))
 
         def _members() -> tuple[list[Photo], list[str]]:
             c = get_collection(settings.paths, coll_id)
@@ -3077,12 +2929,19 @@ def build_ui(settings: Settings) -> None:
 
         def _member_tile(photo: Photo, i: int, ids: list[str]) -> None:
             with ui.element("div").classes("group relative block"):
-                with ui.link(target=f"/photo/{photo.pixel_hash}"):
+                with ui.link(target=f"/photo/{photo.pixel_hash}") as link:
                     ui.image(_thumb_src(photo.pixel_hash, thumb_small)).classes(
                         "w-full aspect-square object-cover sp-placeholder"
                     ).props("loading=lazy")
+                # shift / cmd / ctrl-click selects instead of following the link
+                link.on(
+                    "click",
+                    lambda e, h=photo.pixel_hash: sel.tile_click(h, bool(e.args["shift"])),
+                    js_handler=_TILE_SELECT_CLICK_JS,
+                )
+                sel.checkbox(photo.pixel_hash)
                 ui.label(str(i + 1)).classes(
-                    "absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-xs "
+                    "absolute bottom-1 left-1 rounded bg-black/70 px-1.5 py-0.5 text-xs "
                     "font-medium text-white"
                 )
                 with ui.row().classes(
@@ -3112,6 +2971,9 @@ def build_ui(settings: Settings) -> None:
         def _render_grid() -> None:
             grid_wrap.clear()
             present, gone = _members()
+            # keep the selection of photos still here (reorder / remove / delete)
+            sel.set_order([p.pixel_hash for p in present])
+            toolbar.render()
             meta.set_text(
                 f"{len(present)} photo(s)" + (f" · {len(gone)} unavailable" if gone else "")
             )
@@ -3152,6 +3014,18 @@ def build_ui(settings: Settings) -> None:
 
             notes_box.on("blur", _save_notes)
             ui.button("Save notes", icon="save", on_click=_save_notes).props("flat dense")
+
+        def _page_key(e: KeyEventArguments) -> None:
+            if picker[0] is not None and picker[0].value:
+                return  # the "add photos" picker has its own selection + keys
+            sel.shift_down = bool(e.modifiers.shift)
+            if _is_select_all(e):
+                sel.select_all()
+            elif e.action.keydown and e.key == "Escape":
+                sel.clear()
+
+        ui.keyboard(on_key=_page_key, ignore=["input", "select", "textarea"])
+        ui.run_javascript(_SELECT_ALL_GUARD_JS)  # ⌘/Ctrl+A selects photos, not page text
 
         if add:
             ui.timer(0.4, _add_photos_dialog, once=True)
@@ -6331,9 +6205,30 @@ class _GridSelection:
             self._anchor = idx
         self._repaint(self.selected ^ before)
 
+    @property
+    def order(self) -> list[str]:
+        """Every photo in the grid, in grid order."""
+        return self._order
+
     def ordered(self) -> list[str]:
         """The selection in grid order."""
         return [h for h in self._order if h in self.selected]
+
+    def select_all(self) -> None:
+        """Select every photo in the grid's order -- including tiles not drawn
+        yet (``checkbox`` reads :attr:`selected` when they render)."""
+        before = set(self.selected)
+        self.selected = set(self._order)
+        self._repaint(self.selected ^ before)
+
+    def set_order(self, ids: list[str]) -> None:
+        """The grid was redrawn with *ids* (reordered / some removed): keep the
+        selection of photos still shown, drop the rest and the old boxes."""
+        self._order = list(ids)
+        self._pos = {h: i for i, h in enumerate(self._order)}
+        self.selected &= set(self._order)
+        self._anchor = None
+        self._boxes.clear()
 
     def clear(self) -> None:
         stale = set(self.selected)
@@ -6363,6 +6258,303 @@ class _GridSelection:
             if selected
             else "bg-black/30 opacity-0 group-hover:opacity-100"
         )
+
+
+# ⌘/Ctrl+A outside a text field selects the grid's photos (the page's
+# ui.keyboard handler), so stop the browser from also highlighting the page's
+# text -- and let go of a focused button, which ui.keyboard would ignore.
+# Text fields keep their own select-all. Shared, one-time per browser tab.
+_SELECT_ALL_GUARD_JS = (
+    "if(!window.__spSelectAllGuard){window.__spSelectAllGuard=1;"
+    "addEventListener('keydown',e=>{"
+    "if(!(e.metaKey||e.ctrlKey)||e.altKey||(e.key||'').toLowerCase()!=='a')return;"
+    "const a=document.activeElement;"
+    "if(a&&(['INPUT','TEXTAREA','SELECT'].includes(a.tagName)||a.isContentEditable))return;"
+    "e.preventDefault();if(a&&a.tagName==='BUTTON')a.blur();"
+    "},true);}"
+)
+
+
+# shift / cmd / ctrl-click on a tile's link: select instead of navigating (or
+# opening a new tab); a plain click still follows the link.
+_TILE_SELECT_CLICK_JS = (
+    "(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) "
+    "{ e.preventDefault(); emit({shift: e.shiftKey}); } }"
+)
+
+
+def _is_select_all(e: KeyEventArguments) -> bool:
+    """⌘A (macOS) / Ctrl+A (elsewhere) -- keydown only, no repeat."""
+    return (
+        e.action.keydown
+        and not e.action.repeat
+        and bool(e.modifiers.meta or e.modifiers.ctrl)
+        and not e.modifiers.alt
+        and str(e.key).lower() == "a"
+    )
+
+
+class _BulkToolbar:
+    """The floating pill of bulk actions for a grid's selection -- rate, tag,
+    flag, delete, reveal / open, add to collection, compose. Shared by the
+    library and collection pages; the page supplies what changes on screen
+    after a flag / delete (``on_flagged`` / ``on_deleted``) and any extra
+    buttons of its own (``extra``, drawn before deselect)."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        engine: Engine,
+        *,
+        client: Client,
+        on_flagged: Callable[[list[str], bool], Any] | None = None,
+        on_deleted: Callable[[list[str], DeleteResult], Any] | None = None,
+        compose_title: Callable[[], str] | None = None,
+        compose_caption: Callable[[], str] = lambda: "",
+        collection_id: str | None = None,
+        extra: Callable[[], None] | None = None,
+    ) -> None:
+        self._settings = settings
+        self._engine = engine
+        self._client = client
+        self._on_flagged = on_flagged
+        self._on_deleted = on_deleted
+        self._compose_title = compose_title or (lambda: f"Post · {utcnow():%d %b %Y}")
+        self._compose_caption = compose_caption
+        self._collection_id = collection_id
+        self._extra = extra
+        self.sel: _GridSelection | None = None  # attached right after construction
+        self.element = (
+            ui.element("div")
+            .classes(
+                "fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 "
+                "rounded-full px-4 py-2 text-white shadow-lg backdrop-blur"
+            )
+            # sized to its buttons, not squeezed to the half viewport `left-1/2`
+            # leaves it (Quasar's `.flex` wraps); only a narrow window wraps it
+            .style(
+                "background-color: rgba(32,27,21,.96); width: max-content; "
+                "max-width: calc(100vw - 2rem); justify-content: center"
+            )
+        )
+        self.element.set_visibility(False)
+
+    def attach(self, sel: _GridSelection) -> _GridSelection:
+        self.sel = sel
+        return sel
+
+    def _selected(self) -> list[str]:
+        return list(self.sel.selected) if self.sel is not None else []
+
+    def _ordered(self) -> list[str]:
+        return self.sel.ordered() if self.sel is not None else []
+
+    def _clear(self) -> None:
+        if self.sel is not None:
+            self.sel.clear()
+
+    # -- actions ------------------------------------------------------------ #
+
+    async def _rate(self, stars: int) -> None:
+        hashes = self._selected()
+        n = await _io_write(_apply_bulk_rating, self._settings, self._engine, hashes, stars)
+        _notify_late(f"{stars}★ · {n} photo(s)" if stars else f"rating cleared · {n} photo(s)")
+        self._clear()
+
+    async def _tag(self, box: ui.input) -> None:
+        name = _typed_tag_name(box.value)
+        if name is None:
+            return
+        hashes = self._selected()
+        n = await _io_write(_apply_bulk_tag, self._settings, self._engine, hashes, name)
+        _notify_late(f'"{name}" · {n} photo(s)')
+        box.set_value("")
+        self._clear()
+
+    async def _flag(self, marked: bool) -> None:
+        hashes = self._selected()
+        n = await nicegui_run.io_bound(
+            _apply_bulk_flag, self._settings, self._engine, hashes, marked
+        )
+        verb = "marked for editing" if marked else "unmarked"
+        _notify_late(f"{verb} · {n} photo(s)")
+        self._clear()
+        if self._on_flagged is not None:
+            self._on_flagged(hashes, marked)
+
+    async def _do_delete(self) -> None:
+        hashes = self._selected()
+        result = await nicegui_run.io_bound(
+            _apply_bulk_delete, self._settings, self._engine, hashes
+        )
+        if result is None:  # io_bound cancelled / app shutting down
+            return
+        with self._client:  # the awaited gap + tile deletes can invalidate the ambient slot
+            self._clear()
+            if self._on_deleted is not None:
+                self._on_deleted(hashes, result)
+            ui.notify(_delete_summary(result))
+
+    async def _confirm_delete(self) -> None:
+        count = len(self._selected())
+        if not count:
+            return
+        files = await nicegui_run.io_bound(
+            _delete_preview, self._settings, self._engine, self._selected()
+        )
+        if files is None:  # io_bound cancelled / app shutting down
+            return
+        cfg = self._settings.config
+        with self._client, ui.dialog() as dialog, ui.card().classes("gap-2"):
+            ui.label(f"Delete {count} selected photo(s)?").classes("font-medium")
+            _delete_files_note(files)
+            ui.label(f"The photo files will be {_delete_where_note()}.").classes("text-xs sp-muted")
+            if cfg.stacking.enabled:
+                ui.label(
+                    "Whole stacks will be deleted."
+                    if cfg.deletion.stack_scope == "whole_stack"
+                    else "Only the shown photo of each stack is deleted."
+                ).classes("text-xs sp-muted")
+            ui.label("Their ratings, tags and thumbnails are removed too.").classes(
+                "text-xs sp-muted"
+            )
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                async def _go() -> None:
+                    # close after the work so ui.notify still has a live slot context
+                    await self._do_delete()
+                    dialog.close()
+
+                ui.button("Delete", on_click=_go).props("color=negative")
+        dialog.open()
+
+    async def _do_reveal_or_open(self, open_mode: bool, app: str | None = None) -> None:
+        """Reveal every selected photo in the host file manager, or open it
+        in *app* (or the OS default app when ``app`` is ``None``) -- via
+        the native openers. Works read-only: it doesn't touch the DB."""
+        hashes = self._ordered()
+        if not hashes:
+            return
+        resolved = await nicegui_run.io_bound(resolve_sources, self._engine, hashes)
+        if resolved is None:  # io_bound cancelled / app shutting down
+            return
+        roots = self._settings.library_roots
+        host_paths = [to_host_path(p, roots) for p in resolved.values() if p]
+        missing_n = len(hashes) - len(host_paths)
+        if not host_paths:
+            _notify_late("No present copies to open on this machine.", type="warning")
+            return
+        app_for = app if open_mode else None
+        if reveal_supported():
+            path_objs = [Path(p) for p in host_paths]
+            if not open_mode:
+                reveal_multiple_in_file_manager(path_objs)
+            elif app_for:
+                open_multiple_with_app(path_objs, app_for)
+            else:
+                open_multiple_in_default_app(path_objs)
+        else:
+            _notify_late("Reveal/open isn't available in this environment.", type="warning")
+            return
+        if missing_n:
+            _notify_late(
+                f"{missing_n} photo(s) have no present copy on this machine.", type="warning"
+            )
+
+    async def _copy_paths(self) -> None:
+        """Docker: copy the selected photos' paths, one per line -- network
+        paths where Settings has one for the folder (see :func:`_copy_paths`)."""
+        hashes = self._ordered()
+        resolved = await nicegui_run.io_bound(resolve_sources, self._engine, hashes)
+        if not resolved:
+            _notify_late("No present copies of these photos.", type="warning")
+            return
+        await _copy_paths([p for p in resolved.values() if p], self._settings.library_roots)
+
+    async def _reveal_or_open(self, open_mode: bool, app: str | None = None) -> None:
+        count = len(self._selected())
+        if not count:
+            return
+        threshold = _BULK_OPEN_CONFIRM_THRESHOLD if open_mode else _BULK_REVEAL_CONFIRM_THRESHOLD
+        if count <= threshold:
+            await self._do_reveal_or_open(open_mode, app)
+            return
+        verb = "Open" if open_mode else "Reveal"
+        with ui.dialog() as dialog, ui.card().classes("gap-2"):
+            ui.label(f"{verb} {count} photos?").classes("font-medium")
+            ui.label(f"This opens {count} windows or apps at once.").classes("text-xs sp-muted")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                async def _go() -> None:
+                    dialog.close()
+                    await self._do_reveal_or_open(open_mode, app)
+
+                ui.button(verb, on_click=_go).props("color=primary")
+        dialog.open()
+
+    # -- the pill ------------------------------------------------------------ #
+
+    def render(self) -> None:
+        count = len(self._selected())
+        self.element.set_visibility(count > 0)
+        self.element.clear()
+        if count == 0:
+            return
+        with self.element:
+            ui.label(f"{count} selected").classes("text-sm font-medium")
+            if self.sel is not None and count < len(self.sel.order):
+                ui.button(icon="select_all", on_click=self.sel.select_all).props(
+                    "flat dense round"
+                ).tooltip(f"select all {len(self.sel.order)}")
+            if State.write_mode == WriteMode.writable:
+                for stars in (1, 2, 3, 4, 5):
+                    ui.button(str(stars), on_click=lambda s=stars: self._rate(s)).props(
+                        "flat dense round color=amber-4"
+                    )
+                ui.button(icon="star_border", on_click=lambda: self._rate(0)).props(
+                    "flat dense round"
+                ).tooltip("clear rating")
+                tag_in = _tag_input("tag…").props("dense dark").classes("w-28")
+                tag_in.on("keydown.enter", lambda: self._tag(tag_in))
+                ui.button("Tag", on_click=lambda: self._tag(tag_in)).props("flat dense")
+                ui.button(icon="flag", on_click=lambda: self._flag(True)).props(
+                    "flat dense round color=amber-6"
+                ).tooltip("mark for editing")
+                ui.button(icon="outlined_flag", on_click=lambda: self._flag(False)).props(
+                    "flat dense round"
+                ).tooltip("remove from edit list")
+                ui.separator().props("vertical dark")
+                ui.button(icon="delete", on_click=self._confirm_delete).props(
+                    "flat dense round color=red-4"
+                ).tooltip("delete — move files to trash")
+            else:
+                ui.label("read-only").classes("text-xs text-amber-300")
+            ui.separator().props("vertical dark")
+            if running_in_docker():
+                ui.button(icon="content_copy", on_click=self._copy_paths).props(
+                    "flat dense round"
+                ).tooltip("copy file paths")
+            else:
+                ui.button(icon="folder_open", on_click=lambda: self._reveal_or_open(False)).props(
+                    "flat dense round"
+                ).tooltip("reveal in file manager")
+                _open_with_button(lambda app: self._reveal_or_open(True, app))
+            _collection_add_button(self._settings, self._selected, label=None, on_added=self._clear)
+            compose_button(
+                self._settings,
+                self._ordered,
+                title=self._compose_title,
+                caption=self._compose_caption,
+                collection_id=self._collection_id,
+                label=None,
+            )
+            if self._extra is not None:
+                self._extra()
+            ui.button(icon="close", on_click=self._clear).props("flat dense round").tooltip(
+                "deselect all"
+            )
 
 
 def _collection_add_button(
@@ -6492,8 +6684,7 @@ def _thumb_cell(
             cell.on(
                 "click",
                 lambda e, h=photo.pixel_hash: selection.tile_click(h, bool(e.args["shift"])),
-                js_handler="(e) => { if (e.shiftKey || e.metaKey || e.ctrlKey) "
-                "{ e.preventDefault(); emit({shift: e.shiftKey}); } }",
+                js_handler=_TILE_SELECT_CLICK_JS,
             )
         if on_rate is not None:
             _grid_rating(photo.pixel_hash, stars, on_rate, rating_registry)

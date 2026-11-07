@@ -655,6 +655,16 @@ The **only** module allowed to write under a library root. Wraps a persistent
   first — every term in the file name / folders below the library root, an applied tag or the
   camera (`search.filters.text_match`), in library order — then the CLIP results by relevance.
   Subject/tag also matches un-rejected CLIP suggestions.
+  **Multi-select** (`app._GridSelection`): a hover checkbox per tile, shift-click range,
+  ⌘/Ctrl-click toggle, Space; **Select all** (button beside the count, or ⌘/Ctrl+A —
+  `_SELECT_ALL_GUARD_JS` keeps the browser from also highlighting page text) takes the whole
+  filtered view, tiles not yet scrolled in included. The selection drives the floating bulk
+  toolbar, `app._BulkToolbar`: rate / tag / flag / delete / reveal / open with / add to
+  collection / compose.
+- `/collections/{id}` — one collection in its own order (per-tile move ← → / remove, notes
+  below). The same multi-select, Select all and `_BulkToolbar` as `/`, plus **Remove from
+  collection** (no files touched); its compose starts from the selection in collection order,
+  titled with the collection's name and captioned with its notes.
 - `/photo/{pixel_hash}` — large preview, star widget, EXIF panel, a **Tags** section between
   the facts and Paths (applied pills; dashed ghost pills for pending CLIP suggestions with
   ✓ approve / ✕ dismiss; ✕ on every applied tag — on an approved CLIP tag it also rejects the
