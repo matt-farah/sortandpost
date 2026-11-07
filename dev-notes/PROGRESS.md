@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-10-20 (search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-07 (V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,23 @@ _Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not 
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## ☑️ 2026-11-07 — V3.1: Select all + bulk actions in collections (branch `feat/collection-bulk-select`)
+
+- The library's bulk toolbar was closures inside the `/` page; it is now `app._BulkToolbar`
+  (same buttons, read-only / Docker branches, confirms), with `on_flagged` / `on_deleted`
+  hooks for the page and an `extra` slot. The pill is sized to its buttons (it wrapped at
+  half the viewport once a button was added).
+- `/collections/{id}`: hover checkbox per tile, shift / ⌘-click, **Select all** button, ⌘/Ctrl+A,
+  Esc; the toolbar + **Remove from collection**. Compose = selection in collection order,
+  collection name as title, notes as caption. A redraw (reorder / remove / delete) keeps the
+  selection of photos still there (`_GridSelection.set_order`). The position badge moved to
+  bottom-left. The page's keys stand down while the "Add photos" picker is open; ⌘A works there too.
+- `/`: **Select all** beside the count + ⌘/Ctrl+A = the whole filtered view.
+  `_SELECT_ALL_GUARD_JS` stops the browser also highlighting page text (fields keep their own ⌘A).
+- `/help` lists the new keys. Tests: `tests/test_grid_selection.py` (incl. the guard in Chromium).
+  Full suite, ruff, format, mypy green; `uv audit` reports existing dependency advisories
+  (certifi, setuptools, …) — a separate bump. Browser-tested by the user on :8090.
 
 ## 🔎 2026-10-20 — Search by file name / folder (branch `feat/filename-search`)
 

@@ -4,7 +4,7 @@ outside a text field (:data:`HELP_KEY_JS`, installed by ``app._header``).
 
 :data:`SECTIONS` is the one list of shortcuts -- keep it in step with the
 ``ui.keyboard`` handlers in ``app`` (the library grid, the photo page, Rate and
-the collection picker) when a key is added or changed.
+the collection page and its picker) when a key is added or changed.
 
 Like ``achievements_ui`` this reuses ``app``'s page chrome through a lazy import.
 """
@@ -84,6 +84,7 @@ SECTIONS: tuple[Section, ...] = (
             Shortcut(("Shift+Space",), "Select a range from the last selected photo"),
             Shortcut(("Shift+click",), "Select a range"),
             Shortcut(("⌘+click", "Ctrl+click"), "Select / deselect one photo"),
+            Shortcut(("⌘+A", "Ctrl+A"), "Select every photo shown"),
             Shortcut(("Esc",), "Clear the ring and the selection"),
             Shortcut(("/",), "Jump to the search box"),
         ),
@@ -112,6 +113,17 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "Collection",
+        "collections_bookmark",
+        "One collection's photos.",
+        (
+            Shortcut(("⌘+A", "Ctrl+A"), "Select every photo in the collection"),
+            Shortcut(("Shift+click",), "Select a range"),
+            Shortcut(("⌘+click", "Ctrl+click"), "Select / deselect one photo"),
+            Shortcut(("Esc",), "Clear the selection"),
+        ),
+    ),
+    Section(
         "Adding photos to a collection",
         "collections_bookmark",
         "The picker opened by a collection's “Add photos”.",
@@ -119,6 +131,7 @@ SECTIONS: tuple[Section, ...] = (
             Shortcut(("←", "→", "↑", "↓"), "Move between photos"),
             Shortcut(("Space",), "Select / deselect the photo"),
             Shortcut(("Shift+Space",), "Select a range"),
+            Shortcut(("⌘+A", "Ctrl+A"), "Select every photo shown"),
             Shortcut(("Enter",), "Add the selected photos"),
             Shortcut(("Esc",), "Close without adding"),
         ),
