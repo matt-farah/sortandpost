@@ -491,6 +491,17 @@ def duplicate_post(paths: Paths, post_id: str, *, device_id: str = "") -> Post |
     return save_post(paths, copy, device_id=device_id)
 
 
+def reorder(current: list[str], proposed: object) -> list[str] | None:
+    """``proposed`` as a new photo order for a post holding ``current``, or None
+    when it isn't exactly the same photos rearranged (a stale tab, a tampered
+    request): a drag in the browser can only reorder, never add or drop."""
+    if not isinstance(proposed, list) or not all(isinstance(h, str) for h in proposed):
+        return None
+    if sorted(proposed) != sorted(current):
+        return None
+    return list(proposed)
+
+
 # --- the "posted" set --------------------------------------------------------
 
 _posted_cache: dict[Path, tuple[int, frozenset[str]]] = {}

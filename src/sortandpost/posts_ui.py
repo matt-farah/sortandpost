@@ -11,15 +11,18 @@ an explicit click on a confirm dialog that lists exactly what goes where.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
+from importlib import resources
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
 from sqlalchemy.engine import Engine
@@ -60,6 +63,7 @@ from sortandpost.posts import (
     list_posts,
     load_channel_cache,
     plan_send,
+    reorder,
     save_channel_cache,
     save_post,
     schedule_slots,
@@ -85,6 +89,57 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
+
+# Drag to reorder a post's photos: SortableJS, vendored in resources/js/ (served
+# from here, never a CDN -- the app runs offline; see CONTRIBUTING.md "Vendored JS").
+_SORTABLE_FILE = "Sortable.min.js"
+_SORTABLE_URL = "/_sp/js/" + _SORTABLE_FILE
+
+# The bridge. Vue owns the tiles' DOM, so a drag's move must never stick: on
+# drop it reads the new order, puts the dragged tile back where it was (Vue's
+# DOM matches its virtual DOM again) and sends the order to Python as an
+# ``sp-reorder`` event on the container; Python saves and re-renders. Any
+# ``[data-sp-sortable]`` container is picked up when it appears, so each
+# ``_photos.refresh()`` needs no extra call.
+_SORT_JS = """
+<script>
+(() => {
+  if (window.spSortBridge) return;
+  window.spSortBridge = true;
+  const attach = (el) => {
+    if (el.spSortable || !window.Sortable) return;
+    el.spSortable = Sortable.create(el, {
+      draggable: '[data-hash]',
+      filter: 'button, .q-btn',
+      preventOnFilter: false,
+      animation: 150,
+      delay: 150,
+      delayOnTouchOnly: true,
+      ghostClass: 'sp-sort-ghost',
+      chosenClass: 'sp-sort-chosen',
+      onEnd: (evt) => {
+        const {from, item, oldIndex, newIndex} = evt;
+        if (oldIndex == null || newIndex == null || oldIndex === newIndex) return;
+        const order = Array.from(from.children)
+          .filter((c) => c.dataset && c.dataset.hash)
+          .map((c) => c.dataset.hash);
+        from.insertBefore(item, from.children[oldIndex + (oldIndex > newIndex ? 1 : 0)] || null);
+        from.dispatchEvent(new CustomEvent('sp-reorder', {detail: order}));
+      },
+    });
+  };
+  const scan = () => document.querySelectorAll('[data-sp-sortable]').forEach(attach);
+  new MutationObserver(scan).observe(document.body, {childList: true, subtree: true});
+  scan();
+})();
+</script>
+"""
+
+_SORT_CSS = """
+.sp-sort-ghost { opacity: 0.35; }
+.sp-sort-chosen img { outline: 2px solid var(--sp-primary); outline-offset: 2px; }
+[data-sp-sortable] [data-hash] { cursor: grab; }
+"""
 
 _STATUS_LABEL = {
     "draft": ("Draft", "sp-muted"),
@@ -227,6 +282,11 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
 
     State = A.State
 
+    js = resources.files("sortandpost.resources").joinpath("js", _SORTABLE_FILE)
+    with resources.as_file(js) as path:
+        nicegui_app.add_static_file(local_file=path, url_path=_SORTABLE_URL)
+        sortable_src = f"{_SORTABLE_URL}?v={hashlib.sha256(path.read_bytes()).hexdigest()[:12]}"
+
     @ui.page("/posts")
     async def posts_index() -> None:
         A._header("/posts")
@@ -278,6 +338,9 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
     @ui.page("/posts/{post_id}")
     async def post_detail(post_id: str) -> None:
         A._header("/posts")
+        ui.add_head_html(f'<script src="{sortable_src}"></script>')
+        ui.add_body_html(_SORT_JS)
+        ui.add_css(_SORT_CSS)
         client = ui.context.client
         tz = await _browser_tz()
         post = get_post(settings.paths, post_id)
@@ -511,6 +574,19 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 _save()
                 _photos.refresh()
                 _alt.refresh()
+                _ig_preview.refresh()
+
+        def _reorder(e: Any) -> None:
+            """A drag ended in the browser (``_SORT_JS``): save the new order."""
+            p = cur()
+            detail = e.args.get("detail") if isinstance(e.args, dict) else None
+            new = reorder(p.photos, detail) if p.editable else None
+            if new is not None and new != p.photos:
+                p.photos[:] = new
+                _save()
+                _alt.refresh()
+                _ig_preview.refresh()
+            _photos.refresh()  # also snaps a refused drag back
 
         def _remove(h: str) -> None:
             cur().photos.remove(h)
@@ -539,6 +615,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             names: dict[str, str | None] = state["names"]
             with ui.row().classes("items-center gap-2 px-4 pt-4"):
                 ui.label(f"Photos · {len(p.photos)}").classes("font-bold")
+                if p.editable and len(p.photos) > 1:
+                    ui.label("drag to reorder").classes("text-xs sp-faint")
                 if p.editable:
                     with (
                         ui.button("Add from collection", icon="library_add").props(
@@ -560,10 +638,14 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     "and use “Compose post” in the toolbar."
                 ).classes("px-4 text-sm sp-muted")
                 return
-            with ui.row().classes("gap-2 px-4 flex-wrap"):
+            tiles = ui.row().classes("gap-2 px-4 flex-wrap")
+            if p.editable and len(p.photos) > 1:
+                tiles.props("data-sp-sortable")
+                tiles.on("sp-reorder", _reorder, args=["detail"])
+            with tiles:
                 for i, h in enumerate(p.photos):
                     missing = h in names and names[h] is None
-                    with ui.element("div").classes("group relative w-32"):
+                    with ui.element("div").classes("group relative w-32").props(f"data-hash={h}"):
                         ui.image(A._thumb_src(h, thumb_small)).classes(
                             "w-32 h-32 rounded object-cover sp-placeholder"
                             + (" opacity-40" if missing else "")

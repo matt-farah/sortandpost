@@ -699,6 +699,11 @@ The **only** module allowed to write under a library root. Wraps a persistent
 - `/posts` + `/posts/{id}` — the post composer (see "Posting (robopost.app, Postiz, …)" below).
   Entry points: "Compose post" on a collection or a photo page, ✈ in the library's bulk toolbar. The grid
   shows a ✈ badge on posted photos and `/` has a `posted=1|0` filter.
+  Photos in an editable post are reordered by **dragging** (SortableJS, vendored in
+  `resources/js/` and served from `/_sp/js/`, no CDN) or the ← → buttons. The bridge
+  (`posts_ui._SORT_JS`) undoes the drag's DOM move (Vue owns those nodes) and sends the
+  order as an `sp-reorder` event; Python accepts only a rearrangement of the same photos
+  (`posts.reorder`), saves and re-renders.
 - Persistent status bar: index progress (`X/Y`, current stage), CLIP queue depth, write-lock
   state (writable / read-only + holder), last publish time; "N missing (folder offline)" only
   while a library folder is offline.

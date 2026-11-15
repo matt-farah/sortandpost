@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-15 (V3.1: time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-15 (V3.1: drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,23 @@ _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (bet
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## ☑️ 2026-11-15 — V3.1 #3: drag to reorder photos in a post (branch `feat/post-drag-reorder`)
+
+- SortableJS 1.15.6 (MIT) vendored in `src/sortandpost/resources/js/` (from the npm tarball,
+  `integrity` checked against the registry; sha256 pinned in `tests/test_post_reorder.py`),
+  served at `/_sp/js/Sortable.min.js?v=<hash>` by `register_post_pages`, loaded only on
+  `/posts/{id}`. Ships via `collect_data_files` / Docker `COPY src/` with no spec change.
+- Bridge `posts_ui._SORT_JS`: a MutationObserver attaches Sortable to `[data-sp-sortable]`
+  (set only on an editable post with > 1 photo); on drop it reads the order, **puts the tile
+  back** (Vue owns those nodes) and dispatches `sp-reorder`. `_reorder` unwraps
+  `e.args["detail"]`, `posts.reorder` accepts only a rearrangement of the same photos, then
+  save + refresh photos / alt text / Instagram preview. ← → kept (now also refresh the IG preview).
+- Bug found by a headless smoke against the real app: NiceGUI delivers `{"detail": [...]}`, so
+  every drop snapped back until the handler unwrapped it.
+- `CONTRIBUTING.md` "Vendored JS": `uv audit` / Dependabot don't cover it; how to update.
+  Browser-tested by the user on :8082.
+- Open, unrelated: `uv audit` now flags Pillow (fix 13.0.0) and setuptools (fix 84.1.0).
 
 ## ☑️ 2026-11-15 — V3.1 #2: delete returns to the photo you came from (branch `version-3.1`)
 
