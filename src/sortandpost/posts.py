@@ -264,13 +264,19 @@ def slot_minute(post_id: str, day: date) -> int:
 
 
 def schedule_slots(
-    post_id: str, tz: tzinfo, *, now: datetime | None = None, days: int = SLOT_DAYS
+    post_id: str,
+    tz: tzinfo,
+    *,
+    now: datetime | None = None,
+    days: int = SLOT_DAYS,
+    start_days: int = 0,
 ) -> list[tuple[date, list[datetime]]]:
-    """Today and the next ``days - 1`` days, each with one aware local time per
-    :data:`SLOT_HOURS` entry. Past slots are included (the UI greys them out)."""
+    """*days* days starting *start_days* after today (0 = today), each with one
+    aware local time per :data:`SLOT_HOURS` entry. Past slots are included (the
+    UI greys them out). The grid pages through weeks with ``start_days = 7 * n``."""
     today = (now or utcnow()).astimezone(tz).date()
     out: list[tuple[date, list[datetime]]] = []
-    for i in range(days):
+    for i in range(max(0, start_days), max(0, start_days) + days):
         day = today + timedelta(days=i)
         minute = slot_minute(post_id, day)
         out.append(

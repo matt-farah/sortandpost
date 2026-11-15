@@ -52,6 +52,7 @@ from sortandpost.posts import (
     ALT_TEXT_MAX,
     IG_MAX_BORDER,
     MIN_LEAD,
+    SLOT_DAYS,
     SLOT_HOURS,
     Post,
     SendGroup,
@@ -1053,9 +1054,30 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
         def _custom_on() -> bool:
             p = cur()
             when = p.schedule_dt()
-            slots = schedule_slots(p.id, tz)
-            picked = when is not None and any(when == t for _d, ts in slots for t in ts)
+            picked = False
+            if when is not None:
+                # The slots of the week the chosen time falls in (it may be paged away from).
+                ahead = (when.astimezone(tz).date() - utcnow().astimezone(tz).date()).days
+                slots = schedule_slots(p.id, tz, start_days=ahead, days=1)
+                picked = any(when == t for _d, ts in slots for t in ts)
             return bool(state.get("custom_time", False) or (when is not None and not picked))
+
+        def _week() -> int:
+            # Which week of quick-picks shows: the one holding the chosen time
+            # when the page opens, else this week; the arrows move it.
+            if "week" not in state:
+                when = cur().schedule_dt()
+                ahead = (
+                    (when.astimezone(tz).date() - utcnow().astimezone(tz).date()).days
+                    if when
+                    else 0
+                )
+                state["week"] = max(0, ahead) // SLOT_DAYS
+            return int(state["week"])
+
+        def _page(step: int) -> None:
+            state["week"] = max(0, _week() + step)
+            _slot_grid.refresh()
 
         @ui.refreshable
         def _slot_grid() -> None:
@@ -1063,8 +1085,21 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             # field the user types in (that is `_when`'s custom inputs).
             p = cur()
             when = p.schedule_dt()
-            slots = schedule_slots(p.id, tz)
+            week = _week()
+            slots = schedule_slots(p.id, tz, start_days=week * SLOT_DAYS)
             earliest = utcnow() + MIN_LEAD
+            with ui.row().classes("items-center gap-1"):
+                prev = ui.button(icon="chevron_left", on_click=lambda: _page(-1)).props(
+                    "flat dense round"
+                )
+                prev.tooltip("Earlier week").set_enabled(week > 0)
+                first, last = slots[0][0], slots[-1][0]
+                ui.label(f"{first.day} {first:%b} to {last.day} {last:%b}").classes(
+                    "text-xs sp-muted"
+                )
+                ui.button(icon="chevron_right", on_click=lambda: _page(1)).props(
+                    "flat dense round"
+                ).tooltip("Later week")
             with ui.element("div").classes(
                 "grid grid-cols-[auto_repeat(4,minmax(0,1fr))] gap-1 items-center w-full"
             ):

@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-15 (V3.1: dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-15 (V3.1: week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,16 @@ _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (bet
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## ☑️ 2026-11-15 — V3.1 #5: week arrows in the post scheduling grid
+
+- `posts.schedule_slots(..., start_days=)` starts the 7-day grid any number of days out (never
+  before today); minutes stay stable per post + day whichever way you page.
+- `posts_ui._slot_grid`: ‹ › arrows + the date range above the grid; the week lives in
+  `state["week"]` (opens on the week holding the chosen time). Paging refreshes only the grid, so
+  the custom Date/Time inputs aren't rebuilt (#1 fix intact). `_custom_on` checks the slots of the
+  chosen time's own week, so a pick in a later week still reads as a quick-pick.
+- Gate green; user hands-on tested and signed off.
 
 ## ☑️ 2026-11-15 — V3.1 #4: dependency security bump + CI finding (branch `fix/dep-audit`)
 
