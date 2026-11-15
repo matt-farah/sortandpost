@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-15 (V3.1: drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-15 (V3.1: dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,20 @@ _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (bet
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## ☑️ 2026-11-15 — V3.1 #4: dependency security bump + CI finding (branch `fix/dep-audit`)
+
+- **CI cost:** nothing to fix. The repo is public, so Actions on standard runners is free; the
+  runs were red only because `uv audit` failed (the three test jobs passed). No `tools/ci.sh`
+  was added; it would only buy faster feedback.
+- **Fix:** `uv.lock` bumps for the packages `uv audit` flagged: Pillow 12.3.0 → 13.0.0,
+  setuptools 84.0.0 → 84.2.1, certifi → 2026.10.23, filelock → 4.2.10, opentelemetry-api →
+  1.45.2. `uv audit` is clean. `pyproject.toml` is unchanged (`Pillow>=10.3`; the lock ships).
+- **Don't do a blanket `uv lock --upgrade`:** it moved ~60 packages and broke
+  `tests/test_library_roots_editor.py` (NiceGUI "slot ... has been deleted"); the cause wasn't
+  tracked down. Upgrade only the packages an advisory names, or do a full refresh as its own PR.
+- Gate: ruff, format, mypy, full pytest, alembic autogenerate empty. Hands-on browser check on
+  Pillow 13 (thumbnails, previews, rating, settings) signed off by the user.
 
 ## ☑️ 2026-11-15 — V3.1 #3: drag to reorder photos in a post (branch `feat/post-drag-reorder`)
 
