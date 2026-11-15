@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-15 (V3.1: week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-15 (V3.1: filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,15 @@ _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (bet
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## ☑️ 2026-11-15 — V3.1 #6: filter by collection in the library
+
+- `LibraryQuery.coll` (collection id): URL param `coll=`, chip (named via `chips(coll_names)`),
+  summary, and a `resolve_view` filter (a stack matches when any member is in the collection).
+- `/` toolbar: a bookmark icon button + popover select listing collections with photo counts.
+  `_load_library` drops an unknown id (deleted collection in an old URL / saved search) and
+  returns the cleaned `lq`, so the page never crashes on it. #7 reuses this `coll=` param.
+- Gate green (+ `test_coll_param_round_trips_and_chips`); user hands-on tested and signed off.
 
 ## ☑️ 2026-11-15 — V3.1 #5: week arrows in the post scheduling grid
 

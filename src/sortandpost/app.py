@@ -1375,6 +1375,7 @@ def build_ui(settings: Settings) -> None:
         data = await nicegui_run.io_bound(_load_library, settings, engine, lq)
         if data is None:  # io_bound cancelled / app shutting down
             return
+        lq = data.lq
         view = data.view
         stacks = view.stacks
         flag_n, cloud_n = data.flag_n, data.cloud_n
@@ -1439,7 +1440,7 @@ def build_ui(settings: Settings) -> None:
                     ui.label("missing on this computer").classes("text-xs sp-faint")
                 elif lq.has_filters():
                     ui.label(f"matching · {view.total} in library").classes("text-xs sp-faint")
-                _filter_chips(lq)
+                _filter_chips(lq, {i: n for i, n, _ in data.colls})
             flag_box = ui.row().classes("items-center gap-2 no-wrap")
 
         def _refresh_flag_link(n: int) -> None:
@@ -3686,9 +3687,14 @@ class _LibraryData:
     tags: dict[str, list[str]]
     flag_n: int
     cloud_n: int
+    lq: LibraryQuery  # the query as run (an unknown collection id dropped)
+    colls: list[tuple[str, str, int]]  # (id, name, photo count)
 
 
 def _load_library(settings: Settings, engine: Engine, lq: LibraryQuery) -> _LibraryData:
+    colls = [(c.id, c.name, len(c.photos)) for c in load_collections(settings.paths)]
+    if lq.coll and lq.coll not in {c[0] for c in colls}:
+        lq = replace(lq, coll="")  # a deleted collection in an old URL / saved search
     view = _resolve(settings, engine, lq)
     try:
         vocab = load_vocab(settings.paths.tags_file)
@@ -3703,6 +3709,8 @@ def _load_library(settings: Settings, engine: Engine, lq: LibraryQuery) -> _Libr
             tags=tag_choices(session, vocab),
             flag_n=edit_flag_count(session),
             cloud_n=online_only_count(session),
+            lq=lq,
+            colls=colls,
         )
 
 
@@ -5774,9 +5782,9 @@ def _group_by_control(lq: LibraryQuery, on_collapse_all: Callable[[bool], None])
                     _tip_above(tip)
 
 
-def _filter_chips(lq: LibraryQuery) -> None:
+def _filter_chips(lq: LibraryQuery, coll_names: dict[str, str]) -> None:
     """The active filters as removable chips; removing one drops just it."""
-    for chip in lq.chips():
+    for chip in lq.chips(coll_names):
         ui.chip(
             chip.label,
             icon=chip.icon,
@@ -5852,6 +5860,19 @@ def _filter_bar(
                         value=on,
                         on_change=lambda _, p=picked: _go(replace(lq, cameras=p)),
                     ).props("dense")
+
+            with _filter_button("collections_bookmark", "Collection", int(bool(lq.coll))):
+                if not data.colls:
+                    ui.label("No collections yet.").classes("text-xs sp-muted")
+                else:
+                    ui.select(
+                        {i: f"{n} ({c})" for i, n, c in data.colls},
+                        value=lq.coll or None,
+                        label="Collection",
+                        clearable=True,
+                    ).props("dense outlined options-dense").classes("w-72").on_value_change(
+                        lambda e: _go(replace(lq, coll=e.value or ""))
+                    )
 
             # Dates: a range calendar (click the first day, then the last; click one
             # day twice for a single day). Picks apply at once.

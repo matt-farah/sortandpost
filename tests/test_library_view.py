@@ -585,3 +585,12 @@ def test_text_match_file_names_are_literal_and_below_the_root(
     settings.library_roots = [LibraryRoot(container=str(pics), host=str(pics))]
     assert _ids(session, settings, "q=pictures") == []  # only in the library folder's path
     assert _ids(session, settings, "q=home") == ["c"]
+
+
+def test_coll_param_round_trips_and_chips():
+    lq = LibraryQuery.from_query_string("coll=abc123&stars=3")
+    assert lq.coll == "abc123"
+    assert LibraryQuery.from_query_string(lq.query_string()) == lq
+    assert lq.has_filters()
+    chip = next(c for c in lq.chips({"abc123": "Trip"}) if c.label == "Trip")
+    assert chip.without.coll == ""
