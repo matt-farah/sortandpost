@@ -968,49 +968,72 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     )
 
         # -- when ------------------------------------------------------------ #
+        def _custom_on() -> bool:
+            p = cur()
+            when = p.schedule_dt()
+            slots = schedule_slots(p.id, tz)
+            picked = when is not None and any(when == t for _d, ts in slots for t in ts)
+            return bool(state.get("custom_time", False) or (when is not None and not picked))
+
+        @ui.refreshable
+        def _slot_grid() -> None:
+            # The quick-pick grid + its buttons: cheap to rebuild, and holds no
+            # field the user types in (that is `_when`'s custom inputs).
+            p = cur()
+            when = p.schedule_dt()
+            slots = schedule_slots(p.id, tz)
+            earliest = utcnow() + MIN_LEAD
+            with ui.element("div").classes(
+                "grid grid-cols-[auto_repeat(4,minmax(0,1fr))] gap-1 items-center w-full"
+            ):
+                ui.element("div")
+                for label, _hour in SLOT_HOURS:
+                    ui.label(label).classes("text-xs sp-faint text-center")
+                for day, times in slots:
+                    ui.label(f"{day:%a} {day.day} {day:%b}").classes(
+                        "text-sm pr-2 whitespace-nowrap"
+                    )
+                    for t in times:
+                        on = when is not None and when == t
+                        b = ui.button(f"{t:%H:%M}", on_click=lambda t=t: _pick(t)).props(
+                            "dense no-caps unelevated" if on else "dense no-caps outline"
+                        )
+                        if on:
+                            b.props("color=primary")
+                        b.set_enabled(p.editable and t > earliest)
+            with ui.row().classes("items-center gap-2 pt-1"):
+                ui.button(
+                    "Pick a date & time",
+                    icon="edit_calendar",
+                    on_click=lambda: _show_custom(not _custom_on()),
+                ).props("flat dense no-caps").set_enabled(p.editable)
+                clear = (
+                    ui.button(icon="event_busy").props("flat dense round").tooltip("Clear the time")
+                )
+                clear.set_enabled(p.editable and when is not None)
+                clear.on_click(_clear)
+
+        @ui.refreshable
+        def _when_summary() -> None:
+            p = cur()
+            when = p.schedule_dt()
+            ui.label(
+                f"{_fmt_local(p.schedule_at, tz)} ({getattr(tz, 'key', tz)})"
+                + (f"  ·  {when:%Y-%m-%d %H:%M} UTC" if when else "")
+                if when
+                else "No time set — required to schedule; optional for a draft."
+            ).classes("text-xs sp-muted")
+
+        # -- when ------------------------------------------------------------ #
         @ui.refreshable
         def _when() -> None:
             p = cur()
             when = p.schedule_dt()
             local = when.astimezone(tz) if when else None
-            slots = schedule_slots(p.id, tz)
-            picked = when is not None and any(when == t for _d, ts in slots for t in ts)
-            custom = state.get("custom_time", False) or (when is not None and not picked)
-            earliest = utcnow() + MIN_LEAD
             with ui.column().classes("w-full max-w-2xl gap-1 px-4 pt-4"):
                 ui.label("When").classes("font-bold")
-                with ui.element("div").classes(
-                    "grid grid-cols-[auto_repeat(4,minmax(0,1fr))] gap-1 items-center w-full"
-                ):
-                    ui.element("div")
-                    for label, _hour in SLOT_HOURS:
-                        ui.label(label).classes("text-xs sp-faint text-center")
-                    for day, times in slots:
-                        ui.label(f"{day:%a} {day.day} {day:%b}").classes(
-                            "text-sm pr-2 whitespace-nowrap"
-                        )
-                        for t in times:
-                            on = when is not None and when == t
-                            b = ui.button(f"{t:%H:%M}", on_click=lambda t=t: _pick(t)).props(
-                                "dense no-caps unelevated" if on else "dense no-caps outline"
-                            )
-                            if on:
-                                b.props("color=primary")
-                            b.set_enabled(p.editable and t > earliest)
-                with ui.row().classes("items-center gap-2 pt-1"):
-                    ui.button(
-                        "Pick a date & time",
-                        icon="edit_calendar",
-                        on_click=lambda: _show_custom(not custom),
-                    ).props("flat dense no-caps").set_enabled(p.editable)
-                    clear = (
-                        ui.button(icon="event_busy")
-                        .props("flat dense round")
-                        .tooltip("Clear the time")
-                    )
-                    clear.set_enabled(p.editable and when is not None)
-                    clear.on_click(_clear)
-                if custom:
+                _slot_grid()
+                if _custom_on():
                     with ui.row().classes("items-center gap-2"):
                         d = ui.input(
                             "Date", value=local.strftime("%Y-%m-%d") if local else ""
@@ -1029,21 +1052,23 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                         except ValueError:
                             ui.notify("Can't read that date/time.", type="warning")
                             return
-                        _set_when(naive.replace(tzinfo=tz))
+                        # Keep the inputs on screen (and the field being typed in
+                        # focused): only the grid + summary are redrawn.
+                        state["custom_time"] = True
+                        _set_when(naive.replace(tzinfo=tz), rebuild_inputs=False)
 
                     d.on("change", _apply)
                     t_in.on("change", _apply)
-                ui.label(
-                    f"{_fmt_local(p.schedule_at, tz)} ({getattr(tz, 'key', tz)})"
-                    + (f"  ·  {when:%Y-%m-%d %H:%M} UTC" if when else "")
-                    if when
-                    else "No time set — required to schedule; optional for a draft."
-                ).classes("text-xs sp-muted")
+                _when_summary()
 
-        def _set_when(local_dt: datetime) -> None:
+        def _set_when(local_dt: datetime, rebuild_inputs: bool = True) -> None:
             cur().schedule_at = local_dt.astimezone(ZoneInfo("UTC")).isoformat()
             _save()
-            _when.refresh()
+            if rebuild_inputs:
+                _when.refresh()
+            else:
+                _slot_grid.refresh()
+                _when_summary.refresh()
 
         def _pick(t: datetime) -> None:
             state["custom_time"] = False

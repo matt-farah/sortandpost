@@ -11,6 +11,14 @@ _Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not 
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
 
+## ☑️ 2026-11-15 — V3.1 #1: custom time picker no longer snaps back (branch `fix/time-picker-stuck`)
+
+- `posts_ui` "When": every Date / Time `change` rebuilt the whole section, including the
+  `type=time` input being edited, so the hour reset. Split into `_slot_grid` (grid + buttons)
+  and `_when_summary` refreshables; a custom edit refreshes only those two
+  (`_set_when(rebuild_inputs=False)`) and sets `custom_time` so the inputs stay open. Pick /
+  clear still rebuild everything. Browser-tested by the user on :8082.
+
 ## ☑️ 2026-11-07 — V3.1: Select all + bulk actions in collections (branch `feat/collection-bulk-select`)
 
 - The library's bulk toolbar was closures inside the `/` page; it is now `app._BulkToolbar`
