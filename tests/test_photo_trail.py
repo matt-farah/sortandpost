@@ -56,3 +56,22 @@ def test_delete_skips_photos_that_went_with_it_or_are_gone(tmp_path: Path) -> No
         s.exec(delete(Photo).where(Photo.pixel_hash == A))  # type: ignore[call-overload]
         s.commit()
     assert _delete_return_target(engine, [A, B], {B, C}) is None
+
+
+def test_collection_order_follows_the_collection_and_skips_missing(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from sortandpost.app import _collection_order
+    from sortandpost.collections import add_to_collection, create_collection, reorder_collection
+    from sortandpost.paths import Paths
+
+    engine = _engine(tmp_path)
+    paths = Paths(app_data=tmp_path / "data")
+    paths.sync.mkdir(parents=True, exist_ok=True)
+    paths.local.mkdir(parents=True, exist_ok=True)
+    settings = SimpleNamespace(paths=paths)
+    coll = create_collection(paths, "trip")
+    add_to_collection(paths, coll.id, [A, B, C])
+    reorder_collection(paths, coll.id, [C, A, B])
+    assert _collection_order(settings, engine, coll.id) == [C, A, B]  # type: ignore[arg-type]
+    assert _collection_order(settings, engine, "nope") is None  # type: ignore[arg-type]

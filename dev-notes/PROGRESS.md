@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-15 (V3.1: filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-15 (V3.1: a photo opened from a collection browses it, filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,17 @@ _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (bet
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## ☑️ 2026-11-15 — V3.1 #7: a photo opened from a collection browses that collection
+
+- Collection tiles link to `/photo/<hash>?coll=<id>&corder=1`. `photo_detail` then takes prev/next
+  from `_collection_order` (the collection's own order minus photos missing here), read fresh each
+  load and never through the library view cache. `corder=1` is carried by the arrows, stack
+  filmstrip and "Make top" via `link_query`.
+- Delete with no earlier photo in the trail returns to `/collections/<id>`; a deleted collection id
+  falls back to the library view.
+- Gate green (+ `test_collection_order_follows_the_collection_and_skips_missing`); user hands-on
+  tested and signed off.
 
 ## ☑️ 2026-11-15 — V3.1 #6: filter by collection in the library
 

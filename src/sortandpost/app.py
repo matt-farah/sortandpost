@@ -1957,6 +1957,11 @@ def build_ui(settings: Settings) -> None:
         # the link); empty = the whole library, newest first
         lq = LibraryQuery.from_pairs(request.query_params.multi_items())
         link_query = lq.query_string()
+        # opened from a collection page: prev / next walk that collection in its own
+        # order (``corder=1`` beside ``coll=``), not the library's taken_at view
+        coll_id = lq.coll if request.query_params.get("corder") == "1" else ""
+        if coll_id:
+            link_query = f"{link_query}&corder=1" if link_query else "corder=1"
         trail = _parse_trail(request.query_params.get("from"))
         with _session() as session:
             photo = get_photo(session, pixel_hash)
@@ -1982,12 +1987,23 @@ def build_ui(settings: Settings) -> None:
         # the top can change after the order was taken (a newer file wins). A
         # cached order that has none of them is stale: resolve it again once.
         candidates = [stacks.representative(pixel_hash) if stacks else pixel_hash, *members]
-        ordered = _cached_view(link_query) or []
-        anchor = locate(ordered, candidates)
-        if anchor is None:
-            view = await nicegui_run.io_bound(_resolve, settings, engine, lq)
-            ordered = view.ids if view is not None else []
+        coll_ids = (
+            await nicegui_run.io_bound(_collection_order, settings, engine, coll_id)
+            if coll_id
+            else None
+        )
+        if coll_ids is not None:
+            # read fresh every time (cheap): a reorder / removal while the page is open
+            # is seen, and the library's cached views are never shared with it
+            ordered = coll_ids
             anchor = locate(ordered, candidates)
+        else:
+            ordered = _cached_view(link_query) or []
+            anchor = locate(ordered, candidates)
+            if anchor is None:
+                view = await nicegui_run.io_bound(_resolve, settings, engine, lq)
+                ordered = view.ids if view is not None else []
+                anchor = locate(ordered, candidates)
         prev_hash, next_hash = neighbors(ordered, anchor) if anchor else (None, None)
 
         def _go(target: str) -> None:
@@ -2248,7 +2264,9 @@ def build_ui(settings: Settings) -> None:
                             _delete_return_target, engine, trail, set(result.purged) | {pixel_hash}
                         )
                         if back is None:
-                            ui.navigate.to(lq.url())
+                            ui.navigate.to(
+                                f"/collections/{coll_id}" if coll_ids is not None else lq.url()
+                            )
                         else:
                             hash_, rest = back
                             ui.navigate.to(_photo_url(hash_, link_query, rest))
@@ -2956,7 +2974,9 @@ def build_ui(settings: Settings) -> None:
 
         def _member_tile(photo: Photo, i: int, ids: list[str]) -> None:
             with ui.element("div").classes("group relative block"):
-                with ui.link(target=f"/photo/{photo.pixel_hash}") as link:
+                with ui.link(
+                    target=_photo_url(photo.pixel_hash, f"coll={coll_id}&corder=1")
+                ) as link:
                     ui.image(_thumb_src(photo.pixel_hash, thumb_small)).classes(
                         "w-full aspect-square object-cover sp-placeholder"
                     ).props("loading=lazy")
@@ -4247,6 +4267,18 @@ def _apply_bulk_delete(settings: Settings, engine: Engine, hashes: list[str]) ->
     if batch_id is not None:
         State.last_delete = (batch_id, len(result.purged), time.monotonic())
     return result
+
+
+def _collection_order(settings: Settings, engine: Engine, coll_id: str) -> list[str] | None:
+    """The photos of collection *coll_id* in its own order, minus those missing
+    here: what prev / next step through on a photo opened from it. ``None`` = no
+    such collection (deleted), so the caller falls back to the library view."""
+    coll = get_collection(settings.paths, coll_id)
+    if coll is None:
+        return None
+    with Session(engine) as session:
+        lost = missing.missing_here_set(session, coll.photos)
+    return [h for h in coll.photos if h not in lost]
 
 
 def _delete_return_target(
