@@ -1,7 +1,7 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-07 (V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
-_Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
+_Last updated: 2026-11-15 (V3.1: time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
 > that `releases/latest/download/latest.json` loads logged-out and verifies (ToDo.md). Fixes
@@ -11,7 +11,22 @@ _Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not 
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
 
-## ☑️ 2026-11-15 — V3.1 #1: custom time picker no longer snaps back (branch `fix/time-picker-stuck`)
+## ☑️ 2026-11-15 — V3.1 #2: delete returns to the photo you came from (branch `version-3.1`)
+
+- The ‹ › / ← → arrows and the stack filmstrip add a `from=<hash>,<hash>…` trail (oldest
+  first, capped at 10, `app._parse_trail`) to the photo URL; `_photo_url(h, link_query, trail)`
+  builds it. The trail is separate from `link_query` (the canonical view string / cache key).
+- After a photo-page delete, `_delete_return_target` opens the latest trail photo that still
+  exists, wasn't deleted with it (`whole_stack`) and isn't missing here, with the shorter
+  trail; none left → the library with the same filters. Make-top keeps the trail.
+- Bug found in the browser test: prev/next still stepped onto the deleted photo (the cached view
+  order kept it). `_apply_bulk_delete` now calls `_forget_in_views(result.purged)`. An Undo
+  doesn't re-add the photo to an already-cached order until it expires (30 min) or the library
+  reloads.
+- Collection tiles link to `/photo/<hash>` with no view or trail, so a delete there still goes
+  to the library (not changed). Tests: `tests/test_photo_trail.py`. Browser-tested by the user.
+
+## ☑️ 2026-11-15 — V3.1 #1: custom time picker no longer snaps back (branch `version-3.1`)
 
 - `posts_ui` "When": every Date / Time `change` rebuilt the whole section, including the
   `type=time` input being edited, so the hour reset. Split into `_slot_grid` (grid + buttons)

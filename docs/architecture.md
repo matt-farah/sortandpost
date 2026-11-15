@@ -673,7 +673,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   (rounded-square chips) and Posts (**Compose post** with just this photo — the one shown, in a
   stack — then a chip per post it is in), "more like this". Links carry the grid's query string;
   prev/next (← / → or the round ‹ › buttons at the screen's edges) walk the same resolved view
-  (`resolve_view`, cached per query for 30 min). Below 640px wide the info column goes under the image.
+  (`resolve_view`, cached per query for 30 min; a delete drops its photos from every cached order).
+  The arrows and stack filmstrip also add a `from=` trail (≤ 10 photos stepped through); **Delete photo**
+  then opens the latest trail photo that still exists, else the library. Below 640px wide the info column goes under the image.
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/achievements` — achievement cards + score (see "Achievements"); reached from the header's
   name + 🏆 chip, hidden when the mode is Off.

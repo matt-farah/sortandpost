@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -1100,10 +1100,26 @@ def _thumb_src(pixel_hash: str, size: int) -> str:
     return f"{_THUMB_URL}/{pixel_hash[:2]}/{pixel_hash}_{size}.webp"
 
 
-def _photo_url(pixel_hash: str, link_query: str = "") -> str:
+_TRAIL_MAX = 10
+
+
+def _parse_trail(raw: str | None) -> list[str]:
+    """The ``from=`` param: photos the viewer stepped through (oldest first),
+    comma-separated. Anything that isn't a plausible pixel hash is dropped."""
+    parts = [p for p in (raw or "").split(",") if 0 < len(p) <= 64 and p.isalnum()]
+    return parts[-_TRAIL_MAX:]
+
+
+def _photo_url(pixel_hash: str, link_query: str = "", trail: Sequence[str] = ()) -> str:
     """A photo page link carrying the library view it was opened from (the
-    grid's query string), so its prev/next follow that filtered order."""
-    return f"/photo/{pixel_hash}?{link_query}" if link_query else f"/photo/{pixel_hash}"
+    grid's query string), so its prev/next follow that filtered order, and the
+    *trail* of photos stepped through to get here (``from=``), so a delete can
+    go back to the one before rather than to the library."""
+    pairs = [link_query] if link_query else []
+    if trail:
+        pairs.append("from=" + ",".join(list(trail)[-_TRAIL_MAX:]))
+    qs = "&".join(pairs)
+    return f"/photo/{pixel_hash}?{qs}" if qs else f"/photo/{pixel_hash}"
 
 
 def _add_tailwind_css() -> None:
@@ -1940,6 +1956,7 @@ def build_ui(settings: Settings) -> None:
         # the link); empty = the whole library, newest first
         lq = LibraryQuery.from_pairs(request.query_params.multi_items())
         link_query = lq.query_string()
+        trail = _parse_trail(request.query_params.get("from"))
         with _session() as session:
             photo = get_photo(session, pixel_hash)
             paths = get_paths(session, pixel_hash) if photo else []
@@ -1977,7 +1994,8 @@ def build_ui(settings: Settings) -> None:
             # stack history -- Back, in-app or browser, returns to the library
             # grid you started from, not through every photo you skimmed. Same
             # rationale as the stack filmstrip.
-            ui.run_javascript(f"location.replace({json.dumps(_photo_url(target, link_query))})")
+            url = _photo_url(target, link_query, [*trail, pixel_hash])
+            ui.run_javascript(f"location.replace({json.dumps(url)})")
 
         ui.button("← Back", on_click=lambda: ui.navigate.back()).props("flat dense").classes(
             "mx-4 mt-2"
@@ -2195,7 +2213,7 @@ def build_ui(settings: Settings) -> None:
                         return
                     ui.notify("now the top of its stack")
                     # reload: the filmstrip regroups with this photo first
-                    url = _photo_url(pixel_hash, link_query)
+                    url = _photo_url(pixel_hash, link_query, trail)
                     ui.run_javascript(f"location.replace({json.dumps(url)})")
 
             can_make_top = State.write_mode == WriteMode.writable and members[0] != pixel_hash
@@ -2204,6 +2222,7 @@ def build_ui(settings: Settings) -> None:
                 members,
                 thumb_small,
                 link_query,
+                trail=trail,
                 on_make_top=_make_top if can_make_top else None,
             )
 
@@ -2224,7 +2243,14 @@ def build_ui(settings: Settings) -> None:
                         return
                     with client:
                         ui.notify(_delete_summary(result))
-                        ui.navigate.to(lq.url())
+                        back = await nicegui_run.io_bound(
+                            _delete_return_target, engine, trail, set(result.purged) | {pixel_hash}
+                        )
+                        if back is None:
+                            ui.navigate.to(lq.url())
+                        else:
+                            hash_, rest = back
+                            ui.navigate.to(_photo_url(hash_, link_query, rest))
 
                 async def _confirm_delete() -> None:
                     files = await nicegui_run.io_bound(
@@ -3630,6 +3656,16 @@ def _cached_view(key: str) -> list[str] | None:
         return hit[1]
 
 
+def _forget_in_views(hashes: Iterable[str]) -> None:
+    """Drop deleted photos from every cached view order, so prev / next on a
+    photo page never steps onto a photo that is gone."""
+    gone = set(hashes)
+    with _VIEW_CACHE_LOCK:
+        for key, (at, ids) in list(_VIEW_CACHE.items()):
+            if gone.intersection(ids):
+                _VIEW_CACHE[key] = (at, [h for h in ids if h not in gone])
+
+
 def _resolve(settings: Settings, engine: Engine, lq: LibraryQuery) -> LibraryView:
     """Runs off the event loop (``run.io_bound``): a text query embeds with
     CLIP. Caches the order for the photo page's prev/next."""
@@ -4198,10 +4234,29 @@ def _apply_bulk_delete(settings: Settings, engine: Engine, hashes: list[str]) ->
             now=utcnow(),
         )
         session.commit()
+    _forget_in_views(result.purged)
     batch_id = result.trash.batch_id if result.trash else None
     if batch_id is not None:
         State.last_delete = (batch_id, len(result.purged), time.monotonic())
     return result
+
+
+def _delete_return_target(
+    engine: Engine, trail: Sequence[str], deleted: set[str]
+) -> tuple[str, list[str]] | None:
+    """Where a photo-page delete goes: the latest photo in *trail* (the ones the
+    viewer stepped through) that still exists, isn't among *deleted* (a
+    ``whole_stack`` delete takes the stack with it) and isn't missing here.
+    Returns it with the trail left before it, or ``None`` = the library."""
+    with Session(engine) as session:
+        for i in range(len(trail) - 1, -1, -1):
+            h = trail[i]
+            if h in deleted or get_photo(session, h) is None:
+                continue
+            if missing.missing_reasons(session, [h]).get(h) is not None:
+                continue
+            return h, list(trail[:i])
+    return None
 
 
 def _delete_summary(result: DeleteResult) -> str:
@@ -6115,6 +6170,7 @@ def _stack_filmstrip(
     size: int,
     link_query: str = "",
     *,
+    trail: Sequence[str] = (),
     on_make_top: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """The other photos in this stack. ``members[0]`` is the representative
@@ -6157,7 +6213,9 @@ def _stack_filmstrip(
                     cell.on(
                         "click",
                         lambda m=member: ui.run_javascript(
-                            f"location.replace({json.dumps(_photo_url(m, link_query))})"
+                            "location.replace("
+                            + json.dumps(_photo_url(m, link_query, [*trail, current]))
+                            + ")"
                         ),
                     )
 
