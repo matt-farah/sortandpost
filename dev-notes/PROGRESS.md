@@ -1,15 +1,145 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-07 (V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
-_Working branch: `main`. V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
+_Last updated: 2026-11-15 (**3.0.2** = V3.1 #1–#8: PR to `main` + builds, Windows handoff below; V3.1: drag to reorder photos in a collection, a photo opened from a collection browses it, filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
-> **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
-> that `releases/latest/download/latest.json` loads logged-out and verifies (ToDo.md). Fixes
-> ship as 3.0.1, 3.0.2, … with the same release process. Still open: a real packaged
-> old → new update on each OS, Linux on a real desktop (V3Plan.md → P7 checklist), a real
-> Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
-> V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
-> "fix if it bites".
+> **▶️ Next:** 3.0.2 (V3.1 #1–#8): merge the `version-3.1` → `main` PR, build macOS + both
+> AppImages from merged `main` (`dist/release-3.0.2/`), Windows on the Windows machine (handoff
+> below). No tag / release / `latest.json` until the user says so. V3.1 stays open for more
+> items, stacked on `version-3.1`. Still open from V3: a real packaged old → new update on each
+> OS, Linux on a real desktop (V3Plan.md → P7 checklist), a real Synology / Docker Desktop on
+> Windows, the Apple Developer ID decision, brew / winget, P8 pywebview (stretch).
+
+## 🔄 2026-11-15 — 3.0.2: V3.1 #1–#8 PR + builds
+
+- `__version__` 3.0.1 → **3.0.2**: ships select-all in a collection (PR #97, merged to `main` after
+  the 3.0.1 tag) and V3.1 #1–#8 (time picker, delete returns to the photo you
+  came from, drag reorder in posts, dependency security bump, week arrows, filter by collection,
+  collection-ordered browsing, drag reorder in collections). The docs keep calling this "V3.1".
+- Builds come from merged `main`: `packaging/macos/build.sh` (replaces the prod
+  `dist/sortandpost.app` — quit it from the tray first) and `packaging/linux/build.sh --arch
+  aarch64|x86_64` in the Lima VM, staged in `dist/release-3.0.2/` + `SHA256SUMS.txt`.
+
+### Windows build handoff for 3.0.2 (for the agent on the Windows machine)
+
+1. `git fetch; git checkout main; git pull`. Check `src\sortandpost\__init__.py` says
+   `__version__ = "3.0.2"` and that HEAD is the merge commit of the 3.0.2 PR
+   ("3.0.2: V3.1 fixes and features").
+2. Prereqs: uv, PowerShell 7, Inno Setup 6 (`winget install JRSoftware.InnoSetup`). `build.ps1`
+   downloads + sha256-checks the pinned exiftool 13.59 zip itself.
+3. `uv sync --locked --extra dev --extra desktop`, then `$env:HF_HUB_OFFLINE=1; uv run pytest`.
+   Report any failure before building.
+4. `pwsh packaging\windows\build.ps1` → `dist\sortandpost-3.0.2-setup.exe` +
+   `dist\sortandpost-3.0.2-win-x64.zip`.
+5. Smoke test the installer **over the existing 3.0.1 install** (with 3.0.1 running: its
+   close-and-wait logic must stop the tray first, never replace files under a running app):
+   - the app relaunches and Settings → Overview shows 3.0.2;
+   - drag to reorder photos in a post and in a collection; the library's Collection filter;
+     open a photo from a collection and step ‹ › through that collection;
+   - schedule grid week arrows; delete a photo after stepping → returns to the previous photo;
+   - Quit from the tray exits cleanly (the #91 Quit-hang regression).
+6. Report both files' sha256 (`Get-FileHash -Algorithm SHA256`). **Do not create a tag or a
+   release and don't upload anything** — leave the files in `dist\`. If a 3.0.2 release is
+   made later, upload only those two files (`gh release upload v3.0.2 …`); the Mac then
+   re-signs `latest.json` with all 4 assets (Release process step 6 below).
+
+## ☑️ 2026-11-15 — V3.1 #8: drag to reorder photos in a collection
+
+- The collection grid uses the post composer's SortableJS bridge, now shared as
+  `posts_ui.use_sortable()` (mounts the vendored file once + adds the bridge / CSS). Tiles carry
+  `data-hash`; the grid is `data-sp-sortable` when it holds 2+ photos. `_reorder` checks the drop
+  with `posts.reorder` against the members shown *now* (a change in another tab refuses it), saves
+  via `reorder_collection`, and re-renders (badges renumber; a refused drop snaps back).
+- Bridge additions (posts get them too): `[data-sp-nodrag]` in the filter (the selection checkbox
+  never starts a drag) and a capture-phase click guard for 300 ms after a drop (a drop never
+  follows a tile's link or toggles selection). Link + image are `draggable=false`.
+- ← → / ✕ buttons kept. Gate green (+ Playwright link-tile tests in `test_post_reorder.py`, a
+  drag-path test in `test_collections.py`); user hands-on tested and signed off. **All V3.1
+  items #1–#8 done**; next is the `version-3.1` → `main` PR (ask first).
+
+## ☑️ 2026-11-15 — V3.1 #7: a photo opened from a collection browses that collection
+
+- Collection tiles link to `/photo/<hash>?coll=<id>&corder=1`. `photo_detail` then takes prev/next
+  from `_collection_order` (the collection's own order minus photos missing here), read fresh each
+  load and never through the library view cache. `corder=1` is carried by the arrows, stack
+  filmstrip and "Make top" via `link_query`.
+- Delete with no earlier photo in the trail returns to `/collections/<id>`; a deleted collection id
+  falls back to the library view.
+- Gate green (+ `test_collection_order_follows_the_collection_and_skips_missing`); user hands-on
+  tested and signed off.
+
+## ☑️ 2026-11-15 — V3.1 #6: filter by collection in the library
+
+- `LibraryQuery.coll` (collection id): URL param `coll=`, chip (named via `chips(coll_names)`),
+  summary, and a `resolve_view` filter (a stack matches when any member is in the collection).
+- `/` toolbar: a bookmark icon button + popover select listing collections with photo counts.
+  `_load_library` drops an unknown id (deleted collection in an old URL / saved search) and
+  returns the cleaned `lq`, so the page never crashes on it. #7 reuses this `coll=` param.
+- Gate green (+ `test_coll_param_round_trips_and_chips`); user hands-on tested and signed off.
+
+## ☑️ 2026-11-15 — V3.1 #5: week arrows in the post scheduling grid
+
+- `posts.schedule_slots(..., start_days=)` starts the 7-day grid any number of days out (never
+  before today); minutes stay stable per post + day whichever way you page.
+- `posts_ui._slot_grid`: ‹ › arrows + the date range above the grid; the week lives in
+  `state["week"]` (opens on the week holding the chosen time). Paging refreshes only the grid, so
+  the custom Date/Time inputs aren't rebuilt (#1 fix intact). `_custom_on` checks the slots of the
+  chosen time's own week, so a pick in a later week still reads as a quick-pick.
+- Gate green; user hands-on tested and signed off.
+
+## ☑️ 2026-11-15 — V3.1 #4: dependency security bump + CI finding (branch `fix/dep-audit`)
+
+- **CI cost:** nothing to fix. The repo is public, so Actions on standard runners is free; the
+  runs were red only because `uv audit` failed (the three test jobs passed). No `tools/ci.sh`
+  was added; it would only buy faster feedback.
+- **Fix:** `uv.lock` bumps for the packages `uv audit` flagged: Pillow 12.3.0 → 13.0.0,
+  setuptools 84.0.0 → 84.2.1, certifi → 2026.10.23, filelock → 4.2.10, opentelemetry-api →
+  1.45.2. `uv audit` is clean. `pyproject.toml` is unchanged (`Pillow>=10.3`; the lock ships).
+- **Don't do a blanket `uv lock --upgrade`:** it moved ~60 packages and broke
+  `tests/test_library_roots_editor.py` (NiceGUI "slot ... has been deleted"); the cause wasn't
+  tracked down. Upgrade only the packages an advisory names, or do a full refresh as its own PR.
+- Gate: ruff, format, mypy, full pytest, alembic autogenerate empty. Hands-on browser check on
+  Pillow 13 (thumbnails, previews, rating, settings) signed off by the user.
+
+## ☑️ 2026-11-15 — V3.1 #3: drag to reorder photos in a post (branch `feat/post-drag-reorder`)
+
+- SortableJS 1.15.6 (MIT) vendored in `src/sortandpost/resources/js/` (from the npm tarball,
+  `integrity` checked against the registry; sha256 pinned in `tests/test_post_reorder.py`),
+  served at `/_sp/js/Sortable.min.js?v=<hash>` by `register_post_pages`, loaded only on
+  `/posts/{id}`. Ships via `collect_data_files` / Docker `COPY src/` with no spec change.
+- Bridge `posts_ui._SORT_JS`: a MutationObserver attaches Sortable to `[data-sp-sortable]`
+  (set only on an editable post with > 1 photo); on drop it reads the order, **puts the tile
+  back** (Vue owns those nodes) and dispatches `sp-reorder`. `_reorder` unwraps
+  `e.args["detail"]`, `posts.reorder` accepts only a rearrangement of the same photos, then
+  save + refresh photos / alt text / Instagram preview. ← → kept (now also refresh the IG preview).
+- Bug found by a headless smoke against the real app: NiceGUI delivers `{"detail": [...]}`, so
+  every drop snapped back until the handler unwrapped it.
+- `CONTRIBUTING.md` "Vendored JS": `uv audit` / Dependabot don't cover it; how to update.
+  Browser-tested by the user on :8082.
+- Open, unrelated: `uv audit` now flags Pillow (fix 13.0.0) and setuptools (fix 84.1.0).
+
+## ☑️ 2026-11-15 — V3.1 #2: delete returns to the photo you came from (branch `version-3.1`)
+
+- The ‹ › / ← → arrows and the stack filmstrip add a `from=<hash>,<hash>…` trail (oldest
+  first, capped at 10, `app._parse_trail`) to the photo URL; `_photo_url(h, link_query, trail)`
+  builds it. The trail is separate from `link_query` (the canonical view string / cache key).
+- After a photo-page delete, `_delete_return_target` opens the latest trail photo that still
+  exists, wasn't deleted with it (`whole_stack`) and isn't missing here, with the shorter
+  trail; none left → the library with the same filters. Make-top keeps the trail.
+- Bug found in the browser test: prev/next still stepped onto the deleted photo (the cached view
+  order kept it). `_apply_bulk_delete` now calls `_forget_in_views(result.purged)`. An Undo
+  doesn't re-add the photo to an already-cached order until it expires (30 min) or the library
+  reloads.
+- Collection tiles link to `/photo/<hash>` with no view or trail, so a delete there still goes
+  to the library (not changed). Tests: `tests/test_photo_trail.py`. Browser-tested by the user.
+
+## ☑️ 2026-11-15 — V3.1 #1: custom time picker no longer snaps back (branch `version-3.1`)
+
+- `posts_ui` "When": every Date / Time `change` rebuilt the whole section, including the
+  `type=time` input being edited, so the hour reset. Split into `_slot_grid` (grid + buttons)
+  and `_when_summary` refreshables; a custom edit refreshes only those two
+  (`_set_when(rebuild_inputs=False)`) and sets `custom_time` so the inputs stay open. Pick /
+  clear still rebuild everything. Browser-tested by the user on :8082.
 
 ## ☑️ 2026-11-07 — V3.1: Select all + bulk actions in collections (branch `feat/collection-bulk-select`)
 

@@ -226,3 +226,20 @@ def test_rename_refuses_another_collections_name(paths: Paths) -> None:
     # re-casing its own name is fine
     rename_collection(paths, a.id, "Alpha")
     assert sorted(c.name for c in load_collections(paths)) == ["Alpha", "beta"]
+
+
+def test_drag_reorder_of_the_shown_photos_keeps_the_rest(paths: Paths) -> None:
+    """The collection page's drag (V3.1 #8): the browser only knows the photos
+    shown here (``x`` is missing on this machine). ``posts.reorder`` checks the
+    drop against them; a member that isn't shown keeps its place at the end."""
+    from sortandpost.posts import reorder
+
+    c = create_collection(paths, "Trip")
+    add_to_collection(paths, c.id, ["a", "x", "b", "c"])
+    shown = ["a", "b", "c"]
+    assert reorder(shown, ["c", "a"]) is None  # a stale tab: refused, nothing saved
+    new = reorder(shown, ["c", "a", "b"])
+    assert new is not None
+    reorder_collection(paths, c.id, new)
+    got = get_collection(paths, c.id)
+    assert got is not None and got.photos == ["c", "a", "b", "x"]

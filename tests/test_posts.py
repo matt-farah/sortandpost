@@ -269,3 +269,17 @@ def test_schedule_slots_next_seven_days_stable_minutes() -> None:
     # stable for a post, varies across posts / days
     assert slots == P.schedule_slots("abcdabcdabcdabcd", tz, now=now)
     assert len({ts[0].minute for _, ts in slots}) > 1
+
+
+def test_schedule_slots_start_days_pages_by_week() -> None:
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, 10, 5, 23, 30, tzinfo=UTC)
+    week2 = P.schedule_slots("abcdabcdabcdabcd", tz, now=now, start_days=7)
+    assert week2[0][0].isoformat() == "2026-10-12" and len(week2) == 7
+    both = P.schedule_slots("abcdabcdabcdabcd", tz, now=now, days=14)
+    assert both[7:] == week2  # same minutes whichever way you page
+    assert P.schedule_slots("abcdabcdabcdabcd", tz, now=now, start_days=-3)[0][0].isoformat() == (
+        "2026-10-05"
+    )

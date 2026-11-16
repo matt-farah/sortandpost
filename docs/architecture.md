@@ -661,7 +661,8 @@ The **only** module allowed to write under a library root. Wraps a persistent
   filtered view, tiles not yet scrolled in included. The selection drives the floating bulk
   toolbar, `app._BulkToolbar`: rate / tag / flag / delete / reveal / open with / add to
   collection / compose.
-- `/collections/{id}` — one collection in its own order (per-tile move ← → / remove, notes
+- `/collections/{id}` — one collection in its own order (drag to reorder — the post composer's SortableJS bridge,
+  `posts_ui.use_sortable` — or per-tile move ← → / remove, notes
   below). The same multi-select, Select all and `_BulkToolbar` as `/`, plus **Remove from
   collection** (no files touched); its compose starts from the selection in collection order,
   titled with the collection's name and captioned with its notes.
@@ -673,7 +674,9 @@ The **only** module allowed to write under a library root. Wraps a persistent
   (rounded-square chips) and Posts (**Compose post** with just this photo — the one shown, in a
   stack — then a chip per post it is in), "more like this". Links carry the grid's query string;
   prev/next (← / → or the round ‹ › buttons at the screen's edges) walk the same resolved view
-  (`resolve_view`, cached per query for 30 min). Below 640px wide the info column goes under the image.
+  (`resolve_view`, cached per query for 30 min; a delete drops its photos from every cached order).
+  The arrows and stack filmstrip also add a `from=` trail (≤ 10 photos stepped through); **Delete photo**
+  then opens the latest trail photo that still exists, else the library. Below 640px wide the info column goes under the image.
 - `/search` — redirects to `/` (old `stars=N` meant "≥ N" and is converted).
 - `/achievements` — achievement cards + score (see "Achievements"); reached from the header's
   name + 🏆 chip, hidden when the mode is Off.
@@ -697,6 +700,11 @@ The **only** module allowed to write under a library root. Wraps a persistent
 - `/posts` + `/posts/{id}` — the post composer (see "Posting (robopost.app, Postiz, …)" below).
   Entry points: "Compose post" on a collection or a photo page, ✈ in the library's bulk toolbar. The grid
   shows a ✈ badge on posted photos and `/` has a `posted=1|0` filter.
+  Photos in an editable post are reordered by **dragging** (SortableJS, vendored in
+  `resources/js/` and served from `/_sp/js/`, no CDN) or the ← → buttons. The bridge
+  (`posts_ui._SORT_JS`) undoes the drag's DOM move (Vue owns those nodes) and sends the
+  order as an `sp-reorder` event; Python accepts only a rearrangement of the same photos
+  (`posts.reorder`), saves and re-renders.
 - Persistent status bar: index progress (`X/Y`, current stage), CLIP queue depth, write-lock
   state (writable / read-only + holder), last publish time; "N missing (folder offline)" only
   while a library folder is offline.

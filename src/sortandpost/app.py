@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -200,12 +200,13 @@ from sortandpost.onboarding import (
 )
 from sortandpost.paths import default_local_root
 from sortandpost.post_export import resolve_sources
-from sortandpost.posts import posted_hashes
+from sortandpost.posts import posted_hashes, reorder
 from sortandpost.posts_ui import (
     compose_button,
     photo_posts_row,
     posting_settings_panel,
     register_post_pages,
+    use_sortable,
 )
 from sortandpost.prefs import (
     Theme,
@@ -1100,10 +1101,26 @@ def _thumb_src(pixel_hash: str, size: int) -> str:
     return f"{_THUMB_URL}/{pixel_hash[:2]}/{pixel_hash}_{size}.webp"
 
 
-def _photo_url(pixel_hash: str, link_query: str = "") -> str:
+_TRAIL_MAX = 10
+
+
+def _parse_trail(raw: str | None) -> list[str]:
+    """The ``from=`` param: photos the viewer stepped through (oldest first),
+    comma-separated. Anything that isn't a plausible pixel hash is dropped."""
+    parts = [p for p in (raw or "").split(",") if 0 < len(p) <= 64 and p.isalnum()]
+    return parts[-_TRAIL_MAX:]
+
+
+def _photo_url(pixel_hash: str, link_query: str = "", trail: Sequence[str] = ()) -> str:
     """A photo page link carrying the library view it was opened from (the
-    grid's query string), so its prev/next follow that filtered order."""
-    return f"/photo/{pixel_hash}?{link_query}" if link_query else f"/photo/{pixel_hash}"
+    grid's query string), so its prev/next follow that filtered order, and the
+    *trail* of photos stepped through to get here (``from=``), so a delete can
+    go back to the one before rather than to the library."""
+    pairs = [link_query] if link_query else []
+    if trail:
+        pairs.append("from=" + ",".join(list(trail)[-_TRAIL_MAX:]))
+    qs = "&".join(pairs)
+    return f"/photo/{pixel_hash}?{qs}" if qs else f"/photo/{pixel_hash}"
 
 
 def _add_tailwind_css() -> None:
@@ -1359,6 +1376,7 @@ def build_ui(settings: Settings) -> None:
         data = await nicegui_run.io_bound(_load_library, settings, engine, lq)
         if data is None:  # io_bound cancelled / app shutting down
             return
+        lq = data.lq
         view = data.view
         stacks = view.stacks
         flag_n, cloud_n = data.flag_n, data.cloud_n
@@ -1423,7 +1441,7 @@ def build_ui(settings: Settings) -> None:
                     ui.label("missing on this computer").classes("text-xs sp-faint")
                 elif lq.has_filters():
                     ui.label(f"matching · {view.total} in library").classes("text-xs sp-faint")
-                _filter_chips(lq)
+                _filter_chips(lq, {i: n for i, n, _ in data.colls})
             flag_box = ui.row().classes("items-center gap-2 no-wrap")
 
         def _refresh_flag_link(n: int) -> None:
@@ -1940,6 +1958,12 @@ def build_ui(settings: Settings) -> None:
         # the link); empty = the whole library, newest first
         lq = LibraryQuery.from_pairs(request.query_params.multi_items())
         link_query = lq.query_string()
+        # opened from a collection page: prev / next walk that collection in its own
+        # order (``corder=1`` beside ``coll=``), not the library's taken_at view
+        coll_id = lq.coll if request.query_params.get("corder") == "1" else ""
+        if coll_id:
+            link_query = f"{link_query}&corder=1" if link_query else "corder=1"
+        trail = _parse_trail(request.query_params.get("from"))
         with _session() as session:
             photo = get_photo(session, pixel_hash)
             paths = get_paths(session, pixel_hash) if photo else []
@@ -1964,12 +1988,23 @@ def build_ui(settings: Settings) -> None:
         # the top can change after the order was taken (a newer file wins). A
         # cached order that has none of them is stale: resolve it again once.
         candidates = [stacks.representative(pixel_hash) if stacks else pixel_hash, *members]
-        ordered = _cached_view(link_query) or []
-        anchor = locate(ordered, candidates)
-        if anchor is None:
-            view = await nicegui_run.io_bound(_resolve, settings, engine, lq)
-            ordered = view.ids if view is not None else []
+        coll_ids = (
+            await nicegui_run.io_bound(_collection_order, settings, engine, coll_id)
+            if coll_id
+            else None
+        )
+        if coll_ids is not None:
+            # read fresh every time (cheap): a reorder / removal while the page is open
+            # is seen, and the library's cached views are never shared with it
+            ordered = coll_ids
             anchor = locate(ordered, candidates)
+        else:
+            ordered = _cached_view(link_query) or []
+            anchor = locate(ordered, candidates)
+            if anchor is None:
+                view = await nicegui_run.io_bound(_resolve, settings, engine, lq)
+                ordered = view.ids if view is not None else []
+                anchor = locate(ordered, candidates)
         prev_hash, next_hash = neighbors(ordered, anchor) if anchor else (None, None)
 
         def _go(target: str) -> None:
@@ -1977,7 +2012,8 @@ def build_ui(settings: Settings) -> None:
             # stack history -- Back, in-app or browser, returns to the library
             # grid you started from, not through every photo you skimmed. Same
             # rationale as the stack filmstrip.
-            ui.run_javascript(f"location.replace({json.dumps(_photo_url(target, link_query))})")
+            url = _photo_url(target, link_query, [*trail, pixel_hash])
+            ui.run_javascript(f"location.replace({json.dumps(url)})")
 
         ui.button("← Back", on_click=lambda: ui.navigate.back()).props("flat dense").classes(
             "mx-4 mt-2"
@@ -2195,7 +2231,7 @@ def build_ui(settings: Settings) -> None:
                         return
                     ui.notify("now the top of its stack")
                     # reload: the filmstrip regroups with this photo first
-                    url = _photo_url(pixel_hash, link_query)
+                    url = _photo_url(pixel_hash, link_query, trail)
                     ui.run_javascript(f"location.replace({json.dumps(url)})")
 
             can_make_top = State.write_mode == WriteMode.writable and members[0] != pixel_hash
@@ -2204,6 +2240,7 @@ def build_ui(settings: Settings) -> None:
                 members,
                 thumb_small,
                 link_query,
+                trail=trail,
                 on_make_top=_make_top if can_make_top else None,
             )
 
@@ -2224,7 +2261,16 @@ def build_ui(settings: Settings) -> None:
                         return
                     with client:
                         ui.notify(_delete_summary(result))
-                        ui.navigate.to(lq.url())
+                        back = await nicegui_run.io_bound(
+                            _delete_return_target, engine, trail, set(result.purged) | {pixel_hash}
+                        )
+                        if back is None:
+                            ui.navigate.to(
+                                f"/collections/{coll_id}" if coll_ids is not None else lq.url()
+                            )
+                        else:
+                            hash_, rest = back
+                            ui.navigate.to(_photo_url(hash_, link_query, rest))
 
                 async def _confirm_delete() -> None:
                     files = await nicegui_run.io_bound(
@@ -2586,11 +2632,12 @@ def build_ui(settings: Settings) -> None:
 
     @ui.page("/collections/{coll_id}")
     def collection_detail(coll_id: str, add: int = 0) -> None:
-        """One collection: its photos in membership order (per-tile remove /
-        move-earlier / move-later), with the editable notes at the bottom.
-        ``?add=1`` auto-opens the "add photos" picker (used right after
-        creating)."""
+        """One collection: its photos in membership order (drag to reorder, or
+        per-tile remove / move-earlier / move-later), with the editable notes at
+        the bottom. ``?add=1`` auto-opens the "add photos" picker (used right
+        after creating)."""
         _header("/collections")
+        use_sortable()
         coll = get_collection(settings.paths, coll_id)
         if coll is None:
             _empty_state("bookmark_remove", "Collection not found")
@@ -2921,6 +2968,17 @@ def build_ui(settings: Settings) -> None:
             reorder_collection(settings.paths, coll_id, order)
             _render_grid()
 
+        def _reorder(e: Any) -> None:
+            """A drag ended in the browser (``posts_ui._SORT_JS``): save the new
+            order. Checked against the members shown *now*, so a change made in
+            another tab meanwhile refuses the drop instead of guessing."""
+            detail = e.args.get("detail") if isinstance(e.args, dict) else None
+            current = _members_ids()
+            new = reorder(current, detail)
+            if new is not None and new != current:
+                reorder_collection(settings.paths, coll_id, new)
+            _render_grid()  # renumbers the badges; also snaps a refused drop back
+
         def _remove(hashes: list[str]) -> None:
             n = remove_from_collection(settings.paths, coll_id, hashes)
             if n:
@@ -2928,11 +2986,16 @@ def build_ui(settings: Settings) -> None:
             _render_grid()
 
         def _member_tile(photo: Photo, i: int, ids: list[str]) -> None:
-            with ui.element("div").classes("group relative block"):
-                with ui.link(target=f"/photo/{photo.pixel_hash}") as link:
+            tile = ui.element("div").classes("group relative block")
+            with tile.props(f"data-hash={photo.pixel_hash}"):
+                # draggable=false: a drag starts from the tile (SortableJS), never
+                # as the browser's own link / image drag
+                with ui.link(target=_photo_url(photo.pixel_hash, f"coll={coll_id}&corder=1")).props(
+                    "draggable=false"
+                ) as link:
                     ui.image(_thumb_src(photo.pixel_hash, thumb_small)).classes(
                         "w-full aspect-square object-cover sp-placeholder"
-                    ).props("loading=lazy")
+                    ).props("loading=lazy draggable=false")
                 # shift / cmd / ctrl-click selects instead of following the link
                 link.on(
                     "click",
@@ -2975,7 +3038,9 @@ def build_ui(settings: Settings) -> None:
             sel.set_order([p.pixel_hash for p in present])
             toolbar.render()
             meta.set_text(
-                f"{len(present)} photo(s)" + (f" · {len(gone)} unavailable" if gone else "")
+                f"{len(present)} photo(s)"
+                + (f" · {len(gone)} unavailable" if gone else "")
+                + (" · drag to reorder" if len(present) > 1 else "")
             )
             with grid_wrap:
                 if gone:
@@ -2992,7 +3057,11 @@ def build_ui(settings: Settings) -> None:
                         ).props("color=primary flat")
                     return
                 ids = [p.pixel_hash for p in present]
-                with _photo_grid():
+                grid = _photo_grid()
+                if len(ids) > 1:
+                    grid.props("data-sp-sortable")
+                    grid.on("sp-reorder", _reorder, args=["detail"])
+                with grid:
                     for i, photo in enumerate(present):
                         _member_tile(photo, i, ids)
 
@@ -3630,6 +3699,16 @@ def _cached_view(key: str) -> list[str] | None:
         return hit[1]
 
 
+def _forget_in_views(hashes: Iterable[str]) -> None:
+    """Drop deleted photos from every cached view order, so prev / next on a
+    photo page never steps onto a photo that is gone."""
+    gone = set(hashes)
+    with _VIEW_CACHE_LOCK:
+        for key, (at, ids) in list(_VIEW_CACHE.items()):
+            if gone.intersection(ids):
+                _VIEW_CACHE[key] = (at, [h for h in ids if h not in gone])
+
+
 def _resolve(settings: Settings, engine: Engine, lq: LibraryQuery) -> LibraryView:
     """Runs off the event loop (``run.io_bound``): a text query embeds with
     CLIP. Caches the order for the photo page's prev/next."""
@@ -3650,9 +3729,14 @@ class _LibraryData:
     tags: dict[str, list[str]]
     flag_n: int
     cloud_n: int
+    lq: LibraryQuery  # the query as run (an unknown collection id dropped)
+    colls: list[tuple[str, str, int]]  # (id, name, photo count)
 
 
 def _load_library(settings: Settings, engine: Engine, lq: LibraryQuery) -> _LibraryData:
+    colls = [(c.id, c.name, len(c.photos)) for c in load_collections(settings.paths)]
+    if lq.coll and lq.coll not in {c[0] for c in colls}:
+        lq = replace(lq, coll="")  # a deleted collection in an old URL / saved search
     view = _resolve(settings, engine, lq)
     try:
         vocab = load_vocab(settings.paths.tags_file)
@@ -3667,6 +3751,8 @@ def _load_library(settings: Settings, engine: Engine, lq: LibraryQuery) -> _Libr
             tags=tag_choices(session, vocab),
             flag_n=edit_flag_count(session),
             cloud_n=online_only_count(session),
+            lq=lq,
+            colls=colls,
         )
 
 
@@ -4198,10 +4284,41 @@ def _apply_bulk_delete(settings: Settings, engine: Engine, hashes: list[str]) ->
             now=utcnow(),
         )
         session.commit()
+    _forget_in_views(result.purged)
     batch_id = result.trash.batch_id if result.trash else None
     if batch_id is not None:
         State.last_delete = (batch_id, len(result.purged), time.monotonic())
     return result
+
+
+def _collection_order(settings: Settings, engine: Engine, coll_id: str) -> list[str] | None:
+    """The photos of collection *coll_id* in its own order, minus those missing
+    here: what prev / next step through on a photo opened from it. ``None`` = no
+    such collection (deleted), so the caller falls back to the library view."""
+    coll = get_collection(settings.paths, coll_id)
+    if coll is None:
+        return None
+    with Session(engine) as session:
+        lost = missing.missing_here_set(session, coll.photos)
+    return [h for h in coll.photos if h not in lost]
+
+
+def _delete_return_target(
+    engine: Engine, trail: Sequence[str], deleted: set[str]
+) -> tuple[str, list[str]] | None:
+    """Where a photo-page delete goes: the latest photo in *trail* (the ones the
+    viewer stepped through) that still exists, isn't among *deleted* (a
+    ``whole_stack`` delete takes the stack with it) and isn't missing here.
+    Returns it with the trail left before it, or ``None`` = the library."""
+    with Session(engine) as session:
+        for i in range(len(trail) - 1, -1, -1):
+            h = trail[i]
+            if h in deleted or get_photo(session, h) is None:
+                continue
+            if missing.missing_reasons(session, [h]).get(h) is not None:
+                continue
+            return h, list(trail[:i])
+    return None
 
 
 def _delete_summary(result: DeleteResult) -> str:
@@ -5719,9 +5836,9 @@ def _group_by_control(lq: LibraryQuery, on_collapse_all: Callable[[bool], None])
                     _tip_above(tip)
 
 
-def _filter_chips(lq: LibraryQuery) -> None:
+def _filter_chips(lq: LibraryQuery, coll_names: dict[str, str]) -> None:
     """The active filters as removable chips; removing one drops just it."""
-    for chip in lq.chips():
+    for chip in lq.chips(coll_names):
         ui.chip(
             chip.label,
             icon=chip.icon,
@@ -5797,6 +5914,19 @@ def _filter_bar(
                         value=on,
                         on_change=lambda _, p=picked: _go(replace(lq, cameras=p)),
                     ).props("dense")
+
+            with _filter_button("collections_bookmark", "Collection", int(bool(lq.coll))):
+                if not data.colls:
+                    ui.label("No collections yet.").classes("text-xs sp-muted")
+                else:
+                    ui.select(
+                        {i: f"{n} ({c})" for i, n, c in data.colls},
+                        value=lq.coll or None,
+                        label="Collection",
+                        clearable=True,
+                    ).props("dense outlined options-dense").classes("w-72").on_value_change(
+                        lambda e: _go(replace(lq, coll=e.value or ""))
+                    )
 
             # Dates: a range calendar (click the first day, then the last; click one
             # day twice for a single day). Picks apply at once.
@@ -6115,6 +6245,7 @@ def _stack_filmstrip(
     size: int,
     link_query: str = "",
     *,
+    trail: Sequence[str] = (),
     on_make_top: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """The other photos in this stack. ``members[0]`` is the representative
@@ -6157,7 +6288,9 @@ def _stack_filmstrip(
                     cell.on(
                         "click",
                         lambda m=member: ui.run_javascript(
-                            f"location.replace({json.dumps(_photo_url(m, link_query))})"
+                            "location.replace("
+                            + json.dumps(_photo_url(m, link_query, [*trail, current]))
+                            + ")"
                         ),
                     )
 
@@ -6178,7 +6311,8 @@ class _GridSelection:
     def checkbox(self, pixel_hash: str) -> None:
         """Render the selection box for a tile (call inside the tile's link)."""
         selected = pixel_hash in self.selected
-        box = ui.element("div").classes(self._box_cls(selected))
+        # data-sp-nodrag: pressing the box never starts a drag-to-reorder
+        box = ui.element("div").classes(self._box_cls(selected)).props("data-sp-nodrag")
         with box:
             icon = ui.icon("check", size="1rem").classes(
                 "text-white" + ("" if selected else " invisible")

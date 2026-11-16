@@ -59,6 +59,13 @@ uv audit
   `tools/tailwind/build.sh` (needs Node) and commit `src/sortandpost/resources/tailwind.css`.
 - UI colours come from the theme tokens (`sp-muted`, `color=primary`, …), not hard-coded
   colours, so every seasonal theme keeps working. `tests/test_themes.py` checks contrast.
+- **Vendored JS.** The app runs offline, so browser libraries are bundled, never loaded
+  from a CDN: `src/sortandpost/resources/js/` holds SortableJS (MIT, the post composer's
+  drag to reorder). `uv audit` and Dependabot don't see it, so check
+  [its releases](https://github.com/SortableJS/Sortable/releases) now and then. To update:
+  take `Sortable.min.js` + `LICENSE` from the npm tarball (`npm pack sortablejs@<ver>`,
+  check its `integrity` against `npm view sortablejs@<ver> dist.integrity`), replace the
+  two files, and update `SORTABLE_SHA256` in `tests/test_post_reorder.py`.
 
 ## Pull requests
 

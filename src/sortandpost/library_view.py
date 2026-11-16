@@ -20,7 +20,7 @@ callers run :func:`resolve_view` off the event loop (hard constraint #7).
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import PurePosixPath, PureWindowsPath
@@ -31,6 +31,7 @@ from sqlmodel import Session, col, select
 from sortandpost import missing
 from sortandpost.clip.model import ClipModelUnavailable
 from sortandpost.clip.vocab import Vocab
+from sortandpost.collections import get_collection
 from sortandpost.config import Settings
 from sortandpost.db.browse import list_group_rows, list_photo_ids
 from sortandpost.db.flags import EDIT_FLAG
@@ -152,8 +153,8 @@ class LibraryQuery:
     ``q`` text · ``stars`` comma list (``u`` = unrated) · ``camera`` (repeat) ·
     ``dates`` · ``folder`` · ``tag`` (repeat) + ``tagmode`` any|all · ``gps`` ·
     ``dups`` · ``missing`` · ``mark`` · ``posted`` (``1`` sent to a posting service /
-    ``0`` not yet) · ``group`` + ``folder_sort`` (view only; ``group`` unset
-    means :data:`DEFAULT_GROUP`, ``flat`` means no sections).
+    ``0`` not yet) · ``coll`` (a collection id) · ``group`` + ``folder_sort`` (view only;
+    ``group`` unset means :data:`DEFAULT_GROUP`, ``flat`` means no sections).
     """
 
     q: str = ""
@@ -168,13 +169,14 @@ class LibraryQuery:
     missing: bool = False
     mark: bool = False
     posted: str = ""  # "" any · "1" sent to a posting service · "0" not sent yet
+    coll: str = ""  # a collection id: only its photos (a stack matches via any member)
     group: str = ""  # view only ("" = DEFAULT_GROUP, "flat"): not saved with a search
     folder_sort: str = ""
 
     # -- parsing ------------------------------------------------------------ #
     @classmethod
     def from_pairs(cls, pairs: Iterable[tuple[str, str]]) -> LibraryQuery:
-        q = dates = folder = group = folder_sort = posted = ""
+        q = dates = folder = group = folder_sort = posted = coll = ""
         tagmode = "any"
         stars: set[int] = set()
         cameras: list[str] = []
@@ -205,6 +207,8 @@ class LibraryQuery:
                 flags[key] = _truthy(value)
             elif key == "posted" and value:
                 posted = "1" if _truthy(value) else "0"
+            elif key == "coll" and value:
+                coll = value
             elif key == "group":
                 group = FLAT if value == FLAT else parse_mode(value) or ""
             elif key == "folder_sort":
@@ -220,6 +224,7 @@ class LibraryQuery:
             group=group,
             folder_sort=folder_sort,
             posted=posted,
+            coll=coll,
             **flags,
         )
 
@@ -249,6 +254,8 @@ class LibraryQuery:
                 out.append((key, "true"))
         if self.posted:
             out.append(("posted", self.posted))
+        if self.coll:
+            out.append(("coll", self.coll))
         if view and self.group:
             out.append(("group", self.group))
             if self.group == "folder" and self.folder_sort:
@@ -315,7 +322,7 @@ class LibraryQuery:
     def without_view(self) -> LibraryQuery:
         return replace(self, group="", folder_sort="")
 
-    def chips(self) -> list[FilterChip]:
+    def chips(self, coll_names: Mapping[str, str] | None = None) -> list[FilterChip]:
         """One removable chip per active filter (per value for cameras / tags),
         each carrying the query without it. The view (group-by) is kept."""
         out: list[FilterChip] = []
@@ -347,6 +354,9 @@ class LibraryQuery:
         if self.posted:
             label = "Posted" if self.posted == "1" else "Not posted"
             out.append(FilterChip("send", label, replace(self, posted="")))
+        if self.coll:
+            name = (coll_names or {}).get(self.coll, "Collection")
+            out.append(FilterChip("collections_bookmark", name, replace(self, coll="")))
         return out
 
     def summary(self) -> str:
@@ -375,6 +385,8 @@ class LibraryQuery:
                 bits.append(label)
         if self.posted:
             bits.append("posted" if self.posted == "1" else "not posted")
+        if self.coll:
+            bits.append("in a collection")
         return " · ".join(bits) or "all photos"
 
 
@@ -466,6 +478,12 @@ def resolve_view(
         sent = posted_hashes(settings.paths)
         want = lq.posted == "1"
         ids = [h for h in ids if any(m in sent for m in stacks.members(h)) == want]
+
+    if lq.coll:
+        coll = get_collection(settings.paths, lq.coll)
+        if coll is not None:  # an unknown id (deleted collection) constrains nothing
+            members = set(coll.photos)
+            ids = [h for h in ids if any(m in members for m in stacks.members(h))]
 
     groups: list[PhotoGroup] = []
     mode = lq.mode

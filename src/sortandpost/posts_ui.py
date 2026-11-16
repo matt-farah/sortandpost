@@ -11,15 +11,18 @@ an explicit click on a confirm dialog that lists exactly what goes where.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
+from importlib import resources
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from nicegui import app as nicegui_app
 from nicegui import run as nicegui_run
 from nicegui import ui
 from sqlalchemy.engine import Engine
@@ -49,6 +52,7 @@ from sortandpost.posts import (
     ALT_TEXT_MAX,
     IG_MAX_BORDER,
     MIN_LEAD,
+    SLOT_DAYS,
     SLOT_HOURS,
     Post,
     SendGroup,
@@ -60,6 +64,7 @@ from sortandpost.posts import (
     list_posts,
     load_channel_cache,
     plan_send,
+    reorder,
     save_channel_cache,
     save_post,
     schedule_slots,
@@ -85,6 +90,92 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
+
+# Drag to reorder a post's photos: SortableJS, vendored in resources/js/ (served
+# from here, never a CDN -- the app runs offline; see CONTRIBUTING.md "Vendored JS").
+_SORTABLE_FILE = "Sortable.min.js"
+_SORTABLE_URL = "/_sp/js/" + _SORTABLE_FILE
+
+# The bridge. Vue owns the tiles' DOM, so a drag's move must never stick: on
+# drop it reads the new order, puts the dragged tile back where it was (Vue's
+# DOM matches its virtual DOM again) and sends the order to Python as an
+# ``sp-reorder`` event on the container; Python saves and re-renders. Any
+# ``[data-sp-sortable]`` container is picked up when it appears, so each
+# ``_photos.refresh()`` needs no extra call.
+_SORT_JS = """
+<script>
+(() => {
+  if (window.spSortBridge) return;
+  window.spSortBridge = true;
+  const attach = (el) => {
+    if (el.spSortable || !window.Sortable) return;
+    el.spSortable = Sortable.create(el, {
+      draggable: '[data-hash]',
+      filter: 'button, .q-btn, [data-sp-nodrag]',
+      preventOnFilter: false,
+      animation: 150,
+      delay: 150,
+      delayOnTouchOnly: true,
+      ghostClass: 'sp-sort-ghost',
+      chosenClass: 'sp-sort-chosen',
+      onEnd: (evt) => {
+        const {from, item, oldIndex, newIndex} = evt;
+        from.spDraggedAt = Date.now();
+        if (oldIndex == null || newIndex == null || oldIndex === newIndex) return;
+        const order = Array.from(from.children)
+          .filter((c) => c.dataset && c.dataset.hash)
+          .map((c) => c.dataset.hash);
+        from.insertBefore(item, from.children[oldIndex + (oldIndex > newIndex ? 1 : 0)] || null);
+        from.dispatchEvent(new CustomEvent('sp-reorder', {detail: order}));
+      },
+    });
+    // A drop must never also count as a click (follow a tile's link, toggle
+    // its selection): swallow any click right after a drag ends.
+    el.addEventListener('click', (e) => {
+      if (el.spDraggedAt && Date.now() - el.spDraggedAt < 300) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+  };
+  const scan = () => document.querySelectorAll('[data-sp-sortable]').forEach(attach);
+  new MutationObserver(scan).observe(document.body, {childList: true, subtree: true});
+  scan();
+})();
+</script>
+"""
+
+_SORT_CSS = """
+.sp-sort-ghost { opacity: 0.35; }
+.sp-sort-chosen img { outline: 2px solid var(--sp-primary); outline-offset: 2px; }
+[data-sp-sortable] [data-hash] { cursor: grab; }
+"""
+
+_sortable_src: str | None = None
+
+
+def _mount_sortable() -> str:
+    """Serve the vendored SortableJS at ``_SORTABLE_URL`` (once) and return its
+    cache-busted src."""
+    global _sortable_src
+    if _sortable_src is None:
+        js = resources.files("sortandpost.resources").joinpath("js", _SORTABLE_FILE)
+        with resources.as_file(js) as path:
+            nicegui_app.add_static_file(local_file=path, url_path=_SORTABLE_URL)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        _sortable_src = f"{_SORTABLE_URL}?v={digest}"
+    return _sortable_src
+
+
+def use_sortable() -> None:
+    """Make every ``[data-sp-sortable]`` container on the current page
+    drag-sortable: its ``[data-hash]`` children can be dragged, and a drop sends
+    an ``sp-reorder`` event (detail = the new hash order). Used by the post
+    composer and the collection page."""
+    ui.add_head_html(f'<script src="{_mount_sortable()}"></script>')
+    ui.add_body_html(_SORT_JS)
+    ui.add_css(_SORT_CSS)
+
 
 _STATUS_LABEL = {
     "draft": ("Draft", "sp-muted"),
@@ -227,6 +318,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
 
     State = A.State
 
+    _mount_sortable()
+
     @ui.page("/posts")
     async def posts_index() -> None:
         A._header("/posts")
@@ -278,6 +371,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
     @ui.page("/posts/{post_id}")
     async def post_detail(post_id: str) -> None:
         A._header("/posts")
+        use_sortable()
         client = ui.context.client
         tz = await _browser_tz()
         post = get_post(settings.paths, post_id)
@@ -511,6 +605,19 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                 _save()
                 _photos.refresh()
                 _alt.refresh()
+                _ig_preview.refresh()
+
+        def _reorder(e: Any) -> None:
+            """A drag ended in the browser (``_SORT_JS``): save the new order."""
+            p = cur()
+            detail = e.args.get("detail") if isinstance(e.args, dict) else None
+            new = reorder(p.photos, detail) if p.editable else None
+            if new is not None and new != p.photos:
+                p.photos[:] = new
+                _save()
+                _alt.refresh()
+                _ig_preview.refresh()
+            _photos.refresh()  # also snaps a refused drag back
 
         def _remove(h: str) -> None:
             cur().photos.remove(h)
@@ -539,6 +646,8 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
             names: dict[str, str | None] = state["names"]
             with ui.row().classes("items-center gap-2 px-4 pt-4"):
                 ui.label(f"Photos · {len(p.photos)}").classes("font-bold")
+                if p.editable and len(p.photos) > 1:
+                    ui.label("drag to reorder").classes("text-xs sp-faint")
                 if p.editable:
                     with (
                         ui.button("Add from collection", icon="library_add").props(
@@ -560,10 +669,14 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     "and use “Compose post” in the toolbar."
                 ).classes("px-4 text-sm sp-muted")
                 return
-            with ui.row().classes("gap-2 px-4 flex-wrap"):
+            tiles = ui.row().classes("gap-2 px-4 flex-wrap")
+            if p.editable and len(p.photos) > 1:
+                tiles.props("data-sp-sortable")
+                tiles.on("sp-reorder", _reorder, args=["detail"])
+            with tiles:
                 for i, h in enumerate(p.photos):
                     missing = h in names and names[h] is None
-                    with ui.element("div").classes("group relative w-32"):
+                    with ui.element("div").classes("group relative w-32").props(f"data-hash={h}"):
                         ui.image(A._thumb_src(h, thumb_small)).classes(
                             "w-32 h-32 rounded object-cover sp-placeholder"
                             + (" opacity-40" if missing else "")
@@ -968,49 +1081,106 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                     )
 
         # -- when ------------------------------------------------------------ #
+        def _custom_on() -> bool:
+            p = cur()
+            when = p.schedule_dt()
+            picked = False
+            if when is not None:
+                # The slots of the week the chosen time falls in (it may be paged away from).
+                ahead = (when.astimezone(tz).date() - utcnow().astimezone(tz).date()).days
+                slots = schedule_slots(p.id, tz, start_days=ahead, days=1)
+                picked = any(when == t for _d, ts in slots for t in ts)
+            return bool(state.get("custom_time", False) or (when is not None and not picked))
+
+        def _week() -> int:
+            # Which week of quick-picks shows: the one holding the chosen time
+            # when the page opens, else this week; the arrows move it.
+            if "week" not in state:
+                when = cur().schedule_dt()
+                ahead = (
+                    (when.astimezone(tz).date() - utcnow().astimezone(tz).date()).days
+                    if when
+                    else 0
+                )
+                state["week"] = max(0, ahead) // SLOT_DAYS
+            return int(state["week"])
+
+        def _page(step: int) -> None:
+            state["week"] = max(0, _week() + step)
+            _slot_grid.refresh()
+
+        @ui.refreshable
+        def _slot_grid() -> None:
+            # The quick-pick grid + its buttons: cheap to rebuild, and holds no
+            # field the user types in (that is `_when`'s custom inputs).
+            p = cur()
+            when = p.schedule_dt()
+            week = _week()
+            slots = schedule_slots(p.id, tz, start_days=week * SLOT_DAYS)
+            earliest = utcnow() + MIN_LEAD
+            with ui.row().classes("items-center gap-1"):
+                prev = ui.button(icon="chevron_left", on_click=lambda: _page(-1)).props(
+                    "flat dense round"
+                )
+                prev.tooltip("Earlier week").set_enabled(week > 0)
+                first, last = slots[0][0], slots[-1][0]
+                ui.label(f"{first.day} {first:%b} to {last.day} {last:%b}").classes(
+                    "text-xs sp-muted"
+                )
+                ui.button(icon="chevron_right", on_click=lambda: _page(1)).props(
+                    "flat dense round"
+                ).tooltip("Later week")
+            with ui.element("div").classes(
+                "grid grid-cols-[auto_repeat(4,minmax(0,1fr))] gap-1 items-center w-full"
+            ):
+                ui.element("div")
+                for label, _hour in SLOT_HOURS:
+                    ui.label(label).classes("text-xs sp-faint text-center")
+                for day, times in slots:
+                    ui.label(f"{day:%a} {day.day} {day:%b}").classes(
+                        "text-sm pr-2 whitespace-nowrap"
+                    )
+                    for t in times:
+                        on = when is not None and when == t
+                        b = ui.button(f"{t:%H:%M}", on_click=lambda t=t: _pick(t)).props(
+                            "dense no-caps unelevated" if on else "dense no-caps outline"
+                        )
+                        if on:
+                            b.props("color=primary")
+                        b.set_enabled(p.editable and t > earliest)
+            with ui.row().classes("items-center gap-2 pt-1"):
+                ui.button(
+                    "Pick a date & time",
+                    icon="edit_calendar",
+                    on_click=lambda: _show_custom(not _custom_on()),
+                ).props("flat dense no-caps").set_enabled(p.editable)
+                clear = (
+                    ui.button(icon="event_busy").props("flat dense round").tooltip("Clear the time")
+                )
+                clear.set_enabled(p.editable and when is not None)
+                clear.on_click(_clear)
+
+        @ui.refreshable
+        def _when_summary() -> None:
+            p = cur()
+            when = p.schedule_dt()
+            ui.label(
+                f"{_fmt_local(p.schedule_at, tz)} ({getattr(tz, 'key', tz)})"
+                + (f"  ·  {when:%Y-%m-%d %H:%M} UTC" if when else "")
+                if when
+                else "No time set — required to schedule; optional for a draft."
+            ).classes("text-xs sp-muted")
+
+        # -- when ------------------------------------------------------------ #
         @ui.refreshable
         def _when() -> None:
             p = cur()
             when = p.schedule_dt()
             local = when.astimezone(tz) if when else None
-            slots = schedule_slots(p.id, tz)
-            picked = when is not None and any(when == t for _d, ts in slots for t in ts)
-            custom = state.get("custom_time", False) or (when is not None and not picked)
-            earliest = utcnow() + MIN_LEAD
             with ui.column().classes("w-full max-w-2xl gap-1 px-4 pt-4"):
                 ui.label("When").classes("font-bold")
-                with ui.element("div").classes(
-                    "grid grid-cols-[auto_repeat(4,minmax(0,1fr))] gap-1 items-center w-full"
-                ):
-                    ui.element("div")
-                    for label, _hour in SLOT_HOURS:
-                        ui.label(label).classes("text-xs sp-faint text-center")
-                    for day, times in slots:
-                        ui.label(f"{day:%a} {day.day} {day:%b}").classes(
-                            "text-sm pr-2 whitespace-nowrap"
-                        )
-                        for t in times:
-                            on = when is not None and when == t
-                            b = ui.button(f"{t:%H:%M}", on_click=lambda t=t: _pick(t)).props(
-                                "dense no-caps unelevated" if on else "dense no-caps outline"
-                            )
-                            if on:
-                                b.props("color=primary")
-                            b.set_enabled(p.editable and t > earliest)
-                with ui.row().classes("items-center gap-2 pt-1"):
-                    ui.button(
-                        "Pick a date & time",
-                        icon="edit_calendar",
-                        on_click=lambda: _show_custom(not custom),
-                    ).props("flat dense no-caps").set_enabled(p.editable)
-                    clear = (
-                        ui.button(icon="event_busy")
-                        .props("flat dense round")
-                        .tooltip("Clear the time")
-                    )
-                    clear.set_enabled(p.editable and when is not None)
-                    clear.on_click(_clear)
-                if custom:
+                _slot_grid()
+                if _custom_on():
                     with ui.row().classes("items-center gap-2"):
                         d = ui.input(
                             "Date", value=local.strftime("%Y-%m-%d") if local else ""
@@ -1029,21 +1199,23 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
                         except ValueError:
                             ui.notify("Can't read that date/time.", type="warning")
                             return
-                        _set_when(naive.replace(tzinfo=tz))
+                        # Keep the inputs on screen (and the field being typed in
+                        # focused): only the grid + summary are redrawn.
+                        state["custom_time"] = True
+                        _set_when(naive.replace(tzinfo=tz), rebuild_inputs=False)
 
                     d.on("change", _apply)
                     t_in.on("change", _apply)
-                ui.label(
-                    f"{_fmt_local(p.schedule_at, tz)} ({getattr(tz, 'key', tz)})"
-                    + (f"  ·  {when:%Y-%m-%d %H:%M} UTC" if when else "")
-                    if when
-                    else "No time set — required to schedule; optional for a draft."
-                ).classes("text-xs sp-muted")
+                _when_summary()
 
-        def _set_when(local_dt: datetime) -> None:
+        def _set_when(local_dt: datetime, rebuild_inputs: bool = True) -> None:
             cur().schedule_at = local_dt.astimezone(ZoneInfo("UTC")).isoformat()
             _save()
-            _when.refresh()
+            if rebuild_inputs:
+                _when.refresh()
+            else:
+                _slot_grid.refresh()
+                _when_summary.refresh()
 
         def _pick(t: datetime) -> None:
             state["custom_time"] = False

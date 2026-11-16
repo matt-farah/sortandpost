@@ -264,13 +264,19 @@ def slot_minute(post_id: str, day: date) -> int:
 
 
 def schedule_slots(
-    post_id: str, tz: tzinfo, *, now: datetime | None = None, days: int = SLOT_DAYS
+    post_id: str,
+    tz: tzinfo,
+    *,
+    now: datetime | None = None,
+    days: int = SLOT_DAYS,
+    start_days: int = 0,
 ) -> list[tuple[date, list[datetime]]]:
-    """Today and the next ``days - 1`` days, each with one aware local time per
-    :data:`SLOT_HOURS` entry. Past slots are included (the UI greys them out)."""
+    """*days* days starting *start_days* after today (0 = today), each with one
+    aware local time per :data:`SLOT_HOURS` entry. Past slots are included (the
+    UI greys them out). The grid pages through weeks with ``start_days = 7 * n``."""
     today = (now or utcnow()).astimezone(tz).date()
     out: list[tuple[date, list[datetime]]] = []
-    for i in range(days):
+    for i in range(max(0, start_days), max(0, start_days) + days):
         day = today + timedelta(days=i)
         minute = slot_minute(post_id, day)
         out.append(
@@ -489,6 +495,17 @@ def duplicate_post(paths: Paths, post_id: str, *, device_id: str = "") -> Post |
         network_settings={k: dict(v) for k, v in src.network_settings.items()},
     )
     return save_post(paths, copy, device_id=device_id)
+
+
+def reorder(current: list[str], proposed: object) -> list[str] | None:
+    """``proposed`` as a new photo order for a post holding ``current``, or None
+    when it isn't exactly the same photos rearranged (a stale tab, a tampered
+    request): a drag in the browser can only reorder, never add or drop."""
+    if not isinstance(proposed, list) or not all(isinstance(h, str) for h in proposed):
+        return None
+    if sorted(proposed) != sorted(current):
+        return None
+    return list(proposed)
 
 
 # --- the "posted" set --------------------------------------------------------
