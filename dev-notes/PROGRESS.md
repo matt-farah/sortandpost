@@ -1,15 +1,47 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-15 (V3.1: drag to reorder photos in a collection, a photo opened from a collection browses it, filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-15 (**3.0.2** = V3.1 #1–#8: PR to `main` + builds, Windows handoff below; V3.1: drag to reorder photos in a collection, a photo opened from a collection browses it, filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
-> **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
-> that `releases/latest/download/latest.json` loads logged-out and verifies (ToDo.md). Fixes
-> ship as 3.0.1, 3.0.2, … with the same release process. Still open: a real packaged
-> old → new update on each OS, Linux on a real desktop (V3Plan.md → P7 checklist), a real
-> Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
-> V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
-> "fix if it bites".
+> **▶️ Next:** 3.0.2 (V3.1 #1–#8): merge the `version-3.1` → `main` PR, build macOS + both
+> AppImages from merged `main` (`dist/release-3.0.2/`), Windows on the Windows machine (handoff
+> below). No tag / release / `latest.json` until the user says so. V3.1 stays open for more
+> items, stacked on `version-3.1`. Still open from V3: a real packaged old → new update on each
+> OS, Linux on a real desktop (V3Plan.md → P7 checklist), a real Synology / Docker Desktop on
+> Windows, the Apple Developer ID decision, brew / winget, P8 pywebview (stretch).
+
+## 🔄 2026-11-15 — 3.0.2: V3.1 #1–#8 PR + builds
+
+- `__version__` 3.0.1 → **3.0.2**: ships select-all in a collection (PR #97, merged to `main` after
+  the 3.0.1 tag) and V3.1 #1–#8 (time picker, delete returns to the photo you
+  came from, drag reorder in posts, dependency security bump, week arrows, filter by collection,
+  collection-ordered browsing, drag reorder in collections). The docs keep calling this "V3.1".
+- Builds come from merged `main`: `packaging/macos/build.sh` (replaces the prod
+  `dist/sortandpost.app` — quit it from the tray first) and `packaging/linux/build.sh --arch
+  aarch64|x86_64` in the Lima VM, staged in `dist/release-3.0.2/` + `SHA256SUMS.txt`.
+
+### Windows build handoff for 3.0.2 (for the agent on the Windows machine)
+
+1. `git fetch; git checkout main; git pull`. Check `src\sortandpost\__init__.py` says
+   `__version__ = "3.0.2"` and that HEAD is the merge commit of the 3.0.2 PR
+   ("3.0.2: V3.1 fixes and features").
+2. Prereqs: uv, PowerShell 7, Inno Setup 6 (`winget install JRSoftware.InnoSetup`). `build.ps1`
+   downloads + sha256-checks the pinned exiftool 13.59 zip itself.
+3. `uv sync --locked --extra dev --extra desktop`, then `$env:HF_HUB_OFFLINE=1; uv run pytest`.
+   Report any failure before building.
+4. `pwsh packaging\windows\build.ps1` → `dist\sortandpost-3.0.2-setup.exe` +
+   `dist\sortandpost-3.0.2-win-x64.zip`.
+5. Smoke test the installer **over the existing 3.0.1 install** (with 3.0.1 running: its
+   close-and-wait logic must stop the tray first, never replace files under a running app):
+   - the app relaunches and Settings → Overview shows 3.0.2;
+   - drag to reorder photos in a post and in a collection; the library's Collection filter;
+     open a photo from a collection and step ‹ › through that collection;
+   - schedule grid week arrows; delete a photo after stepping → returns to the previous photo;
+   - Quit from the tray exits cleanly (the #91 Quit-hang regression).
+6. Report both files' sha256 (`Get-FileHash -Algorithm SHA256`). **Do not create a tag or a
+   release and don't upload anything** — leave the files in `dist\`. If a 3.0.2 release is
+   made later, upload only those two files (`gh release upload v3.0.2 …`); the Mac then
+   re-signs `latest.json` with all 4 assets (Release process step 6 below).
 
 ## ☑️ 2026-11-15 — V3.1 #8: drag to reorder photos in a collection
 
