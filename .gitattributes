@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Vendored minified JS is sha256-pinned (tests/test_post_reorder.py): never convert line endings
+*.min.js -text
