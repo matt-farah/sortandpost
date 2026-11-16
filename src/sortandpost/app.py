@@ -200,12 +200,13 @@ from sortandpost.onboarding import (
 )
 from sortandpost.paths import default_local_root
 from sortandpost.post_export import resolve_sources
-from sortandpost.posts import posted_hashes
+from sortandpost.posts import posted_hashes, reorder
 from sortandpost.posts_ui import (
     compose_button,
     photo_posts_row,
     posting_settings_panel,
     register_post_pages,
+    use_sortable,
 )
 from sortandpost.prefs import (
     Theme,
@@ -2631,11 +2632,12 @@ def build_ui(settings: Settings) -> None:
 
     @ui.page("/collections/{coll_id}")
     def collection_detail(coll_id: str, add: int = 0) -> None:
-        """One collection: its photos in membership order (per-tile remove /
-        move-earlier / move-later), with the editable notes at the bottom.
-        ``?add=1`` auto-opens the "add photos" picker (used right after
-        creating)."""
+        """One collection: its photos in membership order (drag to reorder, or
+        per-tile remove / move-earlier / move-later), with the editable notes at
+        the bottom. ``?add=1`` auto-opens the "add photos" picker (used right
+        after creating)."""
         _header("/collections")
+        use_sortable()
         coll = get_collection(settings.paths, coll_id)
         if coll is None:
             _empty_state("bookmark_remove", "Collection not found")
@@ -2966,6 +2968,17 @@ def build_ui(settings: Settings) -> None:
             reorder_collection(settings.paths, coll_id, order)
             _render_grid()
 
+        def _reorder(e: Any) -> None:
+            """A drag ended in the browser (``posts_ui._SORT_JS``): save the new
+            order. Checked against the members shown *now*, so a change made in
+            another tab meanwhile refuses the drop instead of guessing."""
+            detail = e.args.get("detail") if isinstance(e.args, dict) else None
+            current = _members_ids()
+            new = reorder(current, detail)
+            if new is not None and new != current:
+                reorder_collection(settings.paths, coll_id, new)
+            _render_grid()  # renumbers the badges; also snaps a refused drop back
+
         def _remove(hashes: list[str]) -> None:
             n = remove_from_collection(settings.paths, coll_id, hashes)
             if n:
@@ -2973,13 +2986,16 @@ def build_ui(settings: Settings) -> None:
             _render_grid()
 
         def _member_tile(photo: Photo, i: int, ids: list[str]) -> None:
-            with ui.element("div").classes("group relative block"):
-                with ui.link(
-                    target=_photo_url(photo.pixel_hash, f"coll={coll_id}&corder=1")
+            tile = ui.element("div").classes("group relative block")
+            with tile.props(f"data-hash={photo.pixel_hash}"):
+                # draggable=false: a drag starts from the tile (SortableJS), never
+                # as the browser's own link / image drag
+                with ui.link(target=_photo_url(photo.pixel_hash, f"coll={coll_id}&corder=1")).props(
+                    "draggable=false"
                 ) as link:
                     ui.image(_thumb_src(photo.pixel_hash, thumb_small)).classes(
                         "w-full aspect-square object-cover sp-placeholder"
-                    ).props("loading=lazy")
+                    ).props("loading=lazy draggable=false")
                 # shift / cmd / ctrl-click selects instead of following the link
                 link.on(
                     "click",
@@ -3022,7 +3038,9 @@ def build_ui(settings: Settings) -> None:
             sel.set_order([p.pixel_hash for p in present])
             toolbar.render()
             meta.set_text(
-                f"{len(present)} photo(s)" + (f" · {len(gone)} unavailable" if gone else "")
+                f"{len(present)} photo(s)"
+                + (f" · {len(gone)} unavailable" if gone else "")
+                + (" · drag to reorder" if len(present) > 1 else "")
             )
             with grid_wrap:
                 if gone:
@@ -3039,7 +3057,11 @@ def build_ui(settings: Settings) -> None:
                         ).props("color=primary flat")
                     return
                 ids = [p.pixel_hash for p in present]
-                with _photo_grid():
+                grid = _photo_grid()
+                if len(ids) > 1:
+                    grid.props("data-sp-sortable")
+                    grid.on("sp-reorder", _reorder, args=["detail"])
+                with grid:
                     for i, photo in enumerate(present):
                         _member_tile(photo, i, ids)
 
@@ -6289,7 +6311,8 @@ class _GridSelection:
     def checkbox(self, pixel_hash: str) -> None:
         """Render the selection box for a tile (call inside the tile's link)."""
         selected = pixel_hash in self.selected
-        box = ui.element("div").classes(self._box_cls(selected))
+        # data-sp-nodrag: pressing the box never starts a drag-to-reorder
+        box = ui.element("div").classes(self._box_cls(selected)).props("data-sp-nodrag")
         with box:
             icon = ui.icon("check", size="1rem").classes(
                 "text-white" + ("" if selected else " invisible")

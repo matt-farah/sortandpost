@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-15 (V3.1: a photo opened from a collection browses it, filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-15 (V3.1: drag to reorder photos in a collection, a photo opened from a collection browses it, filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** launch day 2026-10-20 — README screenshots, make the repo public, then check
@@ -10,6 +10,20 @@ _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (bet
 > Synology / Docker Desktop on Windows, the Apple Developer ID decision, brew / winget.
 > V3 **P8 pywebview** (stretch) is the only V3 phase left. Backlog (#12, #17, #18) stays
 > "fix if it bites".
+
+## ☑️ 2026-11-15 — V3.1 #8: drag to reorder photos in a collection
+
+- The collection grid uses the post composer's SortableJS bridge, now shared as
+  `posts_ui.use_sortable()` (mounts the vendored file once + adds the bridge / CSS). Tiles carry
+  `data-hash`; the grid is `data-sp-sortable` when it holds 2+ photos. `_reorder` checks the drop
+  with `posts.reorder` against the members shown *now* (a change in another tab refuses it), saves
+  via `reorder_collection`, and re-renders (badges renumber; a refused drop snaps back).
+- Bridge additions (posts get them too): `[data-sp-nodrag]` in the filter (the selection checkbox
+  never starts a drag) and a capture-phase click guard for 300 ms after a drop (a drop never
+  follows a tile's link or toggles selection). Link + image are `draggable=false`.
+- ← → / ✕ buttons kept. Gate green (+ Playwright link-tile tests in `test_post_reorder.py`, a
+  drag-path test in `test_collections.py`); user hands-on tested and signed off. **All V3.1
+  items #1–#8 done**; next is the `version-3.1` → `main` PR (ask first).
 
 ## ☑️ 2026-11-15 — V3.1 #7: a photo opened from a collection browses that collection
 

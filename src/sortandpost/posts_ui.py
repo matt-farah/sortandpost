@@ -111,7 +111,7 @@ _SORT_JS = """
     if (el.spSortable || !window.Sortable) return;
     el.spSortable = Sortable.create(el, {
       draggable: '[data-hash]',
-      filter: 'button, .q-btn',
+      filter: 'button, .q-btn, [data-sp-nodrag]',
       preventOnFilter: false,
       animation: 150,
       delay: 150,
@@ -120,6 +120,7 @@ _SORT_JS = """
       chosenClass: 'sp-sort-chosen',
       onEnd: (evt) => {
         const {from, item, oldIndex, newIndex} = evt;
+        from.spDraggedAt = Date.now();
         if (oldIndex == null || newIndex == null || oldIndex === newIndex) return;
         const order = Array.from(from.children)
           .filter((c) => c.dataset && c.dataset.hash)
@@ -128,6 +129,14 @@ _SORT_JS = """
         from.dispatchEvent(new CustomEvent('sp-reorder', {detail: order}));
       },
     });
+    // A drop must never also count as a click (follow a tile's link, toggle
+    // its selection): swallow any click right after a drag ends.
+    el.addEventListener('click', (e) => {
+      if (el.spDraggedAt && Date.now() - el.spDraggedAt < 300) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
   };
   const scan = () => document.querySelectorAll('[data-sp-sortable]').forEach(attach);
   new MutationObserver(scan).observe(document.body, {childList: true, subtree: true});
@@ -141,6 +150,32 @@ _SORT_CSS = """
 .sp-sort-chosen img { outline: 2px solid var(--sp-primary); outline-offset: 2px; }
 [data-sp-sortable] [data-hash] { cursor: grab; }
 """
+
+_sortable_src: str | None = None
+
+
+def _mount_sortable() -> str:
+    """Serve the vendored SortableJS at ``_SORTABLE_URL`` (once) and return its
+    cache-busted src."""
+    global _sortable_src
+    if _sortable_src is None:
+        js = resources.files("sortandpost.resources").joinpath("js", _SORTABLE_FILE)
+        with resources.as_file(js) as path:
+            nicegui_app.add_static_file(local_file=path, url_path=_SORTABLE_URL)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        _sortable_src = f"{_SORTABLE_URL}?v={digest}"
+    return _sortable_src
+
+
+def use_sortable() -> None:
+    """Make every ``[data-sp-sortable]`` container on the current page
+    drag-sortable: its ``[data-hash]`` children can be dragged, and a drop sends
+    an ``sp-reorder`` event (detail = the new hash order). Used by the post
+    composer and the collection page."""
+    ui.add_head_html(f'<script src="{_mount_sortable()}"></script>')
+    ui.add_body_html(_SORT_JS)
+    ui.add_css(_SORT_CSS)
+
 
 _STATUS_LABEL = {
     "draft": ("Draft", "sp-muted"),
@@ -283,10 +318,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
 
     State = A.State
 
-    js = resources.files("sortandpost.resources").joinpath("js", _SORTABLE_FILE)
-    with resources.as_file(js) as path:
-        nicegui_app.add_static_file(local_file=path, url_path=_SORTABLE_URL)
-        sortable_src = f"{_SORTABLE_URL}?v={hashlib.sha256(path.read_bytes()).hexdigest()[:12]}"
+    _mount_sortable()
 
     @ui.page("/posts")
     async def posts_index() -> None:
@@ -339,9 +371,7 @@ def register_post_pages(settings: Settings, engine: Engine, thumb_small: int) ->
     @ui.page("/posts/{post_id}")
     async def post_detail(post_id: str) -> None:
         A._header("/posts")
-        ui.add_head_html(f'<script src="{sortable_src}"></script>')
-        ui.add_body_html(_SORT_JS)
-        ui.add_css(_SORT_CSS)
+        use_sortable()
         client = ui.context.client
         tz = await _browser_tz()
         post = get_post(settings.paths, post_id)

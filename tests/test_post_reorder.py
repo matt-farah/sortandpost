@@ -143,3 +143,71 @@ def test_a_click_reports_nothing(page: Any) -> None:
     page.locator('[data-hash="b"]').click()
     page.wait_for_timeout(250)
     assert page.evaluate("window.orders") == []
+
+
+# -- link tiles (the collection page, V3.1 #8) ------------------------------ #
+
+_LINK_PAGE = """
+<style>
+  #tiles { display: flex; gap: 8px; }
+  #tiles > div { width: 80px; height: 80px; background: #ccc; position: relative; }
+  #tiles a { display: block; width: 80px; height: 80px; }
+  .box { position: absolute; left: 4px; top: 4px; width: 20px; height: 20px; background: #333; }
+</style>
+<div id="tiles" data-sp-sortable>
+  <div data-hash="a"><a href="#a" draggable="false">a</a>
+    <div class="box" data-sp-nodrag></div></div>
+  <div data-hash="b"><a href="#b" draggable="false">b</a>
+    <div class="box" data-sp-nodrag></div></div>
+  <div data-hash="c"><a href="#c" draggable="false">c</a>
+    <div class="box" data-sp-nodrag></div></div>
+</div>
+<script>
+  window.orders = [];
+  window.clicks = [];
+  const tiles = document.getElementById('tiles');
+  tiles.addEventListener('sp-reorder', (e) => window.orders.push(e.detail));
+  tiles.querySelectorAll('a').forEach((a) =>
+    a.addEventListener('click', () => window.clicks.push(a.textContent)));
+</script>
+"""
+
+
+@pytest.fixture
+def link_page(browser: Any) -> Iterator[Any]:
+    pg = browser.new_page()
+    pg.set_content(_LINK_PAGE)
+    pg.add_script_tag(content=_js_dir().joinpath(_SORTABLE_FILE).read_text())
+    pg.add_script_tag(content=_SORT_JS.strip().removeprefix("<script>").removesuffix("</script>"))
+    yield pg
+    pg.close()
+
+
+def test_drag_over_link_tiles_does_not_follow_the_link(link_page: Any) -> None:
+    _drag(link_page, "a", "c")
+    assert link_page.evaluate("window.orders") == [["b", "c", "a"]]
+    assert _dom(link_page) == ["a", "b", "c"]
+    assert link_page.evaluate("location.hash") == ""
+    assert link_page.evaluate("window.clicks") == []
+
+
+def test_a_plain_click_on_a_link_tile_still_works(link_page: Any) -> None:
+    _drag(link_page, "a", "c")
+    link_page.wait_for_timeout(350)  # past the post-drop click guard
+    link_page.locator('[data-hash="b"] a').click()
+    assert link_page.evaluate("window.clicks") == ["b"]
+    assert link_page.evaluate("location.hash") == "#b"
+
+
+def test_a_drag_from_the_selection_box_moves_nothing(link_page: Any) -> None:
+    box = link_page.locator('[data-hash="a"] .box').bounding_box()
+    c = link_page.locator('[data-hash="c"]').bounding_box()
+    x0, y = box["x"] + 10, box["y"] + 10
+    link_page.mouse.move(x0, y)
+    link_page.mouse.down()
+    for step in range(1, 21):
+        link_page.mouse.move(x0 + (c["x"] + 70 - x0) * step / 20, y)
+        link_page.wait_for_timeout(15)
+    link_page.mouse.up()
+    link_page.wait_for_timeout(250)
+    assert link_page.evaluate("window.orders") == []

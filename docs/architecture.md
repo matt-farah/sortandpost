@@ -661,7 +661,8 @@ The **only** module allowed to write under a library root. Wraps a persistent
   filtered view, tiles not yet scrolled in included. The selection drives the floating bulk
   toolbar, `app._BulkToolbar`: rate / tag / flag / delete / reveal / open with / add to
   collection / compose.
-- `/collections/{id}` — one collection in its own order (per-tile move ← → / remove, notes
+- `/collections/{id}` — one collection in its own order (drag to reorder — the post composer's SortableJS bridge,
+  `posts_ui.use_sortable` — or per-tile move ← → / remove, notes
   below). The same multi-select, Select all and `_BulkToolbar` as `/`, plus **Remove from
   collection** (no files touched); its compose starts from the selection in collection order,
   titled with the collection's name and captioned with its notes.
