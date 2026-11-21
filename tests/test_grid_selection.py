@@ -151,3 +151,18 @@ def test_cmd_a_on_a_focused_button_lets_go_of_it(page: Any) -> None:
 def test_plain_a_is_left_alone(page: Any) -> None:
     page.keyboard.press("a")
     assert not _last_prevented(page)
+
+
+def test_toggle_all_selects_all_then_none() -> None:
+    sel, _ = _sel(["a", "b", "c"])
+    sel.click("b")
+    assert not sel.all_selected
+    sel.toggle_all()
+    assert sel.all_selected and sel.ordered() == ["a", "b", "c"]
+    sel.toggle_all()
+    assert not sel.all_selected and sel.ordered() == []
+
+
+def test_all_selected_false_on_empty_grid() -> None:
+    sel, _ = _sel([])
+    assert not sel.all_selected

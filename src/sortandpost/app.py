@@ -1434,9 +1434,9 @@ def build_ui(settings: Settings) -> None:
                 counter = ui.label(f"{total} {noun}").classes("text-sm sp-muted")
                 if total:
                     # `sel` is created further down, before any click can land
-                    ui.button(
-                        "Select all", icon="select_all", on_click=lambda: sel.select_all()
-                    ).props("flat dense no-caps size=sm").tooltip("select every photo shown (⌘A)")
+                    select_btn = ui.button(
+                        "Select all", icon="checklist", on_click=lambda: sel.toggle_all()
+                    ).props("flat dense no-caps size=sm")
                 if lq.missing:
                     ui.label("missing on this computer").classes("text-xs sp-faint")
                 elif lq.has_filters():
@@ -1623,6 +1623,8 @@ def build_ui(settings: Settings) -> None:
             on_deleted=_after_bulk_delete,
         )
         sel: _GridSelection = toolbar.attach(_GridSelection(rep_ids, toolbar.render))
+        if total:
+            sel.bind_toggle(select_btn)
         # shift-state for _GridSelection ranges is tracked in the single _grid_key
         # handler below (one ui.keyboard per page -- two of them don't both fire).
 
@@ -2895,9 +2897,9 @@ def build_ui(settings: Settings) -> None:
             ui.button("Add photos", icon="add_photo_alternate", on_click=_add_photos_dialog).props(
                 "color=primary flat"
             )
-            ui.button("Select all", icon="select_all", on_click=lambda: sel.select_all()).props(
-                "flat dense no-caps"
-            ).tooltip("select every photo here (⌘A)")
+            select_btn = ui.button(
+                "Select all", icon="checklist", on_click=lambda: sel.toggle_all()
+            ).props("flat dense no-caps")
             compose_button(
                 settings,
                 lambda: _members_ids(),
@@ -2934,6 +2936,7 @@ def build_ui(settings: Settings) -> None:
             extra=_toolbar_extra,
         )
         sel: _GridSelection = toolbar.attach(_GridSelection([], toolbar.render))
+        sel.bind_toggle(select_btn)
 
         def _members() -> tuple[list[Photo], list[str]]:
             c = get_collection(settings.paths, coll_id)
@@ -6307,6 +6310,7 @@ class _GridSelection:
         self.shift_down = False
         self._boxes: dict[str, tuple[ui.element, ui.icon]] = {}
         self._on_change = on_change
+        self._toggle_btns: list[ui.button] = []
 
     def checkbox(self, pixel_hash: str) -> None:
         """Render the selection box for a tile (call inside the tile's link)."""
@@ -6355,6 +6359,29 @@ class _GridSelection:
         self.selected = set(self._order)
         self._repaint(self.selected ^ before)
 
+    @property
+    def all_selected(self) -> bool:
+        return bool(self._order) and len(self.selected) == len(self._order)
+
+    def toggle_all(self) -> None:
+        """Select every photo, or -- when all already are -- none."""
+        if self.all_selected:
+            self.clear()
+        else:
+            self.select_all()
+
+    def bind_toggle(self, btn: ui.button) -> ui.button:
+        """Keep a text "Select all" button's label + tooltip in step with the selection."""
+        self._toggle_btns.append(btn)
+        self._sync_toggles()
+        return btn
+
+    def _sync_toggles(self) -> None:
+        none = self.all_selected
+        for btn in self._toggle_btns:
+            btn.set_text("Select none" if none else "Select all")
+            btn.tooltip("deselect every photo" if none else "select every photo (⌘A)")
+
     def set_order(self, ids: list[str]) -> None:
         """The grid was redrawn with *ids* (reordered / some removed): keep the
         selection of photos still shown, drop the rest and the old boxes."""
@@ -6363,6 +6390,7 @@ class _GridSelection:
         self.selected &= set(self._order)
         self._anchor = None
         self._boxes.clear()
+        self._sync_toggles()
 
     def clear(self) -> None:
         stale = set(self.selected)
@@ -6379,6 +6407,7 @@ class _GridSelection:
             sel = h in self.selected
             box.classes(replace=self._box_cls(sel))
             icon.classes(replace="text-white" + ("" if sel else " invisible"))
+        self._sync_toggles()
         self._on_change()
 
     @staticmethod
@@ -6638,10 +6667,11 @@ class _BulkToolbar:
             return
         with self.element:
             ui.label(f"{count} selected").classes("text-sm font-medium")
-            if self.sel is not None and count < len(self.sel.order):
-                ui.button(icon="select_all", on_click=self.sel.select_all).props(
+            if self.sel is not None:
+                all_on = self.sel.all_selected
+                ui.button(icon="checklist", on_click=self.sel.toggle_all).props(
                     "flat dense round"
-                ).tooltip(f"select all {len(self.sel.order)}")
+                ).tooltip("select none" if all_on else f"select all {len(self.sel.order)}")
             if State.write_mode == WriteMode.writable:
                 for stars in (1, 2, 3, 4, 5):
                     ui.button(str(stars), on_click=lambda s=stars: self._rate(s)).props(
