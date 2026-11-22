@@ -11,7 +11,7 @@ real-hardware half is `dev-notes/DockerTestChecklist.md`.
 | Native gate | macOS arm64: ruff, ruff format, mypy, `uv audit`, `uv run pytest` | all clean; **1149 passed, 13 skipped** (74 s — was 286 s before F3) |
 | Docker suite | Docker Desktop 29.9, macOS arm64 (virtiofs bind mounts) | **25 passed, 1 skipped** (the Linux-only custom-PUID test), 6.5 min |
 | Docker suite | Lima VM, Ubuntu 24.04 arm64, Docker 29.9 (native bind mounts) | **25 passed, 1 skipped** (the RAW test: no sample RAW in the VM, see F9), 6.9 min |
-| Docker suite | GitHub Actions amd64 + arm64 | not run yet (needs a push: run `docker.yml` from the Actions tab) |
+| Docker suite | GitHub Actions amd64 + arm64 (PR #100) | **25 passed, 1 skipped** on both, ~9 min each (after the F11 test fix; amd64 had caught it) |
 
 The 26 Docker tests: image smoke (4), the normal suite in the container on its disk and on a
 bind mount (2), guard (6), lifecycle (5), browser E2E (6), parity (1), handoff (2).
