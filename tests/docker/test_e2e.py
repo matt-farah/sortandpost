@@ -150,8 +150,12 @@ def test_delete_then_put_back(make_stack: Callable[..., harness.Stack], page: An
 
     page.goto(stack.url + "/settings")
     page.get_by_role("button", name="Put back").first.click()
-    harness.wait_for(city.exists, what="the file back at its original path")
-    assert _sha(city) == digest
+    # local/ and /library are separate mounts, so shutil.move copies then deletes: the
+    # file appears before all its bytes are there (DockerTestFindings.md F11).
+    harness.wait_for(
+        lambda: city.exists() and _sha(city) == digest,
+        what="the file back at its original path, all of it",
+    )
     assert stack.scalar("SELECT COUNT(*) FROM tombstones") == 0
 
 

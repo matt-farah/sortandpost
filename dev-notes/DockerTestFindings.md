@@ -105,6 +105,23 @@ bind mount (2), guard (6), lifecycle (5), browser E2E (6), parity (1), handoff (
   the plan wants to move to the desktop endpoint (V3.1 "CLIP on the endpoint"). When that
   lands, a slim image without torch (`--no-extra clip`, or a build arg) would cut pull / build
   time on a NAS a lot. Note only, not a bug.
+- [ ] **F11 — Put back across filesystems shows a half-written file for a moment.**
+  - **Problem:** `trash.put_back` uses `shutil.move`. When `local/trash` and the library are
+    on different filesystems, the move is a copy then a delete, so the photo appears at its
+    original path before all its bytes are there. That's always the case in Docker (separate
+    mounts) and natively with a library on an external drive or NAS.
+  - **Impact:** nothing is lost, since the trash copy is deleted only after the copy finishes.
+    But the watcher can index the partial file (a decode error that's retried later). A
+    crash mid-copy also leaves a truncated photo at the original path, with the full one
+    still in the trash.
+  - **Found by:** CI amd64, `test_delete_then_put_back` read the file while it was empty.
+    The test now waits for the full bytes.
+  - **Options:**
+    - (a) copy to a hidden temp name beside the destination, then `os.replace` it into
+      place. This is atomic, but it briefly writes a new file under a library root, which
+      needs a constraint #1 carve-out.
+    - (b) keep it as is and have the scanner skip a file whose size or mtime is still
+      changing.
 
 ## Notes (no fix needed)
 
