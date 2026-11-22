@@ -53,6 +53,13 @@ uv audit
 
 - Tests that need exiftool, Playwright's Chromium (`uv run playwright install chromium`) or
   sample RAW files skip themselves when those aren't there.
+- **Docker tests** (`tests/docker/`) are opt-in: `uv run pytest --docker tests/docker`
+  (about 10–15 minutes with a warm build cache; needs a running Docker daemon). They build the image,
+  run the normal suite inside it (on the container's disk and on a bind mount), drive the
+  app in headless Chromium through the real `docker-compose.yml`, compare a native and a
+  Docker index of the same photos, and hand editing between a native app and a container.
+  CI runs them on amd64 + arm64 (`.github/workflows/docker.yml`) when Docker-relevant files
+  change, and weekly. What needs real hardware is in `dev-notes/DockerTestChecklist.md`.
 - If you change a database model, add a migration and check that autogenerate comes out
   empty afterwards: `uv run alembic revision --autogenerate -m "describe it"`.
 - If you add or change Tailwind classes in the UI, rebuild the CSS with

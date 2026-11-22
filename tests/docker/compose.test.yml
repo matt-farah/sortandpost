@@ -1,0 +1,19 @@
+# Test-only override for the real docker-compose.yml (tests/docker/harness.py layers it on
+# top with `-f`). It changes only what a test needs: the prebuilt test image, no network
+# downloads, and a fast healthcheck so `up --wait` returns in seconds.
+services:
+  app:
+    image: ${SP_TEST_IMAGE:-sortandpost:test}
+    pull_policy: never
+    environment:
+      HF_HUB_OFFLINE: "1"
+      SORTANDPOST_NO_UPDATE_CHECK: "1"
+    healthcheck:
+      interval: 2s
+      start_period: 120s
+    stop_grace_period: 60s
+  indexer:
+    image: ${SP_TEST_IMAGE:-sortandpost:test}
+    pull_policy: never
+    environment:
+      HF_HUB_OFFLINE: "1"

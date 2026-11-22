@@ -1,0 +1,90 @@
+name: Docker
+
+# The Docker test suite (tests/docker): builds the image and runs it through the real
+# docker-compose.yml -- image smoke, the normal suite inside the container, end-to-end in
+# a browser, native-vs-Docker parity and the native <-> Docker editing handoff.
+# Locally: `uv run pytest --docker tests/docker` (needs a running Docker daemon).
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "packaging/docker/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/**"
+      - "migrations/**"
+      - "tests/**"
+      - ".github/workflows/docker.yml"
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "packaging/docker/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/**"
+      - "migrations/**"
+      - "tests/**"
+      - ".github/workflows/docker.yml"
+  schedule:
+    - cron: "17 6 * * 1"  # weekly: base images / apt packages move under a pinned lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker:
+    name: Docker tests (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: sortandpost:test
+          cache-from: type=gha,scope=app-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=app-${{ matrix.arch }}
+      - name: Build the test-suite image
+        # The daemon's own builder: it sees the image loaded above (a buildx container
+        # builder would try to pull sortandpost:test from a registry).
+        run: >
+          docker buildx build --builder default --load
+          -f tests/docker/Dockerfile.test --build-arg BASE=sortandpost:test
+          -t sortandpost:test-suite .
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Host tools (exiftool for parity / file checks)
+        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl
+      - run: uv sync --locked --extra dev
+      - run: uv run playwright install --with-deps chromium
+      - name: Docker tests
+        run: uv run pytest --docker tests/docker -rfE
+        env:
+          SORTANDPOST_DOCKER_SKIP_BUILD: "1"
+          SORTANDPOST_DOCKER_LOGS: ${{ runner.temp }}/docker-logs
+          HF_HUB_OFFLINE: "1"
+      - name: Container logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/docker-logs
+          if-no-files-found: ignore

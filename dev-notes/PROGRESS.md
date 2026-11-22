@@ -1,6 +1,6 @@
 # sortandpost — build progress & resume notes
 
-_Last updated: 2026-11-15 (**3.0.2** = V3.1 #1–#8: PR to `main` + builds, Windows handoff below; V3.1: drag to reorder photos in a collection, a photo opened from a collection browses it, filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
+_Last updated: 2026-11-21 (select-all toggles to none + `checklist` icon; **3.0.2** = V3.1 #1–#8: PR to `main` + builds, Windows handoff below; V3.1: drag to reorder photos in a collection, a photo opened from a collection browses it, filter by collection in the library, week arrows in the post scheduling grid, dependency security bump + CI finding, drag to reorder photos in a post, time picker fix, delete returns to the photo you came from; 2026-11-07 V3.1 started: Select all + the bulk toolbar on collection pages; before that 2026-10-20 search matches file names / folders with CLIP on; before that file saved over in place keeps rating/tags/collections; before that **v3.0.0 (beta) released** — macOS, Windows, Linux; before that the new logo, cat personas, in-app updates, help page, profile picture, alt text, post queue, V3 P7 Linux AppImage, rename to sortandpost.photos, stress-test fixes S1–S10)._
 _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (beta); P8 pywebview (stretch) not started._
 
 > **▶️ Next:** 3.0.2 (V3.1 #1–#8): merge the `version-3.1` → `main` PR, build macOS + both
@@ -9,6 +9,14 @@ _Working branch: `version-3.1` (V3.1 work, off `main`). V3 shipped as 3.0.0 (bet
 > items, stacked on `version-3.1`. Still open from V3: a real packaged old → new update on each
 > OS, Linux on a real desktop (V3Plan.md → P7 checklist), a real Synology / Docker Desktop on
 > Windows, the Apple Developer ID decision, brew / winget, P8 pywebview (stretch).
+
+## 🔄 2026-11-21 — V3.1: Select all toggles, new icon
+
+- `_GridSelection.toggle_all()` / `all_selected` / `bind_toggle()`: the library and collection
+  "Select all" buttons become "Select none" once everything is selected and clear on the next
+  click; the bulk toolbar's select icon is always shown and toggles too. ⌘/Ctrl+A stays
+  select-all only. Icon is Material `checklist` on all three. Tests in `tests/test_grid_selection.py`.
+- Hands-on tested by the user. Still open in V3.1: deep Docker testing.
 
 ## 🔄 2026-11-15 — 3.0.2: V3.1 #1–#8 PR + builds
 

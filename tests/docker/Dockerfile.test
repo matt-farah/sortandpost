@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1
+# The app image + the dev extra (pytest, playwright's Python package), for running the
+# normal test suite inside the container (tests/docker/test_in_container.py). The repo
+# is bind-mounted at run time (read-only), so tests/ and the files tests compare against
+# (dev-notes/achievements, resources) come from the working tree -- nothing is copied in.
+# The production image (../../Dockerfile) is unchanged.
+ARG BASE=sortandpost:test
+FROM ${BASE}
+USER root
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-editable --extra dev
+ENV PYTHONDONTWRITEBYTECODE=1

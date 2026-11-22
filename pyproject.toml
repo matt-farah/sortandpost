@@ -136,4 +136,7 @@ follow_imports = "skip"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "docker: builds and runs the Docker image (opt-in: pytest --docker tests/docker)",
+]
 addopts = "-q"
