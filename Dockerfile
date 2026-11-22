@@ -9,12 +9,15 @@ FROM python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c
 #  - libraw-bin / libheif1: runtime libs for rawpy (RAW) and pillow-heif (HEIC);
 #    the wheels normally bundle their own copies, these are a safety net
 #  - curl: the compose healthcheck
+#  - tini: PID 1. Reaps orphaned processes (else a dead pool worker stays a zombie that
+#    looks alive) and forwards `docker stop`'s SIGTERM to the app (tests/docker)
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libimage-exiftool-perl \
         libraw-bin \
         libheif1 \
         curl \
+        tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /uv /usr/local/bin/uv
@@ -61,5 +64,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT}/healthz" || exit 1
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["tini", "--", "docker-entrypoint.sh"]
 CMD ["python", "-m", "sortandpost"]

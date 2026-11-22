@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -17,10 +16,7 @@ from sortandpost.paths import Paths
 from sortandpost.relocate import maybe_relocate, read_record
 from tests.factories import make_db
 
-needs_chmod = pytest.mark.skipif(
-    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
-    reason="chmod 000 doesn't make a file unreadable here",
-)
+needs_chmod = pytest.mark.usefixtures("needs_permission_bits")  # chmod 000 must lock a file
 
 
 @pytest.mark.parametrize(

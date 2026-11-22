@@ -463,8 +463,12 @@ class Settings(BaseModel):
             # old shared config, then treat the per-device file as canonical.
             # A brand-new native machine gets its folders from onboarding
             # instead (the template's "/library" is a Docker mount point).
-            roots = [LibraryRoot(container=str(p), host=str(p)) for p in config.library_roots]
-            save_roots(paths, device_id, hostname, roots)
+            # Never the template's Docker mount point outside a container: on a Mac,
+            # "/library" is /Library (case-insensitive), the whole system library.
+            seed = [p for p in config.library_roots if running_in_docker() or str(p) != "/library"]
+            roots = [LibraryRoot(container=str(p), host=str(p)) for p in seed]
+            if roots:
+                save_roots(paths, device_id, hostname, roots)
         return cls(
             env=env,
             paths=paths,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -226,9 +225,7 @@ def test_a_line_break_in_a_keyword_cannot_inject_exiftool_options(
 
 
 # -- failed writes (Issues.md S3) -------------------------------------------- #
-needs_non_root = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can write a 0444 file"
-)
+needs_non_root = pytest.mark.usefixtures("needs_permission_bits")  # a 0444 file must be locked
 
 
 @needs_non_root

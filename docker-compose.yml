@@ -68,7 +68,7 @@ services:
       - "${SYNC_DIR:?set SYNC_DIR in .env}:/data/sync:rw"
       - "${LOCAL_DIR:-sortandpost-local}:/data/local:rw"
     hostname: "${DEVICE_NAME:-sortandpost-docker}"
-    entrypoint: ["docker-entrypoint.sh", "python", "-m", "sortandpost.indexer"]
+    entrypoint: ["tini", "--", "docker-entrypoint.sh", "python", "-m", "sortandpost.indexer"]
 
 volumes:
   sortandpost-local:

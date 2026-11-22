@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -285,10 +283,8 @@ def test_gated_pages() -> None:
 # --------------------------------------------------------------------------- #
 # Issues.md S4 / S5: bad folders and a saved folder that went away
 # --------------------------------------------------------------------------- #
-needs_non_root = pytest.mark.skipif(
-    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
-    reason="chmod 0o555 doesn't make a folder unwritable here (root, or Windows)",
-)
+# chmod 0o555 must make a folder unwritable here (not root, Windows or a bind mount).
+needs_non_root = pytest.mark.usefixtures("needs_permission_bits")
 
 
 def test_inspect_folder_normalizes_dot_dot(tmp_path: Path) -> None:
@@ -386,3 +382,73 @@ def test_broken_shared_config_falls_back_and_is_kept(
     assert (shared / "config.yaml").read_text() == bad  # left for the user to fix
     assert Settings.resolve().config_backup == s.config_backup  # one copy per content
     assert len(list(s.paths.snapshots_dir.glob("config-broken-*.yaml"))) == 1
+
+
+def _finished_install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Paths:
+    app_data = tmp_path / "appdata"
+    paths = Paths(app_data=app_data)
+    bootstrap(paths)
+    mark_complete(paths, how="new")
+    monkeypatch.setenv("APP_DATA", str(app_data))
+    # The lock is what's tested; never load CLIP weights here.
+    monkeypatch.setattr("sortandpost.indexer.__main__.scan_clip_once", lambda *_a, **_k: "")
+    return paths
+
+
+def test_indexer_once_refuses_while_another_machine_edits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Constraint #9: `--once` must not write the working DB beside a live writer
+    (found by tests/docker/test_lifecycle.py: it used to ignore the lock)."""
+    from datetime import UTC, datetime
+
+    from sortandpost.sync.lock import new_lock, write_lock
+
+    paths = _finished_install(monkeypatch, tmp_path)
+    write_lock(
+        paths.lock_file,
+        new_lock(device_id="other-device", hostname="nas", db_generation=1, now=datetime.now(UTC)),
+    )
+    assert indexer_main(["--once"]) == 3
+    assert "holds the write lock" in capsys.readouterr().err
+    assert json.loads(paths.lock_file.read_text())["device_id"] == "other-device"
+
+
+def test_indexer_once_takes_and_releases_a_free_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = _finished_install(monkeypatch, tmp_path)
+    assert indexer_main(["--once"]) == 0
+    lock = json.loads(paths.lock_file.read_text())
+    assert lock["handoff_to"] == ""  # a release, not a live lock
+    assert paths.published_db.exists()  # the pass was published for the next app start
+
+
+def test_indexer_once_refuses_beside_the_app_on_this_computer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Same device, another live process (the web app on this data folder, or a second
+    container sharing its local/): the sync layer reads that lock as ours, so the CLI
+    checks the heartbeat itself."""
+    from dataclasses import replace
+    from datetime import UTC, datetime
+
+    from sortandpost.sync.lock import new_lock, write_lock
+
+    paths = _finished_install(monkeypatch, tmp_path)
+    device = json.loads(paths.device_file.read_text())["device_id"]
+    lock = new_lock(device_id=device, hostname="me", db_generation=1, now=datetime.now(UTC))
+    write_lock(paths.lock_file, replace(lock, pid=lock.pid + 1))
+    assert indexer_main(["--once"]) == 3
+    assert "another process on this computer" in capsys.readouterr().err
+
+
+def test_native_upgrade_never_seeds_the_docker_mount_point(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The template's `library_roots: [/library]` is Docker's mount point. On a Mac it
+    resolves to /Library, so a native install must never seed it as a photo folder
+    (found by tests/docker: a scan walked 100k+ system files)."""
+    paths = _finished_install(monkeypatch, tmp_path)
+    assert Settings.resolve().library_roots == []
+    assert not list((paths.sync / "devices").glob("*/library.json"))

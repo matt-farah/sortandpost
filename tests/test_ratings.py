@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -105,7 +104,7 @@ def test_out_of_range_rejected(engine: Engine, stars: int) -> None:
 
 
 @pytest.mark.skipif(shutil.which("exiftool") is None, reason="exiftool not on PATH")
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores 0444")
+@pytest.mark.usefixtures("needs_permission_bits")
 def test_read_only_file_rating_is_saved_and_reported(engine: Engine, tmp_path: Path) -> None:
     """Issues.md S3: the DB keeps the rating, the failed file write is reported
     (not silently treated as success)."""

@@ -76,6 +76,24 @@ event through the mount triggers a scoped pass, and a sparse stub reads as onlin
 (`st_blocks` 0) with the Docker banner. Not tested yet: a Synology (PUID/PGID), Windows /
 WSL2 mounts.
 
+## Automated tests (V3.1)
+
+`uv run pytest --docker tests/docker` (and `.github/workflows/docker.yml`, amd64 + arm64)
+builds the image and runs it through the real compose file. It checks:
+- **Image:** the tools inside it, non-root `PUID:PGID`, tini as PID 1, the healthcheck, and that
+  the entrypoint re-owns nothing outside `/data/local`.
+- **Normal suite inside the container**, twice: on the container's disk and on a bind mount.
+- **Browser flows:** the wizard; a rating or tag landing in the host file; RAW never written;
+  delete and Put back; the watcher.
+- **Server guard and lifecycle:** clean `docker stop`, recreate, the one-shot indexer and the
+  lock, an empty library mount.
+- **Native vs Docker:** a byte-for-byte comparison of the same library indexed natively and in
+  Docker (pixel hashes, metadata, thumbnails).
+- **Editing handoff:** a native app and a container on one shared folder.
+
+What needs real hardware (Synology, WSL2, a cloud sync tool, a phone) is in
+[dev-notes/DockerTestChecklist.md](../dev-notes/DockerTestChecklist.md).
+
 ## Deployment shapes
 
 ### Always-on NAS (Synology)

@@ -7,9 +7,7 @@ and the app couldn't boot. An unreadable file is simulated with ``chmod 000``.
 
 from __future__ import annotations
 
-import os
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -28,10 +26,7 @@ from sortandpost.sync.recovery import (
 from sortandpost.sync.snapshots import write_snapshot
 from tests.factories import hash_for, make_db, rate, read_ratings, ts
 
-needs_chmod = pytest.mark.skipif(
-    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
-    reason="chmod 000 doesn't make a file unreadable here",
-)
+needs_chmod = pytest.mark.usefixtures("needs_permission_bits")  # chmod 000 must lock a file
 
 
 @pytest.fixture
